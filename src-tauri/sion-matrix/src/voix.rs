@@ -217,8 +217,8 @@ struct Etat {
     chiffre: bool,
     muet: bool,
     sourd: bool,
-    /// Nombre de périodes d'une heure couvertes par `expires`.
-    periodes: i64,
+    /// `expires` de notre dernière annonce (ms depuis `cree`).
+    expires: i64,
     /// Date de notre jonction, lue dans l'état une fois l'événement revenu.
     cree: Option<i64>,
     membres: Vec<Appartenance>,
@@ -238,11 +238,14 @@ const REPUBLIER_APRES: Duration = Duration::from_secs(20);
 impl Etat {
     async fn annoncer(&mut self) {
         self.annonce_a = tokio::time::Instant::now();
+        // Recalculée à chaque annonce, republication comprise : c'est elle
+        // qui remet d'aplomb une appartenance périmée par une veille.
+        self.expires = rtc::expires_couvrant(self.cree, self.horloge.maintenant_serveur());
         let contenu = rtc::contenu_appartenance(&Annonce {
             moi: &self.moi,
             appareil: &self.appareil,
             foyer: &self.foyer,
-            expires: rtc::EXPIRATION_MS * self.periodes,
+            expires: self.expires,
             cree: self.cree,
             muet: self.muet,
             sourd: self.sourd,
@@ -388,17 +391,20 @@ impl Etat {
 
 async fn session(mut etat: Etat, mut commandes: mpsc::UnboundedReceiver<Commande>, mut evenements: broadcast::Receiver<EvenementRtc>) {
     etat.annoncer().await;
-    let debut = tokio::time::Instant::now();
     etat.suivre_membres(true).await;
     loop {
-        let echeance = rtc::EXPIRATION_MS * etat.periodes - rtc::MARGE_RENOUVELLEMENT_MS;
-        let renouvellement = debut + Duration::from_millis(echeance.max(0) as u64);
+        // Échéance en temps réel, vérifiée au moins toutes les 5 minutes :
+        // une minuterie monotone seule ne court pas pendant une veille.
+        let reste = rtc::validite_restante(etat.cree, etat.expires, etat.horloge.maintenant_serveur());
+        let attente = (reste - rtc::MARGE_RENOUVELLEMENT_MS).clamp(0, rtc::VERIFICATION_VALIDITE_MS);
         tokio::select! {
-            _ = tokio::time::sleep_until(renouvellement) => {
-                // Comme `updateExpiryOnJoinedEvent` : une heure de plus,
-                // même date de jonction.
-                etat.periodes += 1;
-                etat.annoncer().await;
+            _ = tokio::time::sleep(Duration::from_millis(attente as u64)) => {
+                let reste = rtc::validite_restante(etat.cree, etat.expires, etat.horloge.maintenant_serveur());
+                if reste <= rtc::MARGE_RENOUVELLEMENT_MS {
+                    // Comme `updateExpiryOnJoinedEvent` : même date de
+                    // jonction, validité jusqu'à une heure après maintenant.
+                    etat.annoncer().await;
+                }
             }
             commande = commandes.recv() => match commande {
                 Some(Commande::Etat { muet, sourd }) => {
@@ -470,7 +476,7 @@ impl CoeurMatrix {
             chiffre,
             muet: false,
             sourd: false,
-            periodes: 1,
+            expires: rtc::EXPIRATION_MS,
             cree: None,
             membres: Vec::new(),
             gestion: gestion.clone(),

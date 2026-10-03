@@ -25,8 +25,32 @@ pub(crate) const TYPE_CLES: &str = "io.element.call.encryption_keys";
 pub(crate) const EXPIRATION_MS: i64 = 3_600_000;
 /// Validité supposée quand `expires` manque (`DEFAULT_EXPIRE_DURATION`).
 const EXPIRATION_PAR_DEFAUT_MS: i64 = 4 * 3_600_000;
-/// Renouvellement un peu avant l'échéance (`membershipEventExpiryHeadroomMs`).
-pub(crate) const MARGE_RENOUVELLEMENT_MS: i64 = 5_000;
+/// Renouvellement quand il reste moins que cela de validité.
+pub(crate) const MARGE_RENOUVELLEMENT_MS: i64 = 10 * 60_000;
+/// Vérification de la validité au moins aussi souvent : un appareil sorti
+/// de veille renouvelle dans ces délais.
+pub(crate) const VERIFICATION_VALIDITE_MS: i64 = 5 * 60_000;
+
+/// `expires` à annoncer : de la jonction (`created_ts`) jusqu'à une heure
+/// après maintenant, en temps RÉEL (horloge du serveur).
+///
+/// Il se comptait en heures d'horloge monotone depuis la jonction, qui ne
+/// court pas pendant une mise en veille : flammemob, PC en veille la nuit,
+/// annonçait 15 h de validité au bout de 24 h d'appel (03/10). Tout le
+/// monde, lui compris, l'écartait comme périmé, et chaque republication
+/// renvoyait la même durée, toutes les 31 s, sans jamais réparer.
+pub(crate) fn expires_couvrant(cree: Option<i64>, maintenant: i64) -> i64 {
+    match cree {
+        Some(cree) => (maintenant - cree + EXPIRATION_MS).max(EXPIRATION_MS),
+        // Avant le retour de notre événement, `created_ts` est sa date.
+        None => EXPIRATION_MS,
+    }
+}
+
+/// Validité restante d'une appartenance annoncée (ms, négative si périmée).
+pub(crate) fn validite_restante(cree: Option<i64>, expires: i64, maintenant: i64) -> i64 {
+    cree.map_or(expires, |cree| cree + expires - maintenant)
+}
 /// Délai avant de chiffrer avec une clé renouvelée, le temps qu'elle arrive
 /// chez les autres (`useKeyDelay`).
 pub(crate) const DELAI_CLE_MS: u64 = 1_000;
@@ -453,6 +477,24 @@ impl GestionCles {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn la_validite_se_compte_en_temps_reel_meme_apres_une_veille() {
+        use super::{expires_couvrant, validite_restante, EXPIRATION_MS};
+        let h = 3_600_000;
+        let cree = 1_000 * h;
+        // Jonction : une heure.
+        assert_eq!(expires_couvrant(None, cree), EXPIRATION_MS);
+        assert_eq!(expires_couvrant(Some(cree), cree), EXPIRATION_MS);
+        // 24 h plus tard, quelle que soit la veille entre-temps : de la
+        // jonction jusqu'à une heure après maintenant.
+        let maintenant = cree + 24 * h;
+        let expires = expires_couvrant(Some(cree), maintenant);
+        assert_eq!(expires, 25 * h);
+        assert_eq!(validite_restante(Some(cree), expires, maintenant), h);
+        // L'ancienne durée (15 h au bout de 24 h) était périmée depuis 9 h.
+        assert_eq!(validite_restante(Some(cree), 15 * h, maintenant), -9 * h);
+    }
+
     use super::*;
 
     const T: i64 = 1_790_000_000_000;
