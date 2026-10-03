@@ -195,6 +195,25 @@ export function useLiveKit() {
       onParticipants, onData, onE2ee, onLocalScreenShareFailed,
       onClosed: clearNativeResources, onDisconnected,
     });
+    // Page rechargée en plein appel (03/10 : processus web tué à 8,5 Go
+    // après une nuit) : le moteur est resté dans l'appel, avec SON micro
+    // coupé et SA sourdine, et la page repart de zéro. Elle affichait « ni
+    // sourdine ni micro coupé » sur un moteur en sourdine : plus de son, plus
+    // de micro, et les boutons agissaient à l'envers. On reprend l'état du
+    // moteur, AVANT tout réglage du micro à l'entrée (`joinMuted`).
+    const enCours = await getVoiceNativeStatus().catch(() => null);
+    if (enCours) {
+      const { useAppStore } = await import("../stores/useAppStore");
+      const app = useAppStore.getState();
+      if (enCours.deafened !== app.isDeafened || enCours.muted !== app.isMuted) {
+        const message = `[Sion][voix] état du moteur repris : micro coupé=${enCours.muted}, sourdine=${enCours.deafened}`;
+        console.info(message);
+        void import("@tauri-apps/plugin-log").then(({ info }) => info(message)).catch(() => {});
+        useAppStore.setState({ isMuted: enCours.muted, isDeafened: enCours.deafened });
+        const { publishLocalVoiceState } = await import("../services/matrixService");
+        publishLocalVoiceState({ muted: enCours.muted, deafened: enCours.deafened });
+      }
+    }
     // Décodage des cues dès l'entrée en vocal : sans ça le tout premier unmute
     // attendait environ deux secondes le chargement du fichier (mesuré le
     // 16/09), alors que l'opération moteur ne prenait que 91 ms.

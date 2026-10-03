@@ -186,6 +186,10 @@ pub fn install_webrtc_log_sink() {
             // touchent la capture d'écran. Filtre sans allocation (pas de
             // to_lowercase) : ce chemin est appelé pour CHAQUE ligne WebRTC.
             let keep = match severity {
+                // Émis par la collecte des statistiques (latence, toutes les
+                // 2 s) pour un flux de réception déjà retiré : sans effet,
+                // mais 40 000 lignes par jour dans le journal (02/10).
+                LoggingSeverity::Warning if message.contains("Attempting to get RTP receive parameters") => false,
                 LoggingSeverity::Error | LoggingSeverity::Warning => true,
                 _ => {
                     message.contains("PipeWire")
@@ -2996,9 +3000,15 @@ impl LiveKitEngine {
                 Some(LocalTrack::Audio(t)) => Some(PisteLatence::Locale(t)),
                 _ => None,
             });
+        // À défaut, un micro reçu ET souscrit : désinscrit (sourdine), sa
+        // piste n'a plus de récepteur, et chaque lecture valait un
+        // avertissement de WebRTC dans le journal, toutes les deux secondes.
         locale.or_else(|| {
             room.remote_participants().values().find_map(|participant| {
                 participant.track_publications().values().find_map(|p| {
+                    if !p.is_subscribed() {
+                        return None;
+                    }
                     match (p.source(), p.track()) {
                         (TrackSource::Microphone, Some(RemoteTrack::Audio(t))) => {
                             Some(PisteLatence::Distante(t))
