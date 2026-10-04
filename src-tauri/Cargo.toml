@@ -309,6 +309,11 @@ notify-rust = { path = "vendor/notify-rust" }
 # On suit les crates Tauri 2 stables et on ne conserve qu'un correctif Linux
 # ciblé. Voir vendor/tauri-runtime-wry/SION_PATCH.md.
 tauri-runtime-wry = { path = "vendor/tauri-runtime-wry" }
+# Linux : seuils de pression mémoire de WebKit à la mesure de la RAM. Avec
+# ceux par défaut, le processus web purgeait ses polices toutes les 30 s
+# au-delà d'1 Go, remappait les polices de repli à chaque fois, et finissait
+# tué à 4 Go. Voir vendor/wry/SION_PATCH.md.
+wry = { path = "vendor/wry" }
 
 # Vendored softbuffer with the Wayland buffer format patched from `Xrgb8888`
 # to `Argb8888`. Without this, the cursor-overlay window appears as an opaque
