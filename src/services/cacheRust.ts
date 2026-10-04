@@ -79,9 +79,14 @@ export function detailsSalon(salon: string): DetailsSalon | undefined {
   return e?.valeur;
 }
 
-/** À appeler après une action qui change les membres ou les niveaux. */
+/** À appeler après une action qui change les membres ou les niveaux. La
+ *  valeur est relue mais gardée, pour comparaison : l'effacer faisait passer
+ *  chaque relecture pour un changement, et le panneau des membres, qui
+ *  relit toutes les 15 s, redessinait tous les messages à chaque fois
+ *  (04/10). */
 export function oublierDetails(salon: string): void {
-  details.delete(salon);
+  const e = details.get(salon);
+  if (e) e.date = 0;
   detailsSalon(salon);
 }
 

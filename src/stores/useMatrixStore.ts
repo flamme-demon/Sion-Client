@@ -17,6 +17,7 @@ import { traiterEvenementSion, type ContexteSion } from "../services/evenementsS
 import { findAdminRoom } from "../services/adminCommandService";
 import { noteServerTimestamp, serverNow, publishClockSkew } from "../services/serverClock";
 import { plateformeMobile } from "../utils/plateforme";
+import { heureMessage } from "../utils/heure";
 
 export type VerificationStep =
   | "idle"           // No verification in progress
@@ -492,7 +493,7 @@ export function extractMessagesFromEvents(events: any[], room: any, client: any)
         const ts = evt.getTs?.() || Date.now();
         msgs.push({
           id: evtId, eventId: evtId, senderId, user: getDisplayName(senderId, room, client),
-          role: "user", time: new Date(ts).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" }),
+          role: "user", time: heureMessage(ts),
           ts, text: poll.question, msgtype: "m.poll", avatarUrl: getAvatarFromSender(senderId, room, client), poll,
         });
       }
@@ -531,7 +532,7 @@ export function extractMessagesFromEvents(events: any[], room: any, client: any)
       const sender = getDisplayName(senderId, room, client);
       const avatarUrl = getAvatarFromSender(senderId, room, client);
       const ts = evt.getTs?.() || Date.now();
-      const time = new Date(ts).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
+      const time = heureMessage(ts);
       msgs.push({ id: evtId, eventId: evtId, senderId, user: sender, role: "user", time, ts, text: "🔒 Message chiffré (clé de déchiffrement manquante)", msgtype: "m.encrypted", avatarUrl });
       continue;
     }
@@ -545,7 +546,7 @@ export function extractMessagesFromEvents(events: any[], room: any, client: any)
     const sender = getDisplayName(senderId, room, client);
     const avatarUrl = getAvatarFromSender(senderId, room, client);
     const ts = evt.getTs?.() || Date.now();
-    const time = new Date(ts).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
+    const time = heureMessage(ts);
 
     // Messages texte
     if (msgtype === "m.text" || msgtype === "m.notice" || msgtype === "m.emote" || msgtype === "m.poke") {
@@ -1325,7 +1326,7 @@ export const useMatrixStore = create<MatrixState>((set, get) => ({
       const sender = getDisplayName(senderId, room, client);
       const avatarUrl = getAvatarFromSender(senderId, room, client);
       const ts = event.getTs?.() || Date.now();
-      const time = new Date(ts).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
+      const time = heureMessage(ts);
 
       // Handle edit events (m.replace) in real-time
       const relatesTo = content["m.relates_to"];

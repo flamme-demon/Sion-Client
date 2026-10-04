@@ -1,4 +1,4 @@
-import { useState, useCallback, type ReactNode } from "react";
+import { useState, useCallback, useMemo, memo, type ReactNode } from "react";
 import DOMPurify from "dompurify";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -187,16 +187,22 @@ interface MarkdownRendererProps {
   msgtype?: string;
 }
 
-export function MarkdownRenderer({ content, formattedBody, msgtype }: MarkdownRendererProps) {
+/** Mémoïsé : un message ne se redessine que si son contenu change. Sans
+ *  cela, tout re-rendu du fil refaisait le Markdown (avec un surligneur de
+ *  code recréé, tous ses langages compris) et, React 19 réécrivant
+ *  `innerHTML` dès que l'objet `__html` change, reparsait le HTML Matrix —
+ *  toutes les 15 s pour un message à mention, panneau des membres ouvert
+ *  (04/10). */
+export const MarkdownRenderer = memo(function MarkdownRenderer({ content, formattedBody, msgtype }: MarkdownRendererProps) {
   const openUserContextMenu = useAppStore((s) => s.openUserContextMenu);
+  const html = useMemo(() => (formattedBody ? { __html: sanitizeHtml(formattedBody) } : null), [formattedBody]);
 
   // If Matrix HTML is available, sanitize and render directly
-  if (formattedBody) {
-    const clean = sanitizeHtml(formattedBody);
+  if (html) {
     return (
       <div
         className="matrix-html"
-        dangerouslySetInnerHTML={{ __html: clean }}
+        dangerouslySetInnerHTML={html}
         onClick={(e) => {
           // Intercept matrix.to mention links — open the user context menu
           // (mute/poke/etc.) instead of letting the browser open Element.
@@ -239,8 +245,11 @@ export function MarkdownRenderer({ content, formattedBody, msgtype }: MarkdownRe
 
   // Regular messages — render as Markdown
   return (
-    <Markdown remarkPlugins={[remarkGfm, remarkBreaks]} rehypePlugins={[rehypeHighlight]} components={components}>
+    <Markdown remarkPlugins={REMARK} rehypePlugins={REHYPE} components={components}>
       {content}
     </Markdown>
   );
-}
+});
+
+const REMARK = [remarkGfm, remarkBreaks];
+const REHYPE = [rehypeHighlight];

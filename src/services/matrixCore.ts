@@ -22,6 +22,7 @@ import type { Channel, ChatMessage } from "../types/matrix";
 import type { PinnedSummary, RegistrationFlowInfo, SionMemberVersion, SoundboardCreationResult } from "./matrixService";
 import type { SoundEntry } from "./soundboardService";
 import type { MemeEntry } from "./memeboardService";
+import { heureMessage } from "../utils/heure";
 
 export type EtatConnexion =
   | { etat: "deconnecte" }
@@ -99,7 +100,7 @@ function avecHeure(fil: Omit<FilSalon, "messages"> & { messages: Omit<ChatMessag
     ...fil,
     messages: fil.messages.map((m) => ({
       ...m,
-      time: new Date(m.ts ?? 0).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" }),
+      time: heureMessage(m.ts ?? 0),
     })),
   };
 }
@@ -126,7 +127,7 @@ export const marquerLu = (salon: string) => invoquer<void>("matrix_marquer_lu", 
 export async function message(salon: string, evenement: string): Promise<ChatMessage | null> {
   const m = await invoquer<Omit<ChatMessage, "time"> | null>("matrix_message", { salon, evenement });
   if (!m) return null;
-  return { ...m, time: new Date(m.ts ?? 0).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" }) };
+  return { ...m, time: heureMessage(m.ts ?? 0) };
 }
 
 /** Résumés des épinglés, du plus récent au plus ancien (`getPinnedSummaries`) :
