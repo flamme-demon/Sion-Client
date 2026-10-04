@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { getMatrixClient } from "../services/matrixService";
 import { checkUserSuspended } from "../services/adminService";
-import { sendAdminCommand, parseUserList, findAdminRoom } from "../services/adminCommandService";
+import { sendAdminCommand, parseUserList, findAdminRoom, compteAnnonceInscrit } from "../services/adminCommandService";
 import * as cacheRust from "../services/cacheRust";
 import { moteurRust } from "../services/moteur";
 import { useMatrixStore } from "./useMatrixStore";
@@ -25,10 +25,17 @@ interface PendingUsersState {
 
 let pollingInterval: ReturnType<typeof setInterval> | null = null;
 let fullDiscoverInterval: ReturnType<typeof setInterval> | null = null;
-/** Coarser cadence than the 30 s suspension poll: a full re-discovery runs
- *  `!admin users list-users` (bot round-trip) so we don't want to spam the
- *  admin room. 5 minutes catches new registrations with an acceptable lag. */
-const FULL_DISCOVER_INTERVAL_MS = 5 * 60 * 1000;
+let arreterAvis: (() => void) | null = null;
+let avisEnAttente: ReturnType<typeof setTimeout> | null = null;
+/** Statut de suspension des comptes connus (API REST, une requête par
+ *  compte) : la validation par un autre admin apparaît dans les 2 min. */
+const REFRESH_INTERVAL_MS = 2 * 60 * 1000;
+/** Une découverte complète passe par `!admin users list-users`, commande ET
+ *  réponse postées dans le salon d'administration, pour chaque admin
+ *  connecté : toutes les 5 min, ~24 messages par heure s'y entassaient
+ *  (04/10). Les inscriptions arrivent par l'avis du serveur (plus bas) ;
+ *  ce tour horaire ne sert que de filet si les avis sont coupés. */
+const FULL_DISCOVER_INTERVAL_MS = 60 * 60 * 1000;
 
 /** Discover all local users from rooms + SDK store */
 function discoverLocalUsers(): Set<string> {
@@ -192,10 +199,22 @@ export const usePendingUsersStore = create<PendingUsersState>((set, get) => ({
     // Initial full discovery
     get().fullDiscover();
 
-    // Fast poll (suspension status only) — every 30 s
-    pollingInterval = setInterval(() => get().refresh(), 30000);
-    // Slow poll (full re-discovery) — every 5 min, catches new signups
+    pollingInterval = setInterval(() => get().refresh(), REFRESH_INTERVAL_MS);
     fullDiscoverInterval = setInterval(() => get().fullDiscover(), FULL_DISCOVER_INTERVAL_MS);
+    // Un compte qui s'inscrit est annoncé par le serveur dans le salon
+    // d'administration : découverte complète aussitôt (regroupée si
+    // plusieurs avis arrivent ensemble).
+    const surAvis = () => {
+      if (avisEnAttente) clearTimeout(avisEnAttente);
+      avisEnAttente = setTimeout(() => {
+        avisEnAttente = null;
+        void get().fullDiscover();
+      }, 2000);
+    };
+    void suivreAvisInscription(surAvis).then((arreter) => {
+      if (pollingInterval) arreterAvis = arreter;
+      else arreter();
+    });
   },
 
   stopListening: () => {
@@ -207,5 +226,45 @@ export const usePendingUsersStore = create<PendingUsersState>((set, get) => ({
       clearInterval(fullDiscoverInterval);
       fullDiscoverInterval = null;
     }
+    if (avisEnAttente) {
+      clearTimeout(avisEnAttente);
+      avisEnAttente = null;
+    }
+    arreterAvis?.();
+    arreterAvis = null;
   },
 }));
+
+/** Appelle `rappel` à chaque avis d'inscription posté dans le salon
+ *  d'administration après le début du suivi. Rend de quoi arrêter. */
+async function suivreAvisInscription(rappel: () => void): Promise<() => void> {
+  const depuis = Date.now();
+  if (moteurRust()) {
+    // Le cœur republie tout le fil à chaque changement : on ne retient que
+    // les avis récents, une fois chacun.
+    const vus = new Set<string | number>();
+    const { surMessages } = await import("../services/matrixCore");
+    return surMessages((fil) => {
+      if (fil.salon !== findAdminRoom()) return;
+      for (const m of fil.messages) {
+        if ((m.ts ?? 0) < depuis || vus.has(m.id)) continue;
+        if (compteAnnonceInscrit(m.text ?? "", m.senderId)) {
+          vus.add(m.id);
+          rappel();
+        }
+      }
+    });
+  }
+  const client = getMatrixClient();
+  if (!client) return () => {};
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const surEvenement = (event: any, room: any, versLeDebut?: boolean) => {
+    if (versLeDebut || !room || room.roomId !== findAdminRoom()) return;
+    if ((event.getTs?.() ?? 0) < depuis) return;
+    if (compteAnnonceInscrit(event.getContent?.()?.body ?? "", event.getSender?.())) rappel();
+  };
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const cl = client as any;
+  cl.on("Room.timeline", surEvenement);
+  return () => cl.off("Room.timeline", surEvenement);
+}

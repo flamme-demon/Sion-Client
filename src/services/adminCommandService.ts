@@ -131,3 +131,15 @@ export function parseUserList(response: string): string[] {
   }
   return userIds;
 }
+
+/**
+ * Compte annoncé par l'avis d'inscription que Continuwuity poste dans le
+ * salon d'administration (`admin_room_notices`, actif par défaut) :
+ * `New user "@x:serveur" registered on this server from IP …`. `null` pour
+ * tout autre message, ou s'il ne vient pas du bot du serveur.
+ */
+export function compteAnnonceInscrit(texte: string, expediteur: string | undefined): string | null {
+  if (!expediteur || !/^@(conduit|continuwuity):/.test(expediteur)) return null;
+  const m = texte.match(/New user "(@[^"\s]+:[^"\s]+)" registered on this server/);
+  return m ? m[1] : null;
+}
