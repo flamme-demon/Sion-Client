@@ -907,12 +907,17 @@ fn apply_afk_state(
     let Ok(data) = decode_json::<AfkPayload>(&raw) else {
         return false;
     };
-    upsert_participant(map, sender).is_deafened = data.deafened;
-    log::info!(
-        "[Sion][voix-native] AFK rx {} deafened={}",
-        sender,
-        data.deafened
-    );
+    let participant = upsert_participant(map, sender);
+    // Le battement revient toutes les ~15 s : seul un changement de
+    // sourdine mérite le journal.
+    if participant.is_deafened != data.deafened {
+        log::info!(
+            "[Sion][voix-native] AFK rx {} deafened={}",
+            sender,
+            data.deafened
+        );
+    }
+    participant.is_deafened = data.deafened;
     // On réémet systématiquement : l'expéditeur a pu rejoindre entre-temps
     // et le front a besoin d'un refresh complet.
     true

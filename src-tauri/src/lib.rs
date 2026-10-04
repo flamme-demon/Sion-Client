@@ -4279,9 +4279,14 @@ pub fn run() {
                     // qu'on ne peut pas relire ne sert à rien.
                     .max_file_size(20 * 1024 * 1024)
                     .rotation_strategy(tauri_plugin_log::RotationStrategy::KeepOne)
-                    .target(tauri_plugin_log::Target::new(
-                        tauri_plugin_log::TargetKind::Webview,
-                    ))
+                    // Chaque ligne envoyée à la webview y est un script à
+                    // exécuter : en appel, la voix en écrit plus d'une par
+                    // seconde (04/10). Les builds publiés n'y envoient que
+                    // les avertissements et erreurs ; le fichier garde tout.
+                    .target(
+                        tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Webview)
+                            .filter(|meta| cfg!(debug_assertions) || meta.level() <= log::Level::Warn),
+                    )
                     .build(),
             )?;
             // Android : ce que `SionNatif.initialiser` a noté avant que le journal

@@ -341,6 +341,14 @@ fn adm_playout_states(pactl_json: &str) -> Vec<AdmuiPlayoutState> {
 /// volume ni à l'état corké : démute seul (correctif prouvé), le reste
 /// est journalisé pour diagnostic.
 fn ensure_playout_unmuted() {
+    verifier_playout(None);
+}
+
+/// `dernier` : état déjà journalisé par le chien de garde. Il revérifie
+/// toutes les 5 s et réécrivait l'état même inchangé (720 lignes/h, l'essentiel
+/// du journal, 04/10) : il ne le journalise plus qu'à chaque changement. Le
+/// démute, lui, s'applique toujours.
+fn verifier_playout(dernier: Option<&mut String>) {
     #[cfg(target_os = "linux")]
     {
         let list = std::process::Command::new("pactl")
@@ -348,25 +356,46 @@ fn ensure_playout_unmuted() {
             .output();
         let Ok(list) = list else { return };
         let states = adm_playout_states(&String::from_utf8_lossy(&list.stdout));
+        let etat = if states.is_empty() {
+            "absent".to_owned()
+        } else {
+            states
+                .iter()
+                .map(|st| format!("{} {} {} {:?} {:?} {:?}", st.index, st.muted, st.corked, st.sink, st.media, st.volume_display))
+                .collect::<Vec<_>>()
+                .join(";")
+        };
+        let journaliser = match dernier {
+            Some(dernier) if *dernier == etat => false,
+            Some(dernier) => {
+                *dernier = etat;
+                true
+            }
+            None => true,
+        };
         if states.is_empty() {
-            log::warn!("[Sion][voix-native] aucun sink-input ADM (playout absent)");
+            if journaliser {
+                log::warn!("[Sion][voix-native] aucun sink-input ADM (playout absent)");
+            }
             return;
         }
         for st in states {
-            log::info!(
-                "[Sion][voix-native] playout ADM sink-input {}: muet={} corke={} sink={:?} media={:?} volume={:?}",
-                st.index,
-                st.muted,
-                st.corked,
-                st.sink,
-                st.media,
-                st.volume_display,
-            );
-            if st.corked {
-                log::warn!(
-                    "[Sion][voix-native] playout ADM {} corké (bouchonné côté système)",
-                    st.index
+            if journaliser {
+                log::info!(
+                    "[Sion][voix-native] playout ADM sink-input {}: muet={} corke={} sink={:?} media={:?} volume={:?}",
+                    st.index,
+                    st.muted,
+                    st.corked,
+                    st.sink,
+                    st.media,
+                    st.volume_display,
                 );
+                if st.corked {
+                    log::warn!(
+                        "[Sion][voix-native] playout ADM {} corké (bouchonné côté système)",
+                        st.index
+                    );
+                }
             }
             if !st.muted {
                 continue;
@@ -388,12 +417,14 @@ fn ensure_playout_unmuted() {
             }
         }
     }
+    #[cfg(not(target_os = "linux"))]
+    let _ = dernier;
 }
 
 /// Chien de garde playout : l'ADM se remute parfois EN COURS d'appel
 /// (démute au join insuffisant — silence alors que tout est vert).
-/// Tant que la session vit, on ré-impose démute toutes les 5 s (no-op
-/// loggé quand tout est déjà OK). Même motif stop que le meter local :
+/// Tant que la session vit, on ré-impose démute toutes les 5 s (journalisé
+/// seulement quand l'état change). Même motif stop que le meter local :
 /// fermer le canal stop (disconnect / remplacement moteur) tue le thread.
 fn start_playout_watchdog(
     deafened: &std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -402,12 +433,15 @@ fn start_playout_watchdog(
     let deafened = std::sync::Arc::clone(deafened);
     std::thread::Builder::new()
         .name("sion-voice-playout-watchdog".into())
-        .spawn(move || loop {
-            match stop_rx.recv_timeout(std::time::Duration::from_secs(5)) {
-                Ok(()) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                    if !deafened.load(std::sync::atomic::Ordering::Relaxed) {
-                        ensure_playout_unmuted();
+        .spawn(move || {
+            let mut dernier = String::new();
+            loop {
+                match stop_rx.recv_timeout(std::time::Duration::from_secs(5)) {
+                    Ok(()) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                        if !deafened.load(std::sync::atomic::Ordering::Relaxed) {
+                            verifier_playout(Some(&mut dernier));
+                        }
                     }
                 }
             }
@@ -3453,7 +3487,9 @@ impl LiveKitEngine {
                         // data-channel est le seul vecteur des états live
                         // (AFK, soundboard, curseurs) — un paquet manquant
                         // doit se voir, pas se deviner. Le curseur (60 Hz)
-                        // reste en debug pour ne pas noyer le log.
+                        // et le battement AFK (toutes les ~15 s par pair,
+                        // journalisé au changement d'état par `apply_afk_state`)
+                        // restent en debug pour ne pas noyer le log.
                         let sender = participant.as_ref().map(|p| p.identity().to_string());
                         if topic.as_deref() == Some(crate::voice_native::TOPIC_CURSOR)
                             || topic.as_deref() == Some(crate::voice_native::TOPIC_CURSOR_CLICK)
@@ -3461,6 +3497,13 @@ impl LiveKitEngine {
                             note_cursor_rx(now_ms());
                             log::debug!(
                                 "[Sion][voix-native] data reçu topic=sion-cursor de={:?} ({} o)",
+                                sender,
+                                payload.len()
+                            );
+                        } else if topic.as_deref() == Some(crate::voice_native::TOPIC_AFK) {
+                            log::debug!(
+                                "[Sion][voix-native] data reçu topic={:?} de={:?} ({} o)",
+                                topic,
                                 sender,
                                 payload.len()
                             );
