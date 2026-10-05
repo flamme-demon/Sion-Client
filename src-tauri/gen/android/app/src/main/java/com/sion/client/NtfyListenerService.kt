@@ -27,9 +27,33 @@ class NtfyListenerService : Service() {
         const val EXTRA_TOPIC_URL = "topic_url"
         private const val ATTENTE_MIN = 5_000L
         private const val ATTENTE_MAX = 120_000L
+        /** Verrou de réveil pendant une reconnexion : les attentes et délais
+         *  de connexion ne s'écoulent pas quand le téléphone dort. Renouvelé
+         *  à chaque essai, il ne survit pas à une reconnexion bloquée. */
+        private const val VERROU_RECONNEXION_MS = 3 * 60_000L
+        /** Le temps de traiter un avis reçu (notification comprise). */
+        private const val VERROU_AVIS_MS = 10_000L
 
         var isRunning = false
             private set
+
+        /** Dernier signe de vie de la connexion (avis ou keepalive, toutes
+         *  les 45 s), heure murale. */
+        @Volatile var dernierSignal = 0L
+            private set
+        @Volatile private var actif: NtfyListenerService? = null
+
+        /** Relève périodique : une connexion qui ne dit plus rien depuis
+         *  `silenceMax` est morte sans le savoir (téléphone endormi, son délai
+         *  de lecture ne s'écoule pas) : remplacée. */
+        fun relancerSiMuette(silenceMax: Long) {
+            val service = actif ?: return
+            if (dernierSignal != 0L && System.currentTimeMillis() - dernierSignal > silenceMax) {
+                android.util.Log.i("SionPush", "SSE : muette depuis ${(System.currentTimeMillis() - dernierSignal) / 1000} s, reconnexion")
+                service.connexion?.disconnect()
+                service.reveiller()
+            }
+        }
 
         fun start(context: Context, topicUrl: String) {
             context.getSharedPreferences("sion_push", Context.MODE_PRIVATE)
@@ -70,10 +94,16 @@ class NtfyListenerService : Service() {
         createNotificationChannels()
         isRunning = true
 
+        // Pas de verrou de réveil permanent : tenu du démarrage à l'arrêt du
+        // service (des jours), il empêchait le téléphone de dormir — 1 h 45
+        // d'affilée et 6 min de CPU en 2 h, appli fermée (05/10). Connecté,
+        // chaque paquet entrant réveille le téléphone ; le verrou n'est pris
+        // que le temps d'une reconnexion ou d'un avis.
         val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
         wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "sion:pushlistener").apply {
-            acquire()
+            setReferenceCounted(false)
         }
+        actif = this
         getSystemService(ConnectivityManager::class.java).registerDefaultNetworkCallback(surveillanceReseau)
     }
 
@@ -145,6 +175,7 @@ class NtfyListenerService : Service() {
     override fun onDestroy() {
         isRunning = false
         shouldRun = false
+        if (actif === this) actif = null
         generation++
         connexion?.disconnect()
         reveiller()
@@ -187,8 +218,27 @@ class NtfyListenerService : Service() {
     }
 
     private fun ecouter(topicUrl: String, gen: Int) {
+        try {
+            ecouterSansFin(topicUrl, gen)
+        } finally {
+            // Remplacée par une nouvelle écoute (nouveau sujet) : le verrou
+            // est désormais le sien. À l'arrêt, `onDestroy` le relâche.
+            if (gen == generation) lacherReveil()
+        }
+    }
+
+    private fun tenirReveil(ms: Long) {
+        wakeLock?.acquire(ms)
+    }
+
+    private fun lacherReveil() {
+        wakeLock?.let { if (it.isHeld) it.release() }
+    }
+
+    private fun ecouterSansFin(topicUrl: String, gen: Int) {
         var attente = ATTENTE_MIN
         while (shouldRun && gen == generation) {
+            tenirReveil(VERROU_RECONNEXION_MS)
             // Reprise après une coupure : ntfy renvoie d'abord ce qui est
             // arrivé depuis le dernier avis traité.
             val depuis = PushRecus.dernier(this)
@@ -202,17 +252,29 @@ class NtfyListenerService : Service() {
                 // ntfy envoie un « keepalive » toutes les 45 s : rien pendant
                 // 100 s, la connexion est morte (réseau changé, NAT oublié).
                 // Sans délai (0), l'écoute pouvait rester bloquée sur une
-                // connexion morte, sans plus jamais rien recevoir.
+                // connexion morte, sans plus jamais rien recevoir. Téléphone
+                // endormi, ce délai ne s'écoule pas : la relève périodique
+                // (`relancerSiMuette`) prend le relais.
                 conn.readTimeout = 100_000
                 connexion = conn
                 val code = conn.responseCode
                 if (code != 200) throw java.io.IOException("réponse $code")
                 android.util.Log.i("SionPush", "SSE : connecté")
                 attente = ATTENTE_MIN
+                dernierSignal = System.currentTimeMillis()
+                lacherReveil()
                 conn.inputStream.bufferedReader().use { lecteur ->
                     while (shouldRun && gen == generation) {
                         val ligne = lecteur.readLine() ?: break
-                        if (ligne.startsWith("data: ")) PushRecus.traiter(this, ligne.removePrefix("data: "))
+                        dernierSignal = System.currentTimeMillis()
+                        if (ligne.startsWith("data: ")) {
+                            tenirReveil(VERROU_AVIS_MS)
+                            try {
+                                PushRecus.traiter(this, ligne.removePrefix("data: "))
+                            } finally {
+                                lacherReveil()
+                            }
+                        }
                     }
                 }
                 if (gen == generation) android.util.Log.w("SionPush", "SSE : fermé par le serveur")
@@ -223,6 +285,17 @@ class NtfyListenerService : Service() {
                 conn?.disconnect()
             }
             if (!shouldRun || gen != generation) return
+            tenirReveil(VERROU_RECONNEXION_MS)
+            if (getSystemService(ConnectivityManager::class.java).activeNetwork == null) {
+                // Aucun réseau : inutile de garder le téléphone éveillé pour
+                // réessayer en boucle. Son retour réveille l'écoute
+                // (`surveillanceReseau`).
+                android.util.Log.i("SionPush", "SSE : pas de réseau, en attente de son retour")
+                lacherReveil()
+                attendre(30 * 60_000L)
+                attente = ATTENTE_MIN
+                continue
+            }
             // Réseau revenu pendant la connexion ou l'attente : on retente
             // tout de suite, et sans délai accumulé.
             attente = if (attendre(attente)) ATTENTE_MIN else minOf(attente * 2, ATTENTE_MAX)

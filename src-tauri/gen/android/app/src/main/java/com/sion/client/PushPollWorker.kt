@@ -26,6 +26,10 @@ class PushPollWorker(context: Context, params: WorkerParameters) : Worker(contex
             } catch (e: Exception) {
                 android.util.Log.w("SionPush", "relève : écoute non relancée (${e.javaClass.simpleName})")
             }
+        } else {
+            // Écoute en place mais muette (keepalive attendu toutes les 45 s) :
+            // téléphone endormi, son propre délai de lecture ne s'écoule pas.
+            NtfyListenerService.relancerSiMuette(3 * 60_000L)
         }
 
         val depuis = PushRecus.dernier(applicationContext) ?: "30s"
