@@ -26,6 +26,7 @@ import {
   envoyerMeme,
   listMemes,
   MEME_DUREE_MAX_MS,
+  modifierMeme,
   preparerMeme,
   supprimerMeme,
   type MemeAnalyse,
@@ -54,6 +55,153 @@ const EMOJI_ECART = 8;
 
 /** Supprimer un meme d'un autre : réservé aux modérateurs, comme ailleurs. */
 const NIVEAU_MODERATION = 50;
+
+/** Fond et carte des fenêtres d'import et d'édition. Le fond ne ferme PAS
+ *  la fenêtre : un clic à côté faisait perdre la source choisie et le
+ *  découpage (23/09). On ferme par « Annuler ». */
+const FOND: React.CSSProperties = {
+  position: 'fixed', inset: 0, background: 'var(--color-scrim, rgba(0,0,0,0.5))',
+  display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000,
+};
+const CARTE: React.CSSProperties = {
+  maxWidth: 'calc(100vw - 32px)', maxHeight: 'calc(100vh - 32px)', overflowY: 'auto',
+  display: 'flex', flexDirection: 'column', gap: 12, padding: 20, borderRadius: 16,
+  background: 'var(--color-surface-container-high)', color: 'var(--color-on-surface)',
+  boxShadow: '0 12px 40px rgba(0,0,0,0.45)',
+};
+const CHAMP: React.CSSProperties = {
+  width: '100%', boxSizing: 'border-box', padding: '8px 10px', borderRadius: 10,
+  border: '1px solid var(--color-outline-variant)', background: 'var(--color-surface-container)',
+  color: 'var(--color-on-surface)', fontSize: 13, fontFamily: 'inherit', outline: 'none',
+};
+const styleBouton = (principal: boolean, actif = true): React.CSSProperties => ({
+  padding: '8px 14px', borderRadius: 10, border: 'none', fontSize: 13, fontWeight: 600,
+  fontFamily: 'inherit', cursor: actif ? 'pointer' : 'not-allowed', opacity: actif ? 1 : 0.5,
+  background: principal ? 'var(--color-primary)' : 'var(--color-surface-container-highest)',
+  color: principal ? 'var(--color-on-primary)' : 'var(--color-on-surface)',
+});
+
+/** Nom et emoji d'un meme, à l'import comme à l'édition. */
+function ChampsNomEmoji({ nom, onNom, emoji, onEmoji }: {
+  nom: string;
+  onNom: (nom: string) => void;
+  emoji: string;
+  onEmoji: (emoji: string) => void;
+}) {
+  const { t } = useTranslation();
+  const boutonEmoji = useRef<HTMLButtonElement>(null);
+  const [selecteur, setSelecteur] = useState<{ left: number; top: number } | null>(null);
+
+  // Même principe que l'envoi d'un son : le sélecteur est en position fixe,
+  // sans quoi la fenêtre, qui défile, le rognerait. Il s'ouvre sous le
+  // bouton, ou au-dessus quand la place manque.
+  const placerSelecteur = useCallback(() => {
+    const r = boutonEmoji.current?.getBoundingClientRect();
+    if (!r) return;
+    const dessous = window.innerHeight - r.bottom - EMOJI_ECART >= EMOJI_PANNEAU_H;
+    setSelecteur({
+      left: Math.max(EMOJI_ECART, Math.min(r.left, window.innerWidth - EMOJI_PANNEAU_L - EMOJI_ECART)),
+      top: dessous ? r.bottom + EMOJI_ECART : Math.max(EMOJI_ECART, r.top - EMOJI_PANNEAU_H - EMOJI_ECART),
+    });
+  }, []);
+  const selecteurOuvert = selecteur !== null;
+  useEffect(() => {
+    if (!selecteurOuvert) return;
+    window.addEventListener("scroll", placerSelecteur, true);
+    window.addEventListener("resize", placerSelecteur);
+    return () => {
+      window.removeEventListener("scroll", placerSelecteur, true);
+      window.removeEventListener("resize", placerSelecteur);
+    };
+  }, [selecteurOuvert, placerSelecteur]);
+
+  return (
+    <div style={{ display: 'flex', gap: 8 }}>
+      <label style={{ flex: 1, fontSize: 12 }}>
+        {t("memeboard.name")}
+        <input value={nom} maxLength={40} onChange={(e) => onNom(e.target.value)} style={CHAMP} />
+      </label>
+      <div style={{ fontSize: 12, display: 'flex', flexDirection: 'column' }}>
+        {t("memeboard.emoji")}
+        <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+          <button
+            ref={boutonEmoji}
+            type="button"
+            onClick={() => (selecteurOuvert ? setSelecteur(null) : placerSelecteur())}
+            title={t("memeboard.emoji")}
+            style={{
+              width: 38, height: 36, borderRadius: 10, border: '1px solid var(--color-outline-variant)',
+              background: 'var(--color-surface-container)', color: 'var(--color-on-surface)',
+              fontSize: 20, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
+            }}
+          >{emoji || '🎬'}</button>
+          {emoji && (
+            <button
+              type="button"
+              onClick={() => onEmoji("")}
+              title={t("memeboard.emojiClear")}
+              style={{ border: 'none', background: 'transparent', color: 'var(--color-on-surface-variant)', cursor: 'pointer', fontSize: 16, padding: 2 }}
+            >×</button>
+          )}
+        </div>
+      </div>
+
+      {selecteur && (
+        <>
+          <div onClick={() => setSelecteur(null)} style={{ position: 'fixed', inset: 0, zIndex: 1001 }} />
+          <div style={{
+            position: 'fixed', left: selecteur.left, top: selecteur.top, width: EMOJI_PANNEAU_L, height: EMOJI_PANNEAU_H,
+            zIndex: 1002, display: 'flex', flexDirection: 'column', overflow: 'hidden', borderRadius: 12,
+            background: 'var(--color-surface-container-high)', border: '1px solid var(--color-outline-variant)',
+            boxShadow: '0 4px 12px rgba(0,0,0,0.25)',
+          }}>
+            <EmojiGridPanel emojiSize={32} onPick={(e) => { onEmoji(e); setSelecteur(null); }} />
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+/** Édition d'un meme du salon : son nom et son emoji. La vidéo ne bouge pas,
+ *  l'identifiant non plus — un `m.replace`, comme pour un son. */
+function MemeEditModal({ meme, onClose, onModifie }: { meme: MemeEntry; onClose: () => void; onModifie: () => void }) {
+  const { t } = useTranslation();
+  const [nom, setNom] = useState(meme.label);
+  const [emoji, setEmoji] = useState(meme.emoji ?? "");
+  const [occupe, setOccupe] = useState(false);
+  const [erreur, setErreur] = useState<string | null>(null);
+  const change = nom.trim() !== meme.label || (emoji || null) !== meme.emoji;
+  const pret = !!nom.trim() && change && !occupe;
+
+  const enregistrer = async () => {
+    setOccupe(true);
+    setErreur(null);
+    try {
+      await modifierMeme(meme.eventId, nom.trim(), emoji.trim() || null);
+      onModifie();
+    } catch (err) {
+      setErreur(`${t("memeboard.editError")} — ${String(err)}`);
+      setOccupe(false);
+    }
+  };
+
+  return (
+    <div style={FOND}>
+      <div style={{ ...CARTE, width: 420 }}>
+        <div style={{ fontSize: 16, fontWeight: 700 }}>{t("memeboard.editTitle")}</div>
+        <ChampsNomEmoji nom={nom} onNom={setNom} emoji={emoji} onEmoji={setEmoji} />
+        {erreur && <div style={{ fontSize: 12, color: 'var(--color-error)' }}>{erreur}</div>}
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+          <button type="button" style={styleBouton(false)} onClick={onClose}>{t("memeboard.cancel")}</button>
+          <button type="button" style={styleBouton(true, pret)} disabled={!pret} onClick={() => void enregistrer()}>
+            {occupe ? t("memeboard.saving") : t("memeboard.save")}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 /** Aperçu d'une tuile : la première image, figée dans un canvas, et le WebP
  *  animé seulement au survol. Tous animés, les aperçus (12 images/s) faisaient
@@ -137,6 +285,7 @@ export function MemeboardPanel() {
   const [roomId, setRoomId] = useState<string | null>(null);
   const [recherche, setRecherche] = useState("");
   const [import_, setImport] = useState(false);
+  const [aModifier, setAModifier] = useState<MemeEntry | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const actif = useSettingsStore((s) => s.memeboardEnabled);
   const setActif = useSettingsStore((s) => s.setMemeboardEnabled);
@@ -232,6 +381,10 @@ export function MemeboardPanel() {
   const moi = client?.getUserId() || currentUserId || "";
   const peutEnvoyer = roomId ? canSendMessage(roomId) : false;
   const peutModerer = roomId && moi ? getMemberPowerLevel(roomId, moi) >= NIVEAU_MODERATION : false;
+  // Mêmes droits que l'édition d'un son : quiconque peut écrire dans le
+  // salon. Pas de nouvelle fenêtre ici, donc possible aussi sur téléphone ;
+  // le cœur Rust seul sait éditer un meme.
+  const peutModifier = peutEnvoyer && moteurRust();
 
   const visibles = useMemo(() => {
     const q = recherche.trim().toLowerCase();
@@ -339,7 +492,7 @@ export function MemeboardPanel() {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, overflow: 'hidden' }}>
-      <style>{`.meme-tuile:hover .meme-suppr { display: flex !important; }`}</style>
+      <style>{`.meme-tuile:hover .meme-suppr, .meme-tuile:hover .meme-modif { display: flex !important; }`}</style>
       {compact ? (
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0, padding: '5px 10px', borderBottom: '1px solid var(--color-outline-variant)' }}>
           <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--color-on-surface)', flexShrink: 0 }}>{t("memeboard.title")}</span>
@@ -438,6 +591,19 @@ export function MemeboardPanel() {
                     }}
                   >×</button>
                 )}
+                {peutModifier && (
+                  <button
+                    type="button"
+                    className="meme-modif"
+                    onClick={(e) => { e.stopPropagation(); setAModifier(m); }}
+                    title={t("memeboard.edit")}
+                    style={{
+                      display: 'none', position: 'absolute', top: 10, left: 10, width: 24, height: 24,
+                      borderRadius: 999, border: 'none', cursor: 'pointer', alignItems: 'center', justifyContent: 'center',
+                      background: 'var(--color-secondary-container)', color: 'var(--color-on-secondary-container)', fontSize: 12, lineHeight: 1,
+                    }}
+                  >✎</button>
+                )}
               </div>
             );
           })}
@@ -448,6 +614,13 @@ export function MemeboardPanel() {
         <MemeImportModal
           onClose={() => setImport(false)}
           onEnvoye={() => { setImport(false); rafraichirRef.current(); }}
+        />
+      )}
+      {aModifier && (
+        <MemeEditModal
+          meme={aModifier}
+          onClose={() => setAModifier(null)}
+          onModifie={() => { setAModifier(null); rafraichirRef.current(); }}
         />
       )}
     </div>
@@ -478,32 +651,6 @@ function MemeImportModal({ onClose, onEnvoye }: { onClose: () => void; onEnvoye:
   const [erreur, setErreur] = useState<string | null>(null);
   const entree = useRef<HTMLInputElement>(null);
   const cle = `${source}:${region.debut}:${region.fin}`;
-  const boutonEmoji = useRef<HTMLButtonElement>(null);
-  const [selecteur, setSelecteur] = useState<{ left: number; top: number } | null>(null);
-
-  // Même principe que l'envoi d'un son : le sélecteur est en position fixe,
-  // sans quoi la fenêtre, qui défile, le rognerait. Il s'ouvre sous le
-  // bouton, ou au-dessus quand la place manque.
-  const placerSelecteur = useCallback(() => {
-    const r = boutonEmoji.current?.getBoundingClientRect();
-    if (!r) return;
-    const dessous = window.innerHeight - r.bottom - EMOJI_ECART >= EMOJI_PANNEAU_H;
-    setSelecteur({
-      left: Math.max(EMOJI_ECART, Math.min(r.left, window.innerWidth - EMOJI_PANNEAU_L - EMOJI_ECART)),
-      top: dessous ? r.bottom + EMOJI_ECART : Math.max(EMOJI_ECART, r.top - EMOJI_PANNEAU_H - EMOJI_ECART),
-    });
-  }, []);
-  const selecteurOuvert = selecteur !== null;
-  useEffect(() => {
-    if (!selecteurOuvert) return;
-    window.addEventListener("scroll", placerSelecteur, true);
-    window.addEventListener("resize", placerSelecteur);
-    return () => {
-      window.removeEventListener("scroll", placerSelecteur, true);
-      window.removeEventListener("resize", placerSelecteur);
-    };
-  }, [selecteurOuvert, placerSelecteur]);
-
   // Numéro du dernier fichier choisi : l'analyse d'un fichier remplacé entre-
   // temps ne doit rien écrire. Sans lui, un gros fichier choisi puis
   // remplacé par un petit finissait après lui, et l'on envoyait le premier
@@ -567,39 +714,17 @@ function MemeImportModal({ onClose, onEnvoye }: { onClose: () => void; onEnvoye:
     }
   };
 
-  const champ: React.CSSProperties = {
-    width: '100%', boxSizing: 'border-box', padding: '8px 10px', borderRadius: 10,
-    border: '1px solid var(--color-outline-variant)', background: 'var(--color-surface-container)',
-    color: 'var(--color-on-surface)', fontSize: 13, fontFamily: 'inherit', outline: 'none',
-  };
-  const bouton = (principal: boolean, actif = true): React.CSSProperties => ({
-    padding: '8px 14px', borderRadius: 10, border: 'none', fontSize: 13, fontWeight: 600,
-    fontFamily: 'inherit', cursor: actif ? 'pointer' : 'not-allowed', opacity: actif ? 1 : 0.5,
-    background: principal ? 'var(--color-primary)' : 'var(--color-surface-container-highest)',
-    color: principal ? 'var(--color-on-primary)' : 'var(--color-on-surface)',
-  });
   const pret = !!analyse && occupe === null;
 
-  // Le fond ne ferme PAS la fenêtre : un clic à côté faisait perdre la
-  // source choisie et le découpage (23/09). On ferme par « Annuler ».
   return (
-    <div
-      style={{ position: 'fixed', inset: 0, background: 'var(--color-scrim, rgba(0,0,0,0.5))', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}
-    >
-      <div
-        style={{
-          width: 560, maxWidth: 'calc(100vw - 32px)', maxHeight: 'calc(100vh - 32px)', overflowY: 'auto',
-          display: 'flex', flexDirection: 'column', gap: 12, padding: 20, borderRadius: 16,
-          background: 'var(--color-surface-container-high)', color: 'var(--color-on-surface)',
-          boxShadow: '0 12px 40px rgba(0,0,0,0.45)',
-        }}
-      >
+    <div style={FOND}>
+      <div style={{ ...CARTE, width: 560 }}>
         <div style={{ fontSize: 16, fontWeight: 700 }}>{t("memeboard.importTitle")}</div>
         <div style={{ fontSize: 12, color: 'var(--color-on-surface-variant)' }}>{t("memeboard.limits")}</div>
 
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', minWidth: 0 }}>
-          <button type="button" style={bouton(false)} onClick={() => entree.current?.click()}>{t("memeboard.fromFile")}</button>
-          <button type="button" style={bouton(false)} onClick={() => setLien(true)}>{t("memeboard.fromLink")}</button>
+          <button type="button" style={styleBouton(false)} onClick={() => entree.current?.click()}>{t("memeboard.fromFile")}</button>
+          <button type="button" style={styleBouton(false)} onClick={() => setLien(true)}>{t("memeboard.fromLink")}</button>
           {fichier && (
             <span style={{ fontSize: 12, color: 'var(--color-on-surface-variant)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
               {fichier.name}
@@ -614,38 +739,7 @@ function MemeImportModal({ onClose, onEnvoye }: { onClose: () => void; onEnvoye:
           />
         </div>
 
-        {fichier && (
-          <div style={{ display: 'flex', gap: 8 }}>
-            <label style={{ flex: 1, fontSize: 12 }}>
-              {t("memeboard.name")}
-              <input value={nom} maxLength={40} onChange={(e) => setNom(e.target.value)} style={champ} />
-            </label>
-            <div style={{ fontSize: 12, display: 'flex', flexDirection: 'column' }}>
-              {t("memeboard.emoji")}
-              <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
-                <button
-                  ref={boutonEmoji}
-                  type="button"
-                  onClick={() => (selecteurOuvert ? setSelecteur(null) : placerSelecteur())}
-                  title={t("memeboard.emoji")}
-                  style={{
-                    width: 38, height: 36, borderRadius: 10, border: '1px solid var(--color-outline-variant)',
-                    background: 'var(--color-surface-container)', color: 'var(--color-on-surface)',
-                    fontSize: 20, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  }}
-                >{emoji || '🎬'}</button>
-                {emoji && (
-                  <button
-                    type="button"
-                    onClick={() => setEmoji("")}
-                    title={t("memeboard.emojiClear")}
-                    style={{ border: 'none', background: 'transparent', color: 'var(--color-on-surface-variant)', cursor: 'pointer', fontSize: 16, padding: 2 }}
-                  >×</button>
-                )}
-              </div>
-            </div>
-          </div>
-        )}
+        {fichier && <ChampsNomEmoji nom={nom} onNom={setNom} emoji={emoji} onEmoji={setEmoji} />}
 
         {occupe === "analyse" && (
           <div style={{ fontSize: 12, color: 'var(--color-outline)' }}>{t("memeboard.analysing")}</div>
@@ -671,29 +765,15 @@ function MemeImportModal({ onClose, onEnvoye }: { onClose: () => void; onEnvoye:
         {erreur && <div style={{ fontSize: 12, color: 'var(--color-error)' }}>{erreur}</div>}
 
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-          <button type="button" style={bouton(false)} onClick={onClose}>{t("memeboard.cancel")}</button>
-          <button type="button" style={bouton(false, pret)} disabled={!pret} onClick={() => void tester()}>
+          <button type="button" style={styleBouton(false)} onClick={onClose}>{t("memeboard.cancel")}</button>
+          <button type="button" style={styleBouton(false, pret)} disabled={!pret} onClick={() => void tester()}>
             {occupe === "tester" ? t("memeboard.preparing") : t("memeboard.test")}
           </button>
-          <button type="button" style={bouton(true, pret)} disabled={!pret} onClick={() => void envoyer()}>
+          <button type="button" style={styleBouton(true, pret)} disabled={!pret} onClick={() => void envoyer()}>
             {occupe === "envoyer" ? t("memeboard.sending") : t("memeboard.send")}
           </button>
         </div>
       </div>
-
-      {selecteur && (
-        <>
-          <div onClick={() => setSelecteur(null)} style={{ position: 'fixed', inset: 0, zIndex: 1001 }} />
-          <div style={{
-            position: 'fixed', left: selecteur.left, top: selecteur.top, width: EMOJI_PANNEAU_L, height: EMOJI_PANNEAU_H,
-            zIndex: 1002, display: 'flex', flexDirection: 'column', overflow: 'hidden', borderRadius: 12,
-            background: 'var(--color-surface-container-high)', border: '1px solid var(--color-outline-variant)',
-            boxShadow: '0 4px 12px rgba(0,0,0,0.25)',
-          }}>
-            <EmojiGridPanel emojiSize={32} onPick={(e) => { setEmoji(e); setSelecteur(null); }} />
-          </div>
-        </>
-      )}
 
       {lien && (
         <div>

@@ -2,6 +2,8 @@
 //! `soundboardService.ts` (lecture des sons, surcouche des éditions, contenus
 //! d'ajout et d'édition), `memeboardService.ts` (lecture et contenu des
 //! memes) et des versions de client (`com.sion.client_version`).
+use std::collections::HashMap;
+
 use serde::Serialize;
 use serde_json::{json, Map, Value};
 
@@ -112,6 +114,24 @@ fn est_edition(contenu: &Value) -> bool {
     contenu.pointer("/m.relates_to/rel_type").and_then(Value::as_str) == Some("m.replace")
 }
 
+/// Dernière édition de chaque événement (strictement la plus récente, quel
+/// qu'en soit l'auteur, comme le JS) : les métadonnées `espace` de son
+/// `m.new_content`, s'il en a.
+fn dernieres_editions<'a>(evenements: &'a [EvenementBrut], espace: &str) -> HashMap<&'a str, (i64, Option<&'a Value>)> {
+    let mut editions: HashMap<&str, (i64, Option<&Value>)> = HashMap::new();
+    for ev in evenements {
+        if !est_edition(&ev.contenu) {
+            continue;
+        }
+        let Some(cible) = ev.contenu.pointer("/m.relates_to/event_id").and_then(Value::as_str) else { continue };
+        let Some(nouveau) = ev.contenu.get("m.new_content") else { continue };
+        if editions.get(cible).is_none_or(|(ts, _)| ev.ts > *ts) {
+            editions.insert(cible, (ev.ts, nouveau.get(espace)));
+        }
+    }
+    editions
+}
+
 // ── Soundboard ──────────────────────────────────────────────────────────────
 
 /// `parseSound`.
@@ -154,18 +174,7 @@ fn lire_son(ev: &EvenementBrut) -> Option<Son> {
 /// ancien. Un son supprimé (contenu vidé) disparaît de lui-même.
 pub(crate) fn sons(evenements: &[EvenementBrut]) -> Vec<Son> {
     let mut sons: Vec<Son> = evenements.iter().filter(|e| !est_edition(&e.contenu)).filter_map(lire_son).collect();
-    // Dernière édition de chaque son (strictement plus récente).
-    let mut editions: std::collections::HashMap<&str, (i64, Option<&Value>)> = std::collections::HashMap::new();
-    for ev in evenements {
-        if !est_edition(&ev.contenu) {
-            continue;
-        }
-        let Some(cible) = ev.contenu.pointer("/m.relates_to/event_id").and_then(Value::as_str) else { continue };
-        let Some(nouveau) = ev.contenu.get("m.new_content") else { continue };
-        if editions.get(cible).is_none_or(|(ts, _)| ev.ts > *ts) {
-            editions.insert(cible, (ev.ts, nouveau.get(ESPACE_SON)));
-        }
-    }
+    let editions = dernieres_editions(evenements, ESPACE_SON);
     for son in &mut sons {
         let Some((_, Some(meta))) = editions.get(son.event_id.as_str()) else { continue };
         let a = |cle: &str| meta.get(cle).is_some();
@@ -326,11 +335,47 @@ fn lire_meme(ev: &EvenementBrut) -> Option<Meme> {
     })
 }
 
-/// `listMemes`, du plus récent au plus ancien.
+/// `listMemes`, du plus récent au plus ancien, avec le nom et l'emoji de leur
+/// dernière édition — même règle que les sons.
 pub(crate) fn memes(evenements: &[EvenementBrut]) -> Vec<Meme> {
     let mut memes: Vec<Meme> = evenements.iter().filter_map(lire_meme).collect();
+    let editions = dernieres_editions(evenements, ESPACE_MEME);
+    for meme in &mut memes {
+        let Some((_, Some(meta))) = editions.get(meme.event_id.as_str()) else { continue };
+        if let Some(l) = texte(meta.get("label")) {
+            meme.label = l;
+        }
+        // `"emoji": null` présent = emoji retiré.
+        if meta.get("emoji").is_some() {
+            meme.emoji = texte(meta.get("emoji"));
+        }
+        if let Some(p) = nombre(meta.get("gain_pct")) {
+            meme.gain = (p / 100.0).clamp(0.0, GAIN_MAX_ENVOI);
+        }
+    }
     memes.sort_by_key(|m| std::cmp::Reverse(m.timestamp));
     memes
+}
+
+/// Contenu d'une édition de meme : le message d'origine repris tel quel
+/// (vidéo, aperçu, dimensions), seules ses métadonnées changent. Le volume en
+/// vigueur est reconduit : une édition remplace toutes les métadonnées.
+pub(crate) fn contenu_edition_meme(original: &EvenementBrut, actuel: &Meme, label: &str, emoji: Option<&str>) -> Value {
+    let mut base = original.contenu.clone();
+    if let Some(objet) = base.as_object_mut() {
+        objet.remove("m.relates_to");
+        objet.remove("m.new_content");
+    }
+    let label = etiquette(label);
+    base[ESPACE_MEME] = json!({
+        "label": if label.is_empty() { actuel.label.clone() } else { label },
+        "emoji": emoji.filter(|e| !e.is_empty()),
+        "gain_pct": (actuel.gain * 100.0).round() as i64,
+    });
+    let mut contenu = base.clone();
+    contenu["m.new_content"] = base;
+    contenu["m.relates_to"] = json!({ "rel_type": "m.replace", "event_id": original.id });
+    contenu
 }
 
 /// Ce que produit la préparation d'un meme (`MemePrepare`), téléversé.
@@ -503,6 +548,56 @@ mod tests {
         let t = MemeTeleverse { mxc: "mxc://hs/g", mime: "image/gif", taille: 9, largeur: 1, hauteur: 1, duree_ms: 800, apercu: None };
         let c = contenu_meme(&t, "x.gif", " ", None);
         assert_eq!((c["msgtype"].as_str(), c[ESPACE_MEME]["label"].as_str()), (Some("m.image"), Some("meme")));
+    }
+
+    fn meme_brut(id: &str, ts: i64, meta: Value) -> EvenementBrut {
+        ev(id, ts, json!({
+            "msgtype": "m.video", "body": "chat.mp4", "url": "mxc://hs/v",
+            "info": { "mimetype": "video/mp4", "size": 7, "duration": 3000, "w": 640, "h": 360, "thumbnail_url": "mxc://hs/a" },
+            ESPACE_MEME: meta,
+        }))
+    }
+
+    fn edition_meme(id: &str, ts: i64, cible: &str, meta: Value) -> EvenementBrut {
+        ev(id, ts, json!({ "m.relates_to": { "rel_type": "m.replace", "event_id": cible }, "m.new_content": { ESPACE_MEME: meta } }))
+    }
+
+    #[test]
+    fn la_derniere_edition_d_un_meme_s_applique() {
+        let orig = meme_brut("$m", 1, json!({ "label": "Chat", "emoji": "🐱", "gain_pct": 150 }));
+        let liste = memes(&[
+            orig,
+            edition_meme("$e2", 3, "$m", json!({ "label": "Chat final", "emoji": null })),
+            edition_meme("$e1", 2, "$m", json!({ "label": "Ancien", "emoji": "🙀" })),
+        ]);
+        // L'édition n'est pas un meme de plus.
+        assert_eq!(liste.len(), 1);
+        let m = &liste[0];
+        // Emoji retiré par `null` ; sans `gain_pct`, le volume reste.
+        assert_eq!((m.event_id.as_str(), m.label.as_str(), m.emoji.as_deref(), m.gain), ("$m", "Chat final", None, 1.5));
+        assert_eq!((m.mxc_url.as_str(), m.timestamp), ("mxc://hs/v", 1));
+        // Sans emoji dans l'édition, celui d'origine est gardé.
+        let liste = memes(&[meme_brut("$m", 1, json!({ "label": "Chat", "emoji": "🐱" })), edition_meme("$e", 2, "$m", json!({ "label": "Matou" }))]);
+        assert_eq!((liste[0].label.as_str(), liste[0].emoji.as_deref()), ("Matou", Some("🐱")));
+    }
+
+    #[test]
+    fn edition_d_un_meme_garde_la_video_et_le_volume() {
+        let orig = meme_brut("$m", 1, json!({ "label": "Chat", "emoji": "🐱", "gain_pct": 150 }));
+        let actuel = memes(std::slice::from_ref(&orig)).remove(0);
+        let c = contenu_edition_meme(&orig, &actuel, "  Matou  ", Some("😼"));
+        assert_eq!(c["m.relates_to"], json!({ "rel_type": "m.replace", "event_id": "$m" }));
+        let nouveau = &c["m.new_content"];
+        assert_eq!(nouveau[ESPACE_MEME], json!({ "label": "Matou", "emoji": "😼", "gain_pct": 150 }));
+        assert_eq!((nouveau["url"].as_str(), nouveau["msgtype"].as_str()), (Some("mxc://hs/v"), Some("m.video")));
+        assert_eq!(nouveau["info"]["thumbnail_url"], "mxc://hs/a");
+        assert!(nouveau.get("m.relates_to").is_none());
+        // Nom vide : l'actuel est gardé ; emoji vide : retiré.
+        let c = contenu_edition_meme(&orig, &actuel, " ", Some(""));
+        assert_eq!(c["m.new_content"][ESPACE_MEME], json!({ "label": "Chat", "emoji": null, "gain_pct": 150 }));
+        // L'édition relue donne bien le meme modifié.
+        let relu = memes(&[orig, ev("$e", 2, c)]);
+        assert_eq!((relu.len(), relu[0].label.as_str(), relu[0].emoji.as_deref()), (1, "Chat", None));
     }
 
     #[test]

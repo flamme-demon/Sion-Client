@@ -332,6 +332,12 @@ export async function envoyerMeme(prepare: MemePrepare, label: string, emoji: st
   return reponse.event_id as string;
 }
 
+/** Renomme un meme ou change son emoji — cœur Rust seulement. */
+export async function modifierMeme(eventId: string, label: string, emoji: string | null): Promise<void> {
+  if (!moteurRust()) throw new Error("Édition des memes réservée au moteur Rust");
+  return core.modifierMeme(eventId, label, emoji);
+}
+
 /** Supprime un meme (rédaction Matrix) — l'auteur, ou un modérateur. */
 export async function supprimerMeme(eventId: string): Promise<void> {
   if (moteurRust()) {

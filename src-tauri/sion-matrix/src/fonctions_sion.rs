@@ -354,6 +354,23 @@ impl CoeurMatrix {
         Ok(())
     }
 
+    /// Édition du nom et de l'emoji d'un meme : un `m.replace`, comme pour un
+    /// son, qui garde son identifiant (et la vidéo déjà en cache chez tous).
+    pub async fn modifier_meme(&self, event_id: &str, label: &str, emoji: Option<&str>) -> Resultat<()> {
+        Box::pin(self.modifier_meme_(event_id, label, emoji)).await
+    }
+
+    async fn modifier_meme_(&self, event_id: &str, label: &str, emoji: Option<&str>) -> Resultat<()> {
+        let salon = self.salon_soundboard_requis().await?;
+        let evenements = messages_filtres(&salon, &["m.room.message"]).await?;
+        let inconnu = || Erreur::Autre(format!("meme inconnu : {event_id}"));
+        let actuel = sion::memes(&evenements).into_iter().find(|m| m.event_id == event_id).ok_or_else(inconnu)?;
+        let original = evenements.iter().find(|e| e.id == event_id).ok_or_else(inconnu)?;
+        let contenu = sion::contenu_edition_meme(original, &actuel, label, emoji);
+        Box::pin(salon.send_raw("m.room.message", contenu).into_future()).await?;
+        Ok(())
+    }
+
     /// Suppression d'un son ou d'un meme (`deleteSound`, `supprimerMeme`).
     pub async fn supprimer_du_soundboard(&self, event_id: &str) -> Resultat<()> {
         let id = self.salon_soundboard().await?.ok_or_else(|| Erreur::Autre("Soundboard room not created".into()))?;

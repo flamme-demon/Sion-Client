@@ -503,6 +503,10 @@ export const modifierSon = (
   voix: { refText?: string | null; avatar?: string | null } = {},
 ) => invoquer<void>("matrix_modifier_son", { eventId, label, categorie, emoji, gain, changements: voix });
 
+/** Nom et emoji d'un meme (édition `m.replace`) ; `null` retire l'emoji. */
+export const modifierMeme = (eventId: string, label: string, emoji: string | null) =>
+  invoquer<void>("matrix_modifier_meme", { eventId, label, emoji });
+
 /** `deleteSound` / `supprimerMeme`. */
 export const supprimerDuSoundboard = (eventId: string) => invoquer<void>("matrix_supprimer_du_soundboard", { eventId });
 

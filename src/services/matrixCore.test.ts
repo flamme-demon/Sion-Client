@@ -4,7 +4,7 @@ const invoke = vi.fn();
 vi.mock("@tauri-apps/api/core", () => ({ invoke: (...args: unknown[]) => invoke(...args) }));
 
 import {
-  moteurMatrix, connecter, fils, chargerHistorique, urlLecture, creerSondage, envoyerFichier, requeteAdmin, ErreurApiAdmin, appareils, detailsSalon, amorcer, modifierSon,
+  moteurMatrix, connecter, fils, chargerHistorique, urlLecture, creerSondage, envoyerFichier, requeteAdmin, ErreurApiAdmin, appareils, detailsSalon, amorcer, modifierSon, modifierMeme,
 } from "./matrixCore";
 
 describe("matrixCore", () => {
@@ -106,6 +106,12 @@ describe("matrixCore", () => {
     expect(invoke).toHaveBeenLastCalledWith("matrix_modifier_son", {
       eventId: "$s", label: "Ouf", categorie: "A", emoji: null, gain: 1, changements: { refText: null },
     });
+  });
+
+  it("édition d'un meme : nom et emoji, null retire l'emoji", async () => {
+    invoke.mockResolvedValue(undefined);
+    await modifierMeme("$m", "Matou", null);
+    expect(invoke).toHaveBeenLastCalledWith("matrix_modifier_meme", { eventId: "$m", label: "Matou", emoji: null });
   });
 
   it("rend les appareils sous la forme de getDevices", async () => {

@@ -1065,6 +1065,11 @@ pub mod commandes {
     }
 
     #[tauri::command]
+    pub async fn matrix_modifier_meme(event_id: String, label: String, emoji: Option<String>) -> Result<(), String> {
+        coeur()?.modifier_meme(&event_id, &label, emoji.as_deref()).await.map_err(erreur)
+    }
+
+    #[tauri::command]
     pub async fn matrix_supprimer_du_soundboard(event_id: String) -> Result<(), String> {
         coeur()?.supprimer_du_soundboard(&event_id).await.map_err(erreur)
     }
@@ -1636,6 +1641,11 @@ pub mod commandes {
 
     #[tauri::command]
     pub async fn matrix_modifier_son(_event_id: String, _label: String, _categorie: String, _emoji: Option<String>, _gain: f64, _changements: ChangementsVoix) -> Result<(), String> {
+        Err(INACTIF.into())
+    }
+
+    #[tauri::command]
+    pub async fn matrix_modifier_meme(_event_id: String, _label: String, _emoji: Option<String>) -> Result<(), String> {
         Err(INACTIF.into())
     }
 
