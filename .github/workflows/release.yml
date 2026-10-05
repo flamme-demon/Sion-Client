@@ -73,10 +73,23 @@ jobs:
       # installation de bureau, rien à empaqueter dans l'AppImage.
       #
       # Codecs NVIDIA (NVENC/NVDEC) pour l'AppImage : le crate webrtc-sys
-      # compile son implémentation NVIDIA quand cuda.h est présent. Tolérant :
-      # si le paquet est indisponible, on construit sans (chemin logiciel).
-      - name: Install CUDA headers (optional, NVENC)
-        run: sudo apt-get install -y --no-install-recommends nvidia-cuda-toolkit || echo "CUDA indisponible — build sans NVENC"
+      # compile son implémentation NVIDIA quand cuda.h est présent, et n'a
+      # besoin de RIEN d'autre (libcuda et libnvcuvid sont dlopen'ées depuis
+      # le pilote chez l'utilisateur). D'où l'archive cudart de NVIDIA (1 Mo)
+      # au lieu du paquet nvidia-cuda-toolkit (1,5 Go par apt : 50 s pour la
+      # beta 6, 39 min pour la beta 7 selon le miroir). Même version que le
+      # paquet d'Ubuntu 24.04 (12.0.146) : même cuda.h, même binaire — en
+      # particulier pas de cuCtxCreate_v4, qui exigerait un pilote récent.
+      - name: En-têtes CUDA (NVENC)
+        run: |
+          ARCHIVE=cuda_cudart-linux-x86_64-12.0.146-archive.tar.xz
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/$ARCHIVE" \
+            "https://developer.download.nvidia.com/compute/cuda/redist/cuda_cudart/linux-x86_64/$ARCHIVE"
+          echo "af047b03ea261db8413fe61cd9c5d480e784b41f286d1cd31925eddaf8b2e84c  $RUNNER_TEMP/$ARCHIVE" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/cuda"
+          tar -xJf "$RUNNER_TEMP/$ARCHIVE" -C "$RUNNER_TEMP/cuda" --strip-components=1
+          test -f "$RUNNER_TEMP/cuda/include/cuda.h"
+          echo "CUDA_HOME=$RUNNER_TEMP/cuda" >> "$GITHUB_ENV"
 
       - uses: oven-sh/setup-bun@v2
         with:
@@ -131,17 +144,14 @@ jobs:
           # webrtc-sys vendored : libc++ hermétique → clang >= 21.
           CC: clang-21
           CXX: clang++-21
-          # Codecs NVIDIA (NVENC/NVDEC) : le crate compile son implémentation
-          # NVIDIA quand cuda.h existe (paquet nvidia-cuda-toolkit → headers
-          # dans /usr/include). Rien n'est embarqué dans l'AppImage : libcuda
-          # et libnvcuvid sont dlopen'ées depuis le pilote chez l'utilisateur.
-          CUDA_HOME: /usr
+          # CUDA_HOME : posé par l'étape « En-têtes CUDA » ($GITHUB_ENV). Ne
+          # pas le redéfinir ici, une variable d'étape l'écraserait.
 
       # Preuve embarquée, à chaque release : le code NVENC/NVDEC (LiveKit
-      # vendored) doit être compilé dans le binaire. L'installation CUDA est
-      # volontairement tolérante — sans ce contrôle, un runner sans toolkit
-      # produirait une release silencieusement en logiciel. Calibration
-      # mesurée : 0 marqueur sans CUDA, ~51 avec.
+      # vendored) doit être compilé dans le binaire. Sans ce contrôle, un
+      # cuda.h introuvable donnerait une release silencieusement en logiciel
+      # (webrtc-sys se contente d'un avertissement). Calibration mesurée :
+      # 0 marqueur sans CUDA, ~51 avec.
       - name: Verify NVIDIA codecs in the AppImage
         run: |
           APPIMAGE=$(ls dist-appimage/*.AppImage | head -1)
@@ -220,15 +230,33 @@ jobs:
           Write-Output ("ffmpeg embarqué : {0:N0} Mo" -f ($total/1MB))
 
       # Codecs NVIDIA (NVENC/NVDEC) : même logique que Linux — le crate
-      # webrtc-sys compile son implémentation NVIDIA quand cuda.h est présent.
-      # Tolérant à l'installation ; c'est l'étape de vérification sur le
-      # binaire compilé qui fait foi.
-      - name: Install CUDA toolkit (optional, NVENC)
+      # webrtc-sys compile son implémentation NVIDIA quand cuda.h est présent,
+      # et lie cuda.lib (bibliothèque d'import de nvcuda.dll, le pilote). Ces
+      # deux fichiers sont dans l'archive cudart de NVIDIA (2 Mo) : plus de
+      # `choco install cuda`, qui installait le toolkit entier (20 min). Même
+      # version que le toolkit 13.3.1 que choco installait jusqu'à la beta 7,
+      # mais épinglée : choco prenait la dernière, sans prévenir.
+      - name: En-têtes CUDA (NVENC)
         shell: pwsh
         run: |
-          choco install cuda --no-progress -y
-          $cuda = [Environment]::GetEnvironmentVariable("CUDA_PATH", "Machine")
-          Write-Host "CUDA_PATH (machine) = $cuda"
+          $ProgressPreference = "SilentlyContinue"
+          $archive = "cuda_cudart-windows-x86_64-13.3.29-archive.zip"
+          $zip = "$env:RUNNER_TEMP\$archive"
+          Invoke-WebRequest -Uri "https://developer.download.nvidia.com/compute/cuda/redist/cuda_cudart/windows-x86_64/$archive" -OutFile $zip -UseBasicParsing
+          $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
+          if ($hash -ne "1feb7dd266813ffe8dbc24e115183a5ac35a4795c8d34aca0df85ab616b64d9c") {
+            Write-Error "empreinte inattendue de $archive : $hash"
+            exit 1
+          }
+          Expand-Archive -Path $zip -DestinationPath "$env:RUNNER_TEMP\cuda" -Force
+          $racine = (Get-ChildItem "$env:RUNNER_TEMP\cuda" -Directory | Select-Object -First 1).FullName
+          foreach ($f in @("include\cuda.h", "lib\x64\cuda.lib")) {
+            if (-not (Test-Path "$racine\$f")) { Write-Error "$f absent de $archive"; exit 1 }
+          }
+          # Le build.rs de webrtc-sys cherche précisément
+          # `<CUDA_HOME>\include\cuda.h` et `<CUDA_HOME>\lib\x64\cuda.lib`.
+          "CUDA_HOME=$racine" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "CUDA_HOME = $racine"
 
       # CRT/BLAS build knobs for the transcribe.cpp dep live in
       # src-tauri/.cargo/config.toml (committed), so local and CI builds agree.
@@ -245,27 +273,8 @@ jobs:
           # Baked into the JS bundle by Vite (GIF search — Klipy).
           VITE_KLIPY_API_KEY: ${{ secrets.KLIPY_API_KEY }}
         run: |
-          # Le build.rs de webrtc-sys cherche précisément
-          # `<CUDA_HOME>\include\cuda.h`. Plutôt que de supposer où CUDA 13
-          # range ses en-têtes (trois builds Windows sont sortis sans NVENC
-          # pour cette raison), on CHERCHE cuda.h et on dérive CUDA_HOME du
-          # fichier réellement trouvé.
-          $root = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA"
-          $hit = $null
-          if (Test-Path $root) {
-            $hit = Get-ChildItem $root -Recurse -Filter cuda.h -ErrorAction SilentlyContinue |
-              Sort-Object FullName | Select-Object -First 1
-          }
-          if ($hit) {
-            # Parent du dossier qui contient cuda.h → `<CUDA_HOME>\include\cuda.h` vrai.
-            $env:CUDA_HOME = $hit.Directory.Parent.FullName
-            Write-Host "cuda.h trouvé : $($hit.FullName)"
-            Write-Host "CUDA_HOME dérivé : $env:CUDA_HOME"
-          } else {
-            Write-Host "cuda.h INTROUVABLE sous $root — l'arborescence :"
-            if (Test-Path $root) { Get-ChildItem $root -Recurse -Depth 2 -ErrorAction SilentlyContinue | Select-Object -First 40 FullName }
-            Write-Host "→ build sans NVENC"
-          }
+          # CUDA_HOME vient de l'étape « En-têtes CUDA » ($GITHUB_ENV).
+          Write-Host "CUDA_HOME = $env:CUDA_HOME"
           bun run tauri build --no-bundle
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
