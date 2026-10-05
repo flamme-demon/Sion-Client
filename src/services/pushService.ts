@@ -48,6 +48,32 @@ export async function syncPushRules(_mode: NotificationMode): Promise<void> {
 // Note: server-side push rules for E2EE rooms are unreliable with Continuwuity.
 // Notification filtering is handled client-side in NtfyListenerService (Android).
 
+/** Salon d'administration déjà rendu muet côté serveur pendant cette session. */
+let salonAdminMuet: string | null = null;
+
+/**
+ * Le salon d'administration ne pousse plus vers les téléphones : commandes
+ * des autres admins et réponses du bot y arrivaient par dizaines par heure,
+ * et chaque push réveillait la radio pour rien — 272 en 35 h sur un
+ * téléphone en mode « mentions », qui les jetait (05/10). Règle de salon :
+ * elle ne regarde que l'identifiant, fiable même chiffré. Les non-lus de
+ * Sion sont calculés côté client et n'en dépendent pas. Les règles valent
+ * pour tout le compte : un seul appareil suffit à la poser.
+ */
+export async function couperPushSalonAdmin(salon: string): Promise<void> {
+  if (salonAdminMuet === salon) return;
+  const corps = { actions: [] };
+  if (moteurRust()) {
+    const { definirReglePush } = await import("./matrixCore");
+    await definirReglePush("global", "room", salon, corps);
+  } else {
+    const client = getMatrixClient();
+    if (!client) return;
+    await client.addPushRule("global", PushRuleKind.RoomSpecific, salon, corps);
+  }
+  salonAdminMuet = salon;
+}
+
 /**
  * Sujet ntfy de cet appareil : 128 bits tirés au hasard à sa première
  * déclaration, puis gardés tant que le compte et l'appareil restent les

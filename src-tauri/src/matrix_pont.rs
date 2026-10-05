@@ -1135,6 +1135,11 @@ pub mod commandes {
         coeur()?.supprimer_regle_push(&portee, &genre, &regle).await.map_err(erreur)
     }
 
+    #[tauri::command]
+    pub async fn matrix_definir_regle_push(portee: String, genre: String, regle: String, corps: serde_json::Value) -> Result<(), String> {
+        coeur()?.definir_regle_push(&portee, &genre, &regle, corps).await.map_err(erreur)
+    }
+
     // ── Voix (étape 3) ───────────────────────────────────────────────────
 
     /// Rejoint l'appel d'un salon : adresse et jeton du serveur média, salon
@@ -1697,6 +1702,11 @@ pub mod commandes {
 
     #[tauri::command]
     pub async fn matrix_supprimer_regle_push(_portee: String, _genre: String, _regle: String) -> Result<(), String> {
+        Err(INACTIF.into())
+    }
+
+    #[tauri::command]
+    pub async fn matrix_definir_regle_push(_portee: String, _genre: String, _regle: String, _corps: serde_json::Value) -> Result<(), String> {
         Err(INACTIF.into())
     }
 

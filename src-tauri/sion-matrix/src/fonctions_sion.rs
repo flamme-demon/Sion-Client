@@ -565,6 +565,17 @@ impl CoeurMatrix {
         Box::pin(self.requete_client("DELETE", &format!("/_matrix/client/v3/pushrules/{portee}/{genre}/{regle}"), None)).await
     }
 
+    /// Pose une règle de notification (`addPushRule`). `regle` peut être un
+    /// identifiant de salon (genre `room`) : il est encodé dans l'adresse.
+    pub async fn definir_regle_push(&self, portee: &str, genre: &str, regle: &str, corps: Value) -> Resultat<()> {
+        let segment = |s: &str| s.bytes().all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b));
+        if !segment(portee) || !segment(genre) || regle.is_empty() || regle.len() > 255 {
+            return Err(Erreur::Autre("règle de notification invalide".into()));
+        }
+        let chemin = format!("/_matrix/client/v3/pushrules/{portee}/{genre}/{}", segment_encode(regle));
+        Box::pin(self.requete_client("PUT", &chemin, Some(corps))).await
+    }
+
     /// Requête authentifiée à l'API client ; une erreur du serveur remonte.
     async fn requete_client(&self, methode: &str, chemin: &str, corps: Option<Value>) -> Resultat<()> {
         let client = self.client().await.ok_or(Erreur::PasDeSession)?;
@@ -578,9 +589,23 @@ impl CoeurMatrix {
     }
 }
 
+/// Un segment d'adresse : tout sauf les caractères non réservés est encodé
+/// (`!salon:serveur` → `%21salon%3Aserveur`).
+fn segment_encode(s: &str) -> String {
+    s.bytes()
+        .map(|b| if b.is_ascii_alphanumeric() || b"-._~".contains(&b) { (b as char).to_string() } else { format!("%{b:02X}") })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn identifiant_de_salon_encode_dans_l_adresse() {
+        assert_eq!(segment_encode("!DgXv:sionchat.fr"), "%21DgXv%3Asionchat.fr");
+        assert_eq!(segment_encode("fr.sionchat_ok-1~"), "fr.sionchat_ok-1~");
+    }
 
     #[test]
     fn evenement_sion_au_format_de_l_interface() {

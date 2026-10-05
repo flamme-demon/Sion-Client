@@ -561,6 +561,10 @@ export const definirPousseur = (pousseur: Record<string, unknown>) => invoquer<v
 export const supprimerReglePush = (portee: string, genre: string, regle: string) =>
   invoquer<void>("matrix_supprimer_regle_push", { portee, genre, regle });
 
+/** `client.addPushRule` : `regle` peut être un identifiant de salon. */
+export const definirReglePush = (portee: string, genre: string, regle: string, corps: Record<string, unknown>) =>
+  invoquer<void>("matrix_definir_regle_push", { portee, genre, regle, corps });
+
 // ── Voix (étape 3) ─────────────────────────────────────────────────────────
 // Le cœur tient l'appartenance à l'appel et les clés des médias, qu'il remet
 // lui-même au moteur vocal natif : l'interface ne voit que l'adresse et le

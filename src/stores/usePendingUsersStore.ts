@@ -176,6 +176,12 @@ export const usePendingUsersStore = create<PendingUsersState>((set, get) => ({
   },
 
   fullDiscover: async () => {
+    const salonAdmin = findAdminRoom();
+    if (salonAdmin) {
+      void import("../services/pushService")
+        .then(({ couperPushSalonAdmin }) => couperPushSalonAdmin(salonAdmin))
+        .catch((err) => console.warn("[Sion] Salon d'administration : push non coupé :", err));
+    }
     const localUsers = discoverLocalUsers();
     try {
       const response = await sendAdminCommand("!admin users list-users");

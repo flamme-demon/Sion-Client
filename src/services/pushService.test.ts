@@ -68,3 +68,33 @@ describe("sujet ntfy de l'appareil", () => {
     expect(sujetMasque(url)).toBe("https://push.sionchat.fr/sion_0123…");
   });
 });
+
+describe("salon d'administration sans push", () => {
+  beforeEach(() => vi.resetModules());
+  afterEach(() => {
+    vi.resetModules();
+    vi.doUnmock("./moteur");
+    vi.doUnmock("./matrixCore");
+  });
+
+  it("pose une règle de salon muette, une seule fois par session (moteur Rust)", async () => {
+    const definirReglePush = vi.fn().mockResolvedValue(undefined);
+    vi.doMock("./moteur", () => ({ moteurRust: () => true }));
+    vi.doMock("./matrixCore", () => ({ definirReglePush }));
+    const { couperPushSalonAdmin } = await import("./pushService");
+    await couperPushSalonAdmin("!admin:sionchat.fr");
+    await couperPushSalonAdmin("!admin:sionchat.fr");
+    expect(definirReglePush).toHaveBeenCalledTimes(1);
+    expect(definirReglePush).toHaveBeenCalledWith("global", "room", "!admin:sionchat.fr", { actions: [] });
+  });
+
+  it("réessaie à l'appel suivant si la pose a échoué", async () => {
+    const definirReglePush = vi.fn().mockRejectedValueOnce(new Error("hors ligne")).mockResolvedValue(undefined);
+    vi.doMock("./moteur", () => ({ moteurRust: () => true }));
+    vi.doMock("./matrixCore", () => ({ definirReglePush }));
+    const { couperPushSalonAdmin } = await import("./pushService");
+    await expect(couperPushSalonAdmin("!admin:sionchat.fr")).rejects.toThrow("hors ligne");
+    await couperPushSalonAdmin("!admin:sionchat.fr");
+    expect(definirReglePush).toHaveBeenCalledTimes(2);
+  });
+});
