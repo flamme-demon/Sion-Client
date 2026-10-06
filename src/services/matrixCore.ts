@@ -150,6 +150,11 @@ export async function urlLecture(url: string): Promise<string | null> {
   return port ? `http://127.0.0.1:${port}/matrix/${cle}` : null;
 }
 
+export const retenirMediaLecture = (url: string) =>
+  invoquer<number | null>("media_cache_retenir", { url });
+export const libererMediaLecture = (id: number) =>
+  invoquer<void>("media_cache_liberer", { id });
+
 // ── Envoi (T3) ──────────────────────────────────────────────────────────────
 
 /** Message texte, mentions `@Nom` reconnues comme le JS (`sendTextMessage`). */

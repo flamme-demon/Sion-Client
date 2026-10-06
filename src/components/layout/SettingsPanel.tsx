@@ -23,6 +23,7 @@ import { ProfilModal } from "./ProfilModal";
 import type { Theme } from "../../themes/types";
 import { UpdateSettings } from "./UpdateSettings";
 import { SUR_ANDROID } from "../../utils/plateforme";
+import { purgerCachesApplication } from "../../services/purgeCache";
 
 
 type SettingsTab = "general" | "audio" | "channel" | "shortcuts" | "advanced";
@@ -38,6 +39,8 @@ export function SettingsPanel() {
   const [recordingMute, setRecordingMute] = useState(false);
   const [recordingDeafen, setRecordingDeafen] = useState(false);
   const [shortcutError, setShortcutError] = useState<string | null>(null);
+  const [purgingCache, setPurgingCache] = useState(false);
+  const [purgeCacheError, setPurgeCacheError] = useState(false);
 
   // --- Apparence (thèmes) ---
   const themeId = useThemeStore((s) => s.themeId);
@@ -1036,30 +1039,18 @@ export function SettingsPanel() {
             </div>
 
             <button
-              onClick={() => {
-                if (window.confirm(t("settings.purgeCacheConfirm"))) {
-                  const creds = localStorage.getItem("sion_auth_credentials");
-                  const deviceId = localStorage.getItem("sion_device_id");
-                  const userId = localStorage.getItem("sion_user_id");
-                  localStorage.clear();
-                  if (creds) localStorage.setItem("sion_auth_credentials", creds);
-                  if (deviceId) localStorage.setItem("sion_device_id", deviceId);
-                  if (userId) localStorage.setItem("sion_user_id", userId);
-                  indexedDB.databases().then((dbs) => {
-                    for (const db of dbs) {
-                      if (!db.name) continue;
-                      // NEVER wipe the E2EE crypto store here: this purge keeps the
-                      // same device_id, so deleting the crypto store would make Rust
-                      // crypto regenerate fresh identity keys under that same id —
-                      // un-verifying the device, dropping every received room key, and
-                      // breaking decryption for us AND everyone who cached our old
-                      // keys. Only the regenerable sync/app caches get cleared.
-                      // (Resetting crypto is done separately, on device mismatch /
-                      // logout, via clearCryptoStores().)
-                      if (db.name.includes("crypto") || db.name.includes("rust-sdk")) continue;
-                      indexedDB.deleteDatabase(db.name);
-                    }
-                  }).finally(() => { window.location.reload(); });
+              disabled={purgingCache}
+              onClick={async () => {
+                if (purgingCache || !window.confirm(t("settings.purgeCacheConfirm"))) return;
+                setPurgingCache(true);
+                setPurgeCacheError(false);
+                try {
+                  await purgerCachesApplication();
+                  window.location.reload();
+                } catch {
+                  setPurgeCacheError(true);
+                } finally {
+                  setPurgingCache(false);
                 }
               }}
               style={{
@@ -1068,8 +1059,9 @@ export function SettingsPanel() {
                 background: 'var(--color-error-container)', color: 'var(--color-error)', transition: 'all 200ms',
               }}
             >
-              {t("settings.purgeCache")}
+              {t(purgingCache ? "settings.purgingCache" : "settings.purgeCache")}
             </button>
+            {purgeCacheError && <div role="alert" style={{ marginTop: 8, fontSize: 12, color: 'var(--color-error)' }}>{t("settings.purgeCacheFailed")}</div>}
             <div style={{ marginTop: 24, textAlign: 'center', fontSize: 11, color: 'var(--color-outline)' }}>
               Sion Client v{__APP_VERSION__}
             </div>

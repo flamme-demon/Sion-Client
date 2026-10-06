@@ -23,6 +23,7 @@ class MainActivity : TauriActivity() {
 
   private var voiceActionReceiver: BroadcastReceiver? = null
   private var cachedWebView: WebView? = null
+  private var mediaChromeClient: MediaWebChromeClient? = null
   /** Appels à rejouer dans la page dès qu'elle est prête (toucher d'une
    *  notification, réponse tapée dedans). */
   private val enAttente = ArrayList<String>()
@@ -40,6 +41,16 @@ class MainActivity : TauriActivity() {
     cachedWebView = webView
     webView.addJavascriptInterface(VoiceServiceBridge(this), "__SION__")
     webView.settings.mediaPlaybackRequiresUserGesture = false
+    // Wry pose son WebChromeClient APRÈS ce crochet : l'envelopper au tour
+    // suivant, sinon il écraserait notre client.
+    webView.post {
+      webView.webChromeClient?.let { original ->
+        mediaChromeClient = MediaWebChromeClient(this, webView, original).also {
+          webView.webChromeClient = it
+          onBackPressedDispatcher.addCallback(this, it.backCallback)
+        }
+      }
+    }
   }
 
   override fun onCreate(savedInstanceState: Bundle?) {
@@ -243,6 +254,7 @@ class MainActivity : TauriActivity() {
   }
 
   override fun onDestroy() {
+    mediaChromeClient?.onHideCustomView()
     vivante = false
     auPremierPlan = false
     voiceActionReceiver?.let { unregisterReceiver(it) }

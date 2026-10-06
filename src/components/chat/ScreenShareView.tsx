@@ -9,6 +9,7 @@ import { useTranslation } from "react-i18next";
 import { SpeakerIcon, ScreenIcon, EyeIcon, EyeOffIcon } from "../icons";
 import { useIsMobile } from "../../hooks/useIsMobile";
 import { useVideoMasqueeStore } from "../../stores/useVideoMasqueeStore";
+import { attachTouchSharePointer } from "../../services/touchSharePointer";
 
 /** Partage affichable : les pixels arrivent par le WebSocket binaire natif,
  *  il n'y a plus d'objet piste LiveKit dans la webview. */
@@ -30,6 +31,15 @@ function screenShareAudioState(identity: string): { muted: boolean; volume: numb
  *  mosaïque) n'est pas une surface de l'app — les pixels média ne sont pas
  *  thémés. Marquée `theme-exempt` pour le garde anti-couleurs-en-dur. */
 const LETTERBOX_BLACK = "#000"; // theme-exempt — letterbox média
+
+/** Le cadre garde les contrôles et les calques de pointage en plein écran. */
+function toggleShareFullscreen(canvas: HTMLCanvasElement) {
+  const frame = canvas.parentElement;
+  if (!frame) return;
+  const action = document.fullscreenElement === frame
+    ? document.exitFullscreen() : frame.requestFullscreen();
+  void action.catch((err) => console.warn("[Sion] requestFullscreen failed:", err));
+}
 
 /** Speaker with an X — the muted counterpart to the maison SpeakerIcon,
  *  matched in stroke/size so the toggle doesn't jump. */
@@ -240,6 +250,8 @@ async function decodeNativeJpeg(bytes: ArrayBuffer): Promise<{ source: CanvasIma
  *  noires centrées) — l'équivalent d'`object-fit: contain` en 2D, avec la
  *  même astuce de netteté que la vue simple (surface au gabarit affiché). */
 async function paintFrameToCanvas(canvas: HTMLCanvasElement, frame: VoiceNativeBinaryFrame): Promise<void> {
+  canvas.dataset.nativeVideoWidth = String(frame.width);
+  canvas.dataset.nativeVideoHeight = String(frame.height);
   const bytes = frame.jpeg.buffer.slice(
     frame.jpeg.byteOffset,
     frame.jpeg.byteOffset + frame.jpeg.byteLength,
@@ -498,7 +510,14 @@ function ShareTile({ identity, name, hasAudio, muted, volume, subscribe, getLate
     };
     canvas.addEventListener("mousemove", onMove);
     canvas.addEventListener("mouseleave", onLeave);
+    const detachTouch = attachTouchSharePointer(canvas, {
+      target: identity,
+      contentRect: () => tileContentRect(canvas, lastFrameRef.current),
+      markPointed,
+      suppressClick: false, // Un appui choisit aussi cette tuile.
+    });
     return () => {
+      detachTouch();
       canvas.removeEventListener("mousemove", onMove);
       canvas.removeEventListener("mouseleave", onLeave);
       clearHide();
@@ -570,7 +589,7 @@ function ShareTile({ identity, name, hasAudio, muted, volume, subscribe, getLate
         )}
         {headerExtra}
       </div>
-      <div style={{ position: 'relative', width: '100%', ...(fill ? { flex: 1, minHeight: 0 } : {}) }}>
+      <div className="share-tile-media" style={{ position: 'relative', width: '100%', ...(fill ? { flex: 1, minHeight: 0 } : {}) }}>
         <canvas
           ref={canvasRef}
           aria-label={name}
@@ -578,18 +597,27 @@ function ShareTile({ identity, name, hasAudio, muted, volume, subscribe, getLate
             e.stopPropagation();
             const c = canvasRef.current;
             if (!c) return;
-            if (document.fullscreenElement === c) document.exitFullscreen().catch(() => { /* ignore */ });
-            else c.requestFullscreen().catch(() => { /* ignore */ });
+            toggleShareFullscreen(c);
           }}
           style={fill
-            ? { width: '100%', height: '100%', background: LETTERBOX_BLACK, display: 'block' }
-            : { width: '100%', aspectRatio: '16 / 9', background: LETTERBOX_BLACK, display: 'block' }}
+            ? { width: '100%', height: '100%', background: LETTERBOX_BLACK, display: 'block', touchAction: 'none' }
+            : { width: '100%', aspectRatio: '16 / 9', background: LETTERBOX_BLACK, display: 'block', touchAction: 'none' }}
         />
         {!nativeSurfaceEnabled && (
           <div ref={cursorBoxRef} style={{ position: 'absolute', left: 0, top: 0, width: '100%', height: '100%', pointerEvents: 'none', overflow: 'hidden' }}>
             <div ref={cursorLayerRef} style={{ position: 'absolute', inset: 0 }} />
           </div>
         )}
+        <button
+          type="button"
+          className="ss-expand absolute flex items-center justify-center rounded-full"
+          title={t("screenShare.fullscreen", { defaultValue: "Plein écran" })}
+          aria-label={t("screenShare.fullscreen", { defaultValue: "Plein écran" })}
+          onClick={(e) => { e.stopPropagation(); if (canvasRef.current) toggleShareFullscreen(canvasRef.current); }}
+          style={{ right: 10, bottom: 10, width: 38, height: 38, border: 'none', background: 'rgba(0,0,0,0.5)', color: 'white', zIndex: 200 }}
+        >
+          <ExpandIcon />
+        </button>
       </div>
     </div>
   );
@@ -768,7 +796,19 @@ function ShareViewStyles() {
          zone, toujours visible au clavier et sur tactile (pas de hover). */
       .ss-expand { opacity: 0; transition: opacity 160ms ease; }
       .screen-share-viewer:hover .ss-expand,
+      .share-tile-media:hover .ss-expand,
       .ss-expand:focus-visible { opacity: 1; }
+      .screen-share-viewer:fullscreen, .share-tile-media:fullscreen {
+        width: 100vw !important; height: 100vh !important;
+        max-height: none !important; display: flex; align-items: center;
+        justify-content: center; background: ${LETTERBOX_BLACK};
+      }
+      .screen-share-viewer:fullscreen > canvas, .share-tile-media:fullscreen > canvas {
+        width: 100% !important; height: 100% !important;
+        max-width: none !important; max-height: none !important;
+        object-fit: contain; --sion-share-max-height: 100vh !important;
+      }
+      :fullscreen .ss-expand { opacity: 1; }
       @media (hover: none) { .ss-expand { opacity: 1; } }
       /* Tuile mosaïque / carte flottante : bordure éclaircie au survol —
          indique qu'elle est cliquable (clic = vue simple sur ce partage). */
@@ -978,6 +1018,8 @@ export function ScreenShareView() {
             decoded = await decodeNativeJpeg(bytes);
             if (!cancelled && activeRef.current === sender && canvasRef.current) {
               const canvas = canvasRef.current;
+              canvas.dataset.nativeVideoWidth = String(frame.width);
+              canvas.dataset.nativeVideoHeight = String(frame.height);
               // WebKitGTK composite le canvas avec un filtrage plus mou que
               // Chromium quand il doit le réduire (partage 1440p+ affiché en
               // 1080p). On dimensionne donc la surface au gabarit AFFICHÉ (en
@@ -1201,6 +1243,7 @@ export function ScreenShareView() {
     };
 
     const onMove = (e: MouseEvent) => {
+      if (e instanceof PointerEvent && e.pointerType !== "mouse") return;
       // Rejoué depuis la fenêtre vidéo de Windows : Rust l'a déjà publié.
       if (estRejoue(e)) return;
       const now = performance.now();
@@ -1294,13 +1337,7 @@ export function ScreenShareView() {
     const onDblClick = (e: MouseEvent) => {
       e.preventDefault();
       e.stopPropagation();
-      if (document.fullscreenElement === video) {
-        document.exitFullscreen().catch(() => { /* ignore */ });
-      } else {
-        video.requestFullscreen().catch((err) => {
-          console.warn("[Sion] requestFullscreen failed:", err);
-        });
-      }
+      toggleShareFullscreen(video);
     };
 
     // Fenêtre minimisée / autre bureau virtuel : traité comme quitter l'app.
@@ -1317,6 +1354,11 @@ export function ScreenShareView() {
     video.addEventListener("pointerout", onWindowOut as EventListener);
     video.addEventListener("click", onClick as EventListener);
     video.addEventListener("dblclick", onDblClick as EventListener);
+    const detachTouch = attachTouchSharePointer(video, {
+      target: activeIdentity,
+      contentRect: () => getVideoContentRect(video),
+      markPointed: (identity) => { pointedTargetsRef.current.add(identity); },
+    });
     window.addEventListener("blur", onAppAway);
     window.addEventListener("pagehide", onAppAway);
     window.addEventListener("mouseout", onWindowOut);
@@ -1326,6 +1368,7 @@ export function ScreenShareView() {
     document.addEventListener("pointermove", onDocumentPointerMove);
     document.addEventListener("visibilitychange", onVisibility);
     return () => {
+      detachTouch();
       video.removeEventListener("mousemove", onMove as EventListener);
       video.removeEventListener("pointermove", onMove as EventListener);
       video.removeEventListener("mouseleave", onLeave);
@@ -1382,7 +1425,7 @@ export function ScreenShareView() {
     ro.observe(container);
     const timer = window.setInterval(measure, 500);
     return () => { ro.disconnect(); window.clearInterval(timer); };
-  }, [activeIdentity]);
+  }, [activeIdentity, mosaic, shareDock]);
 
   /** Coupe/rétablit le son d'un partage — l'actif comme une tuile mosaïque.
    *  Retourne false si le moteur a refusé, pour que l'appelant annule son
@@ -1509,13 +1552,7 @@ export function ScreenShareView() {
   const handleToggleFullscreen = () => {
     const video = canvasRef.current;
     if (!video) return;
-    if (document.fullscreenElement === video) {
-      document.exitFullscreen().catch(() => { /* ignore */ });
-    } else {
-      video.requestFullscreen().catch((err) => {
-        console.warn("[Sion] requestFullscreen failed:", err);
-      });
-    }
+    toggleShareFullscreen(video);
   };
 
   // Carousel navigation between concurrent shares (wraps around).
@@ -1834,6 +1871,7 @@ export function ScreenShareView() {
           className="w-full object-contain"
           style={{
             background: 'black',
+            touchAction: 'none',
             maxHeight: `${shareViewMaxVh}vh`,
             display: nativePipOpen || videoMasquee ? 'none' : 'block',
             // Lue par `applyNativeFrameSize` pour borner la largeur à

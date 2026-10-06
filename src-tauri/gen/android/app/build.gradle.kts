@@ -21,6 +21,17 @@ val rustlsPlatformVerifierVersion: String = rootProject.file("../../Cargo.lock")
     lignes[i + 1].substringAfter('"').substringBefore('"')
 }
 
+// Le manifeste du vérificateur TLS impose sa configuration réseau même en
+// debug. On la complète depuis son AAR exact : ses exceptions de révocation
+// restent intactes, et le lecteur peut accéder à Rust sur la boucle locale.
+val verifierNetworkArchive = configurations.detachedConfiguration(
+    dependencies.create("org.rustls:rustls-platform-verifier:$rustlsPlatformVerifierVersion@aar")
+).apply { isTransitive = false }
+val generateSionNetworkSecurityConfig = tasks.register<NetworkSecurityConfigTask>("generateSionNetworkSecurityConfig") {
+    verifierArchive.from(verifierNetworkArchive)
+    outputDirectory.set(layout.buildDirectory.dir("generated/sionNetworkSecurity/res"))
+}
+
 // Clé de signature des APK publiés (celle des 1.x, sinon Android refuse la
 // mise à jour) : variables d'environnement en CI (secrets GitHub, voir
 // release.yml), sinon `keystore.properties` sur la machine de Grégory.
@@ -125,6 +136,11 @@ rust {
 // bien moins à télécharger). La version complète, pour lire un plantage
 // natif, est gardée par la CI (artefact `android-symboles`).
 androidComponents {
+    onVariants { variante ->
+        variante.sources.res?.addGeneratedSourceDirectory(
+            generateSionNetworkSecurityConfig, NetworkSecurityConfigTask::outputDirectory
+        )
+    }
     onVariants(selector().withBuildType("release")) { variante ->
         variante.packaging.jniLibs.keepDebugSymbols.set(emptySet())
         variante.packaging.jniLibs.useLegacyPackaging.set(true)

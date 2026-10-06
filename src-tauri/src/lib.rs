@@ -50,6 +50,7 @@ mod lecteur_audio;
 #[cfg(not(target_os = "android"))]
 mod lecteur_video;
 mod media_server;
+mod media_cache;
 mod mises_a_jour;
 mod matrix_pont;
 // Windows : l'appel ne passe pas après un jeu (priorité, bridage d'arrière-plan).
@@ -1581,27 +1582,7 @@ pub(crate) fn bin_runs(bin: &str, version_flag: &str) -> bool {
 /// conversions pour la webview, que plus rien n'utilisait : ces fichiers
 /// s'accumulaient sans fin jusqu'au 24/09.
 fn cleanup_old_transcodes() {
-    let tmp_dir = sion_media_dir();
-    let cutoff = std::time::SystemTime::now() - Duration::from_secs(24 * 3600);
-    if let Ok(entries) = std::fs::read_dir(&tmp_dir) {
-        for entry in entries.flatten() {
-            let name = entry.file_name();
-            let name_str = name.to_string_lossy();
-            if (name_str.starts_with("sion_in_")
-                || name_str.starts_with("sion_out_")
-                || name_str.starts_with("sion_mux_")
-                || name_str.starts_with("sion_send_")
-                || name_str.starts_with("sion_mx_"))
-                && entry
-                    .metadata()
-                    .and_then(|m| m.modified())
-                    .map(|t| t < cutoff)
-                    .unwrap_or(false)
-            {
-                let _ = std::fs::remove_file(entry.path());
-            }
-        }
-    }
+    media_cache::global().prune(media_cache::MAX_AGE, media_cache::MAX_BYTES);
 }
 
 /// Dossier temporaire dédié aux médias. Isolé du `temp_dir` général pour que la
@@ -1646,30 +1627,11 @@ pub(crate) fn sion_media_dir() -> std::path::PathBuf {
 /// Au démarrage : ceux de plus de `age_max` partent, puis les plus anciens
 /// jusqu'à tenir dans `taille_max`. Rend (fichiers effacés, octets libérés).
 pub(crate) fn purger_medias_temporaires(age_max: std::time::Duration, taille_max: u64) -> (usize, u64) {
-    let Ok(entrees) = std::fs::read_dir(sion_media_dir()) else { return (0, 0) };
-    let maintenant = std::time::SystemTime::now();
-    let mut fichiers: Vec<(std::time::SystemTime, u64, std::path::PathBuf)> = entrees
-        .flatten()
-        .filter_map(|e| {
-            let meta = e.metadata().ok().filter(|m| m.is_file())?;
-            Some((meta.modified().unwrap_or(maintenant), meta.len(), e.path()))
-        })
-        .collect();
-    // Du plus récent au plus ancien : on garde tant qu'on reste sous le plafond.
-    fichiers.sort_by(|a, b| b.0.cmp(&a.0));
-    let (mut gardes, mut effaces, mut liberes) = (0u64, 0usize, 0u64);
-    for (date, taille, chemin) in fichiers {
-        let vieux = maintenant.duration_since(date).map(|d| d > age_max).unwrap_or(false);
-        if vieux || gardes + taille > taille_max {
-            if std::fs::remove_file(&chemin).is_ok() {
-                effaces += 1;
-                liberes += taille;
-            }
-        } else {
-            gardes += taille;
-        }
+    if taille_max == 0 {
+        media_cache::global().clear()
+    } else {
+        media_cache::global().prune(age_max, taille_max)
     }
-    (effaces, liberes)
 }
 
 /// QR code en SVG : `texte` (connexion d'un téléphone) ou `octets_base64`
@@ -1697,6 +1659,25 @@ fn qr_svg(texte: Option<String>, octets_base64: Option<String>) -> Result<String
 #[tauri::command]
 fn vider_medias_temporaires() -> usize {
     purger_medias_temporaires(std::time::Duration::ZERO, 0).0
+}
+
+#[tauri::command]
+fn media_cache_retenir(url: String) -> Option<u64> {
+    media_cache::acquire(&url)
+}
+
+#[tauri::command]
+fn media_cache_liberer(id: Option<u64>) {
+    if let Some(id) = id { media_cache::release(id); }
+    else { media_cache::release_all(); }
+}
+
+/// Cache média seulement : ne touche ni à la session, ni aux clés Matrix.
+#[tauri::command]
+async fn purger_caches_medias() -> Result<usize, String> {
+    matrix_pont::vider_cache_medias().await?;
+    tauri::async_runtime::spawn_blocking(|| media_cache::global().clear().0)
+        .await.map_err(|e| e.to_string())
 }
 
 /// Écrit le corps binaire de la requête dans un fichier temporaire et renvoie
@@ -1729,6 +1710,7 @@ fn stage_media(request: tauri::ipc::Request<'_>) -> Result<String, String> {
         .unwrap_or(0)
         .hash(&mut hasher);
     let path = sion_media_dir().join(format!("sion_in_{:x}.{}", hasher.finish(), ext));
+    let _reader = media_cache::retain_path(&path);
     std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
     Ok(path.to_string_lossy().into_owned())
 }
@@ -1916,6 +1898,7 @@ async fn prepare_video_for_send(
     let managed: Option<String> = None;
     let ffmpeg_bin = resolve_ffmpeg(ffmpeg_path.as_deref(), managed.as_deref());
     let input = std::path::PathBuf::from(&input_path);
+    let _input_reader = media_cache::retain_path(&input);
     if !input.exists() {
         return Err("fichier source introuvable".to_string());
     }
@@ -1942,6 +1925,7 @@ async fn prepare_video_for_send(
     let duration_secs = probe_video(&ffmpeg_bin, &input)
         .map(|(_, _, d)| d)
         .unwrap_or(0.0);
+    let _output_reader = media_cache::retain_path(&output);
     let input_arg = input.to_string_lossy().into_owned();
     let output_arg = output.to_string_lossy().into_owned();
     // AV1, CRF 32, preset 6. Mesuré le 17/09 sur une vidéo de 23,5 s en
@@ -3900,6 +3884,9 @@ pub fn run() {
         matrix_pont::commandes::matrix_verification_confirmer_qr,
         qr_svg,
         vider_medias_temporaires,
+        media_cache_retenir,
+        media_cache_liberer,
+        purger_caches_medias,
         matrix_pont::commandes::matrix_enregistrer_pusher,
         matrix_pont::commandes::matrix_retirer_pusher,
         matrix_pont::commandes::matrix_lectures,
@@ -4131,6 +4118,9 @@ pub fn run() {
         matrix_pont::commandes::matrix_verification_confirmer_qr,
         qr_svg,
         vider_medias_temporaires,
+        media_cache_retenir,
+        media_cache_liberer,
+        purger_caches_medias,
         matrix_pont::commandes::matrix_enregistrer_pusher,
         matrix_pont::commandes::matrix_retirer_pusher,
         matrix_pont::commandes::matrix_lectures,
@@ -4321,8 +4311,8 @@ pub fn run() {
                 let cache = app.path().app_cache_dir().ok();
                 std::thread::spawn(move || {
                     let (n, octets) = purger_medias_temporaires(
-                        std::time::Duration::from_secs(24 * 3600),
-                        500 * 1024 * 1024,
+                        media_cache::MAX_AGE,
+                        media_cache::MAX_BYTES,
                     );
                     if n > 0 {
                         log::info!("[Sion] médias temporaires : {n} fichier(s) effacé(s), {} Mo libérés", octets / (1024 * 1024));
@@ -4339,6 +4329,13 @@ pub fn run() {
                     }
                     #[cfg(target_os = "android")]
                     let _ = cache;
+                    loop {
+                        std::thread::sleep(std::time::Duration::from_secs(60));
+                        media_cache::global().prune(media_cache::MAX_AGE, media_cache::MAX_BYTES);
+                        if let Err(e) = tauri::async_runtime::block_on(matrix_pont::entretenir_cache_medias()) {
+                            log::warn!("[Sion] nettoyage du cache média Matrix : {e}");
+                        }
+                    }
                 });
             }
             // Moteur Matrix Rust (SION_MATRIX_MOTEUR=rust + feature) : après le

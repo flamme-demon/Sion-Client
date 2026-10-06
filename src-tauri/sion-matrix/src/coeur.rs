@@ -11,7 +11,8 @@ use matrix_sdk::ruma::api::error::ErrorKind;
 use matrix_sdk::ruma::{OwnedDeviceId, RoomId, UserId};
 use matrix_sdk::{Client, SessionMeta, SessionTokens};
 use serde::Serialize;
-use tokio::sync::{watch, Mutex};
+use tokio::sync::{watch, Mutex, RwLock};
+use matrix_sdk::media::MediaRetentionPolicy;
 
 use crate::fil::{self, FilSalon, Fils};
 use crate::confiance::Confiance;
@@ -41,6 +42,7 @@ pub struct CoeurMatrix {
     nom_appareil: String,
     coffre: Arc<dyn Coffre>,
     client: Mutex<Option<Client>>,
+    entretien_medias: RwLock<()>,
     etat: watch::Sender<EtatConnexion>,
     salons: watch::Sender<Vec<Salon>>,
     pub(crate) horloge: Arc<Horloge>,
@@ -89,6 +91,18 @@ fn synchro_immediate() -> SyncSettings {
     synchro::reglages(Duration::ZERO)
 }
 
+fn politique_medias() -> MediaRetentionPolicy {
+    MediaRetentionPolicy::default()
+        .with_max_cache_size(Some(250 * 1024 * 1024))
+        // Les grosses vidéos ne doivent pas être dupliquées intégralement
+        // dans SQLite et dans le cache du lecteur.
+        .with_max_file_size(Some(32 * 1024 * 1024))
+        .with_last_access_expiry(Some(Duration::from_secs(24 * 3600)))
+        // Le worker de Sion nettoie chaque minute. Un seul ordonnanceur,
+        // pour que la purge explicite attende réellement la fin du ménage.
+        .with_cleanup_frequency(None)
+}
+
 impl CoeurMatrix {
     /// `dossier` : réservé au cœur (session + magasins SQLite).
     pub fn nouveau(dossier: PathBuf, nom_appareil: impl Into<String>, coffre: Arc<dyn Coffre>) -> Self {
@@ -97,6 +111,7 @@ impl CoeurMatrix {
             nom_appareil: nom_appareil.into(),
             coffre,
             client: Mutex::new(None),
+            entretien_medias: RwLock::new(()),
             etat: watch::Sender::new(EtatConnexion::Deconnecte),
             salons: watch::Sender::new(Vec::new()),
             horloge: Arc::new(Horloge::default()),
@@ -173,8 +188,30 @@ impl CoeurMatrix {
 
     /// Contenu d'un média servi par `sion-media`, au format demandé.
     pub async fn media_format(&self, cle: &str, format: FormatMedia) -> Resultat<Vec<u8>> {
+        let _lecture = self.entretien_medias.read().await;
         let client = self.client().await.ok_or(Erreur::PasDeSession)?;
         self.fils.medias.contenu(&client, cle, format).await
+    }
+
+    pub async fn entretenir_cache_medias(&self) -> Resultat<()> {
+        let _exclusif = self.entretien_medias.write().await;
+        let Some(client) = self.client().await else { return Ok(()) };
+        client.media().clean().await?;
+        Ok(())
+    }
+
+    /// Attendre les téléchargements commencés avant la purge évite qu'ils
+    /// remplissent à nouveau le cache après son effacement.
+    pub async fn vider_cache_medias(&self) -> Resultat<()> {
+        let _exclusif = self.entretien_medias.write().await;
+        let Some(client) = self.client().await else { return Ok(()) };
+        let media = client.media();
+        media.set_media_retention_policy(politique_medias().with_max_cache_size(Some(0))).await?;
+        let nettoyage = media.clean().await;
+        let restauration = media.set_media_retention_policy(politique_medias()).await;
+        nettoyage?;
+        restauration?;
+        Ok(())
     }
 
     /// Liste des salons rejoints, republiée à chaque changement.
@@ -248,6 +285,8 @@ impl CoeurMatrix {
             .with_enable_share_history_on_invite(true)
             .build()
             .await?;
+        client.media().set_media_retention_policy(politique_medias()).await?;
+        client.media().clean().await?;
         self.confiance.brancher(&client);
         self.sion.brancher(&client);
         Ok(client)
@@ -551,6 +590,45 @@ mod tests {
 
     fn coeur(dossier: &std::path::Path) -> CoeurMatrix {
         CoeurMatrix::nouveau(dossier.to_path_buf(), "Sion test", Arc::new(CoffreMemoire::default()))
+    }
+
+    #[tokio::test]
+    async fn purge_medias_sqlite_preserve_session_et_magasin_de_chiffrement() {
+        use matrix_sdk::media::{MediaFormat, MediaRequestParameters, store::IgnoreMediaRetentionPolicy};
+        use matrix_sdk::ruma::{OwnedMxcUri, events::room::MediaSource};
+        let d = tempfile::tempdir().unwrap();
+        let c = coeur(d.path());
+        let client = c.construire("https://example.test", "phrase de test", true).await.unwrap();
+        let request = MediaRequestParameters {
+            source: MediaSource::Plain(OwnedMxcUri::from("mxc://example.test/video")),
+            format: MediaFormat::File,
+        };
+        {
+            let store = client.media_store().lock().await.unwrap();
+            store.add_media_content(&request, vec![7; 4096], IgnoreMediaRetentionPolicy::No).await.unwrap();
+            assert!(store.get_media_content(&request).await.unwrap().is_some());
+        }
+        let session = d.path().join("session.json");
+        std::fs::write(&session, b"session test a conserver").unwrap();
+        let crypto_path = d.path().join(DOSSIER_MAGASIN).join("matrix-sdk-crypto.sqlite3");
+        let crypto = std::fs::read(&crypto_path).unwrap();
+        *c.client.lock().await = Some(client.clone());
+        c.vider_cache_medias().await.unwrap();
+        assert!(client.media_store().lock().await.unwrap().get_media_content(&request).await.unwrap().is_none());
+        assert_eq!(client.media().media_retention_policy().await.unwrap(), politique_medias());
+        assert_eq!(std::fs::read(&session).unwrap(), b"session test a conserver");
+        assert_eq!(std::fs::read(&crypto_path).unwrap(), crypto);
+    }
+
+    #[tokio::test]
+    async fn la_politique_est_installee_des_la_creation_du_client() {
+        let d = tempfile::tempdir().unwrap();
+        let c = coeur(d.path());
+        let client = c.construire("https://example.test", "phrase de test", true).await.unwrap();
+        let policy = client.media().media_retention_policy().await.unwrap();
+        assert_eq!(policy.max_cache_size, Some(250 * 1024 * 1024));
+        assert_eq!(policy.max_file_size, Some(32 * 1024 * 1024));
+        assert_eq!(policy.last_access_expiry, Some(Duration::from_secs(24 * 3600)));
     }
 
     #[tokio::test]

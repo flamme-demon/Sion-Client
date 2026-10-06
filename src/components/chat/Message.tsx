@@ -36,6 +36,7 @@ import { ModaleSignalement } from "./ModaleSignalement";
 import { moteurRust } from "../../services/moteur";
 import { copierImage, enregistrerImage } from "../../services/actionsImage";
 import { definirLecteurActif, libererLecteurActif, useEstLecteurActif } from "../../services/lecteurActif";
+import { AndroidVideoPlayer } from "./AndroidVideoPlayer";
 // Lecteur hors moteur web (voir docs/lecteur-video-natif.md). Chargé à la
 // demande : il ne sert qu'au clic, inutile de l'embarquer au démarrage.
 const NativeVideoPlayer = lazy(() =>
@@ -228,45 +229,15 @@ const SUR_ANDROID = typeof navigator !== "undefined" && /Android/i.test(navigato
 
 /**
  * Vidéo du fil sur téléphone : une balise `<video>` ordinaire. Le média est
- * lu par son adresse `sion-media` (servie et déchiffrée par Rust) ; si le
- * WebView la refuse, repli sur le serveur média local, qui sert les requêtes
- * par plage (`urlLecture`).
+ * servi et déchiffré par Rust sur le serveur média local, qui sait répondre
+ * aux requêtes par plage, y compris pour les MP4 dont l'index est en fin.
  */
-function VideoWeb({ resolvedUrl, attachment }: { resolvedUrl: string | null; attachment: FileAttachment }) {
-  const [repli, setRepli] = useState<string | null>(null);
-  const adresse = repli ?? (attachment.encryptedFile ? resolvedUrl : attachment.url ?? null);
-  // Sans vignette du serveur : `#t=0.1` fait afficher cette image-là en
-  // aperçu (servie par plage) au lieu d'un cadre vide.
-  const src = adresse && !attachment.thumbnailUrl ? `${adresse}#t=0.1` : adresse;
+function VideoWeb({ attachment }: { attachment: FileAttachment }) {
   const ratio =
     attachment.width && attachment.height ? `${attachment.width} / ${attachment.height}` : '16 / 9';
-  const echec = () => {
-    if (repli || !attachment.url) return;
-    void import("../../services/matrixCore")
-      .then((m) => m.urlLecture(attachment.url!))
-      .then((u) => { if (u && u !== attachment.url) setRepli(u); })
-      .catch(() => {});
-  };
   return (
     <div style={{ marginTop: 6, width: 420, maxWidth: '100%' }}>
-      {src ? (
-        <video
-          controls
-          playsInline
-          preload="metadata"
-          src={src}
-          poster={attachment.thumbnailUrl ?? undefined}
-          onError={echec}
-          style={{
-            display: 'block', width: '100%', maxHeight: 340, aspectRatio: ratio,
-            borderRadius: 14, background: 'var(--color-surface-container-highest)',
-          }}
-        />
-      ) : (
-        <div style={{ padding: '8px 12px', borderRadius: 14, background: 'var(--color-surface-container-high)', color: 'var(--color-outline)', fontSize: 12 }}>
-          Chargement de la vidéo…
-        </div>
-      )}
+      <AndroidVideoPlayer attachment={attachment} ratio={ratio} />
       <div style={{ fontSize: 11, color: 'var(--color-outline)', marginTop: 4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
         {attachment.name} · {formatFileSize(attachment.size)}
       </div>
@@ -529,7 +500,7 @@ function AttachmentDisplay({ attachment }: { attachment: FileAttachment }) {
   // l'URL. Seul un média chiffré doit encore passer ici, pour être déchiffré.
   const resolvedUrl = useResolvedUrl(
     attachment,
-    isVideo ? (SUR_ANDROID || videoVisible) && !!attachment.encryptedFile : true,
+    isVideo ? !SUR_ANDROID && videoVisible && !!attachment.encryptedFile : true,
   );
   const [lightboxOpen, setLightboxOpen] = useState(false);
   const [menuImage, setMenuImage] = useState<{ x: number; y: number } | null>(null);
@@ -602,7 +573,7 @@ function AttachmentDisplay({ attachment }: { attachment: FileAttachment }) {
 
   if (isVideo) {
     return SUR_ANDROID
-      ? <VideoWeb resolvedUrl={resolvedUrl} attachment={attachment} />
+      ? <VideoWeb attachment={attachment} />
       : <VideoCard resolvedUrl={resolvedUrl} attachment={attachment} />;
   }
 

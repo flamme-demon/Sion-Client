@@ -102,6 +102,10 @@ struct Lecture {
     /// Ce que le bandeau incrusté doit montrer. Lu par le fil de lecture à
     /// chaque image, écrit par les commandes du front.
     incrustation: Arc<Mutex<crate::incrustation_lecteur::EtatIncrustation>>,
+    /// Le fichier lu reste protégé du ménage du cache tant que la lecture
+    /// existe : une pause, un déplacement ou le plein écran relancent ffmpeg
+    /// sur ce même fichier.
+    _bail: crate::media_cache::Reader,
 }
 
 fn lecture() -> &'static Mutex<Option<Lecture>> {
@@ -673,6 +677,10 @@ fn demarrer(
     depart_ms: u64,
     en_pause: bool,
 ) -> Result<EtatLecteur, String> {
+    // Retenu AVANT de fermer la lecture précédente : relancer sur le même
+    // fichier libère puis reprend son bail, et le ménage du cache (toutes les
+    // minutes) pouvait l'effacer entre les deux.
+    let bail = crate::media_cache::retain_path(std::path::Path::new(chemin));
     lecteur_video_fermer();
     let ffmpeg = ffmpeg.to_string();
     let chemin = chemin.to_string();
@@ -958,6 +966,7 @@ fn demarrer(
         video: (largeur, hauteur),
         depart_ms,
         incrustation,
+        _bail: bail,
     });
 
     Ok(EtatLecteur {

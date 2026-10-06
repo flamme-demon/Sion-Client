@@ -85,6 +85,12 @@ window.addEventListener("keydown", (e) => {
 // ensuite par écraser la sauvegarde globale (notamment voiceSounds).
 async function bootstrap() {
   await hydrateSessionFromAppData();
+  // Un rechargement du WebView ne démonte pas les effets React : libérer
+  // les lecteurs de l'ancienne page avant d'en créer de nouveaux.
+  if (/Android/i.test(navigator.userAgent)) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("media_cache_liberer", { id: null }).catch(() => {});
+  }
 
   // i18n lit directement sion-settings à l'évaluation du module.
   await import("./i18n");

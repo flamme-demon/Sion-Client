@@ -157,6 +157,11 @@ fn serve(stream: TcpStream) -> std::io::Result<()> {
     if method != "GET" && method != "HEAD" {
         return write_status(&mut stream, 405, "Method Not Allowed");
     }
+    // Retenir AVANT le dépôt : aucune purge ne peut supprimer le fichier
+    // entre la résolution du média et son ouverture.
+    let _reader = target.strip_prefix("/matrix/")
+        .and_then(|key| crate::media_cache::matrix_name(&format!("sion-media://localhost/{key}")))
+        .map(|name| crate::media_cache::retain_path(&crate::sion_media_dir().join(name)));
     let (name, mime_matrix) = if let Some(cle) = target.strip_prefix("/matrix/") {
         match crate::matrix_pont::deposer_media(cle) {
             Some((nom, mime)) => (nom, Some(mime)),
@@ -169,6 +174,7 @@ fn serve(stream: TcpStream) -> std::io::Result<()> {
         }
     };
     let path = crate::sion_media_dir().join(&name);
+    let _file_reader = crate::media_cache::retain_path(&path);
     let mut file = match std::fs::File::open(&path) {
         Ok(file) => file,
         Err(_) => return write_status(&mut stream, 404, "Not Found"),

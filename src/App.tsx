@@ -259,6 +259,10 @@ export default function App() {
 
     import("@tauri-apps/api/app").then(({ onBackButtonPress }) => {
       onBackButtonPress((_payload) => {
+        if (document.fullscreenElement) {
+          void document.exitFullscreen().catch(() => {});
+          return;
+        }
         const appState = useAppStore.getState();
 
         // Close panels first (most specific → least specific)

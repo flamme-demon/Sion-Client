@@ -334,6 +334,7 @@ mod actif {
             return base.status(404).body(Vec::new());
         };
         let chemin = crate::sion_media_dir().join(&nom);
+        let _reader = crate::media_cache::retain_path(&chemin);
         let lire = || -> std::io::Result<(u64, Option<(u64, u64, Vec<u8>)>)> {
             let mut fichier = std::fs::File::open(&chemin)?;
             let total = fichier.metadata()?.len();
@@ -379,6 +380,7 @@ mod actif {
         }
         let nom = format!("sion_mx_{cle}");
         let chemin = crate::sion_media_dir().join(&nom);
+        let _reader = crate::media_cache::retain_path(&chemin);
         if let Ok(mut fichier) = std::fs::File::open(&chemin) {
             use std::io::Read;
             let mut debut = [0u8; 16];
@@ -493,6 +495,22 @@ mod actif {
 
 #[cfg_attr(target_os = "android", allow(unused_imports))]
 pub use actif::{deposer_media, fichier_media_matrix, initialiser, quitter_voix_a_la_fermeture};
+
+pub async fn vider_cache_medias() -> Result<(), String> {
+    #[cfg(feature = "moteur-matrix-rust")]
+    if actif::moteur() == "rust" {
+        actif::coeur()?.vider_cache_medias().await.map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+pub async fn entretenir_cache_medias() -> Result<(), String> {
+    #[cfg(feature = "moteur-matrix-rust")]
+    if actif::moteur() == "rust" {
+        actif::coeur()?.entretenir_cache_medias().await.map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
 #[cfg(target_os = "android")]
 pub use actif::quitter_voix_bloquant;
 
@@ -1745,4 +1763,3 @@ pub mod commandes {
         Err(INACTIF.into())
     }
 }
-

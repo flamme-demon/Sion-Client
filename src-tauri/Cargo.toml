@@ -256,6 +256,9 @@ windows = { version = "0.58", features = [
 # as a direct dependency (it's no longer re-exported transitively).
 windows-core = "0.58"
 
+[dev-dependencies]
+tempfile = "3"
+
 [features]
 # Fenêtre WRY (via les features par défaut de `tauri`) + voix Rust : plus
 # aucune feature CEF. `native-voice` est désormais obligatoire pour la voix.

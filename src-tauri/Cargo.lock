@@ -7475,6 +7475,7 @@ dependencies = [
  "tauri-plugin-notification",
  "tauri-plugin-updater",
  "tauri-plugin-window-state",
+ "tempfile",
  "tiny-skia",
  "tokio",
  "transcribe-cpp",
