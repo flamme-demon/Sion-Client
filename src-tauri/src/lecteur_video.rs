@@ -221,6 +221,24 @@ fn toile(largeur: u32, hauteur: u32) -> (u32, u32) {
     (largeur + largeur % 2, hauteur + hauteur % 2)
 }
 
+/// Écart, en pixels, en deçà duquel une nouvelle toile ne vaut pas une
+/// relance de ffmpeg.
+const ECART_TOILE_MAX: u32 = 8;
+
+/// Faut-il relancer ffmpeg pour passer de la toile `actuelle` à `visee` ?
+///
+/// Pas pour quelques pixels. La toile donne son ratio au canvas, le canvas
+/// donne la taille déclarée en retour, et les arrondis au pixel puis au pair
+/// ne retombent jamais deux fois au même endroit : en plein écran, la toile
+/// tournait entre 1844x1036, 1844x1038 et 1842x1036, et chaque tour relançait
+/// ffmpeg — deux relances par seconde, 13 images entre deux, un écran noir à
+/// chacune (flammemob, 06/10). La surface absorbe sans peine un écart pareil
+/// en peignant ; une entrée ou une sortie de plein écran, elle, le dépasse
+/// toujours de plusieurs centaines de pixels.
+fn relance_necessaire(actuelle: (u32, u32), visee: (u32, u32)) -> bool {
+    actuelle.0.abs_diff(visee.0) > ECART_TOILE_MAX || actuelle.1.abs_diff(visee.1) > ECART_TOILE_MAX
+}
+
 /// Taille d'une image I420, en octets : un plan de luminance pleine
 /// résolution, deux plans de chrominance à un quart chacun.
 fn taille_image(largeur: u32, hauteur: u32) -> usize {
@@ -1233,7 +1251,8 @@ pub fn lecteur_video_seek(position_ms: u64) -> Result<EtatLecteur, String> {
 ///
 /// Si la toile doit changer — passage en plein écran, ou retour —, la
 /// lecture est relancée à la position atteinte, en pause si elle l'était.
-/// Sinon rien ne se passe : l'appeler à chaque mesure ne coûte rien.
+/// Sinon rien ne se passe, écart d'arrondi compris (`relance_necessaire`) :
+/// l'appeler à chaque mesure ne coûte rien.
 #[tauri::command]
 pub fn lecteur_video_resolution(largeur: u32, hauteur: u32) -> Result<EtatLecteur, String> {
     *boite_visee().lock().unwrap_or_else(|e| e.into_inner()) = Some((largeur, hauteur));
@@ -1241,7 +1260,7 @@ pub fn lecteur_video_resolution(largeur: u32, hauteur: u32) -> Result<EtatLecteu
         let garde = lecture().lock().unwrap_or_else(|e| e.into_inner());
         let l = garde.as_ref().ok_or_else(|| "aucune lecture".to_string())?;
         let (image_l, image_h) = dimensions_affichees(l.video.0, l.video.1, Some((largeur, hauteur)));
-        if toile(image_l, image_h) == (l.largeur, l.hauteur) {
+        if !relance_necessaire((l.largeur, l.hauteur), toile(image_l, image_h)) {
             return Ok(etat_depuis(l));
         }
         let e = etat_depuis(l);
@@ -1324,6 +1343,45 @@ mod tests {
         // Plafonné, pour que ffmpeg et la composition tiennent la cadence.
         let (l, h) = dimensions_affichees(640, 360, Some((5120, 2880)));
         assert!(l as u64 * h as u64 <= 2560 * 1440 + 4096);
+    }
+
+    /// Le front, réduit à ce qui compte ici : la toile donne son ratio au
+    /// canvas (`voice-native-frame-size`), et le canvas, plafonné à 96 % de
+    /// la hauteur de l'écran, donne la boîte déclarée ensuite à Rust.
+    fn boite_du_front(toile: (u32, u32), ecran: (f64, f64)) -> (u32, u32) {
+        let ratio = toile.0 as f64 / toile.1 as f64;
+        let largeur = ecran.0.min(0.96 * ecran.1 * ratio);
+        ((largeur).round() as u32, (largeur / ratio).round() as u32)
+    }
+
+    #[test]
+    fn le_plein_ecran_ne_relance_ffmpeg_qu_une_fois() {
+        // flammemob, 06/10 : vidéo 1280x720, écran 1920x1080. La toile
+        // tournait entre 1844x1036, 1844x1038 et 1842x1036, et ffmpeg était
+        // relancé deux fois par seconde — saccades et écran noir à chaque
+        // relance.
+        let ecran = (1920.0, 1080.0);
+        let mut courante = toile(1280, 720);
+        let mut relances = Vec::new();
+        for _ in 0..20 {
+            let (l, h) = dimensions_affichees(1280, 720, Some(boite_du_front(courante, ecran)));
+            let visee = toile(l, h);
+            if relance_necessaire(courante, visee) {
+                courante = visee;
+                relances.push(visee);
+            }
+        }
+        assert_eq!(relances.len(), 1, "toiles successives : {relances:?}");
+    }
+
+    #[test]
+    fn un_vrai_changement_de_taille_relance_toujours() {
+        // Entrée et sortie du plein écran.
+        assert!(relance_necessaire((1280, 720), (1844, 1036)));
+        assert!(relance_necessaire((1844, 1036), (1280, 720)));
+        // L'arrondi au pair, lui, ne vaut pas une relance.
+        assert!(!relance_necessaire((1844, 1036), (1844, 1038)));
+        assert!(!relance_necessaire((1844, 1036), (1842, 1036)));
     }
 
     #[test]
