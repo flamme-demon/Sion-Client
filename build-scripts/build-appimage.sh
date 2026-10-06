@@ -184,12 +184,6 @@ cat > "$APPDIR/AppRun" <<'APPRUN'
 #!/bin/bash
 SELF="$(readlink -f "$0")"
 SELF_DIR="$(dirname "$SELF")"
-SELF_NAME="$(basename "$SELF")"
-
-# Remove older Sion AppImages in the same directory
-for old in "$(dirname "$SELF")"/Sion_Client-*-x86_64.AppImage; do
-    [ -f "$old" ] && [ "$(basename "$old")" != "$SELF_NAME" ] && rm -f "$old" 2>/dev/null
-done
 
 export LD_LIBRARY_PATH="$SELF_DIR/usr/lib/sion-client:${LD_LIBRARY_PATH}"
 # Greffon AV1 embarque : GStreamer ne regarde que les chemins qu'on lui donne.
@@ -220,12 +214,18 @@ APPIMAGE="$OUTPUT_DIR/Sion_Client-${VERSION}-x86_64.AppImage"
 if [ -f "$APPIMAGE" ]; then
     SIZE=$(du -h "$APPIMAGE" | cut -f1)
 
+    # Local builds are signed when the key is available; CI signs explicitly.
+    if [ -n "${TAURI_SIGNING_PRIVATE_KEY:-}" ] || [ -n "${TAURI_SIGNING_PRIVATE_KEY_PATH:-}" ] || [ -f "$PROJECT_DIR/.update-signing/sion.key" ]; then
+        "$SCRIPT_DIR/sign-update.sh" "$APPIMAGE"
+    fi
+
     # Centralised installer collection — same place every script drops into.
     BUILD_APPS_DIR="$PROJECT_DIR/build-apps"
     mkdir -p "$BUILD_APPS_DIR"
     # Remove old AppImages before copying the new one
     rm -f "$BUILD_APPS_DIR"/Sion_Client-*-x86_64.AppImage
     cp -f "$APPIMAGE" "$BUILD_APPS_DIR/"
+    if [ -f "$APPIMAGE.sig" ]; then cp -f "$APPIMAGE.sig" "$BUILD_APPS_DIR/"; fi
     FINAL_PATH="$BUILD_APPS_DIR/$(basename "$APPIMAGE")"
     chmod +x "$FINAL_PATH"
     # Also create a versionless symlink for easy access

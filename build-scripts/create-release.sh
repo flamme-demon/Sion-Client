@@ -22,7 +22,7 @@ fi
 
 TAG="v$VERSION"
 DRAFT_FLAG=""
-if [ "$1" = "--draft" ]; then
+if [ "${1:-}" = "--draft" ]; then
     DRAFT_FLAG="--draft"
 fi
 
@@ -45,6 +45,15 @@ if [ ! -d "$BUILD_DIR" ] || [ -z "$(ls -A "$BUILD_DIR" 2>/dev/null)" ]; then
     echo "  Lancez d'abord les builds (build-appimage.sh, build-windows.ps1)"
     exit 1
 fi
+
+# Validate signatures before creating/pushing the tag. Ignore stale versions and aliases.
+python3 "$SCRIPT_DIR/create-updater-manifest.py" "$BUILD_DIR" "$TAG" --files-list "$BUILD_DIR/.release-files"
+FICHIERS=()
+while IFS= read -r -d '' file; do
+    FICHIERS+=("$file")
+done < "$BUILD_DIR/.release-files"
+PRERELEASE_FLAG=""
+case "$VERSION" in *-*) PRERELEASE_FLAG="--prerelease" ;; esac
 
 echo "Fichiers a uploader:"
 ls -lh "$BUILD_DIR/"
@@ -78,8 +87,8 @@ fi
 gh release create "$TAG" \
     --title "Sion Client $TAG" \
     "${NOTES_ARGS[@]}" \
-    $DRAFT_FLAG \
-    "$BUILD_DIR"/*
+    $DRAFT_FLAG $PRERELEASE_FLAG \
+    "${FICHIERS[@]}"
 
 echo ""
 echo "========================================"

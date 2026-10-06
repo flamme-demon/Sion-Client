@@ -50,5 +50,13 @@
         "upgradeCode": "0d1bf48d-b792-4a4b-86b9-1082ff93b999"
       }
     }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEM4NDcxOUE2QzVBOUI0M0IKUldRN3RLbkZwaGxIeUh3emF2bVJIYmN0UTZHVUUrdGFPNi9VNzdVMVI4a3ZrQitTcEZvcWhlSWwK",
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }

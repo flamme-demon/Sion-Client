@@ -21,6 +21,7 @@ import { defautsDeContraste } from "../../themes/contrast";
 import { ACCENTS_PROPOSES, tokensAccent } from "../../themes/accent";
 import { ProfilModal } from "./ProfilModal";
 import type { Theme } from "../../themes/types";
+import { UpdateSettings } from "./UpdateSettings";
 import { SUR_ANDROID } from "../../utils/plateforme";
 
 
@@ -804,6 +805,7 @@ export function SettingsPanel() {
         {/* === ADVANCED === */}
         {activeTab === "advanced" && (
           <div style={{ padding: '8px 0' }}>
+            <UpdateSettings toggleStyle={toggleStyle} toggleDotStyle={toggleDotStyle} />
 
             <div style={{ marginBottom: 16 }}>
               <div style={{ fontSize: 13, color: 'var(--color-on-surface)', marginBottom: 4 }}>Chemin ffmpeg (optionnel)</div>

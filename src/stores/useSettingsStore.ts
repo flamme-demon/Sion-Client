@@ -100,6 +100,10 @@ interface SettingsState {
   setNativeAudioOutputDevice: (id: string) => void;
   audioInputDevice: string;
   audioOutputDevice: string;
+  /** Propose aussi les alpha, bêta et versions candidates (désactivé par
+   *  défaut). Le couper ne rétrograde jamais Sion. */
+  experimentalUpdates: boolean;
+  setExperimentalUpdates: (value: boolean) => void;
   /** Optional path to an ffmpeg executable, used to transcode videos whose
    *  codec n'est pas décodé par la webview (dépend des codecs système,
    *  notamment sous Linux/WebKitGTK). Empty = use `ffmpeg` from PATH. */
@@ -265,6 +269,8 @@ export const useSettingsStore = create<SettingsState>()(
       setNativeAudioInputDevice: (id) => set({ nativeAudioInputDevice: id }),
       setNativeAudioOutputDevice: (id) => set({ nativeAudioOutputDevice: id }),
       audioInputDevice: "",
+      experimentalUpdates: false,
+      setExperimentalUpdates: (value) => set({ experimentalUpdates: value }),
       ffmpegPath: "",
       videoVolume: 1,
       ytdlpPath: "",

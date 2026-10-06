@@ -167,11 +167,19 @@ jobs:
           strings -a "$BIN" | grep -iE "NvEncoderCuda|libnvidia-encode" | sort -u | head -3
           echo "✓ codecs matériels NVIDIA compilés dans l'AppImage"
 
+      - name: Sign final AppImage for in-app updates
+        run: ./build-scripts/sign-update.sh dist-appimage/*.AppImage
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+
       - name: Upload AppImage as artifact
         uses: actions/upload-artifact@v7
         with:
           name: linux-appimage
-          path: dist-appimage/*.AppImage
+          path: |
+            dist-appimage/*.AppImage
+            dist-appimage/*.AppImage.sig
           if-no-files-found: error
 
   # -------------------------------------------------------------------------
@@ -269,7 +277,6 @@ jobs:
         # `tauri build` step recompiled for 10+ minutes (28/09).
         shell: pwsh
         env:
-          TAURI_SIGNING_PRIVATE_KEY: ''
           # Baked into the JS bundle by Vite (GIF search — Klipy).
           VITE_KLIPY_API_KEY: ${{ secrets.KLIPY_API_KEY }}
         run: |
@@ -360,8 +367,13 @@ jobs:
         # packages the binary compiled above — no second compilation, and
         # the NVIDIA check above is on the binary that actually ships.
         run: bun run tauri bundle --bundles nsis
+
+      - name: Sign final NSIS installer for in-app updates
+        shell: bash
+        run: ./build-scripts/sign-update.sh src-tauri/target/release/bundle/nsis/*.exe
         env:
-          TAURI_SIGNING_PRIVATE_KEY: ''
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
 
       - name: Restore tauri.conf.json
         # Always run, even on previous-step failure, so a re-run starts
@@ -377,7 +389,9 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: windows-nsis
-          path: src-tauri/target/release/bundle/nsis/*.exe
+          path: |
+            src-tauri/target/release/bundle/nsis/*.exe
+            src-tauri/target/release/bundle/nsis/*.exe.sig
           if-no-files-found: error
 
   # -------------------------------------------------------------------------
@@ -543,6 +557,11 @@ jobs:
           name: android-apk
           path: ./artifacts
 
+      - name: Create signed update manifest
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        run: python3 build-scripts/create-updater-manifest.py ./artifacts "$RELEASE_TAG" --require-desktop
+
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -564,7 +583,7 @@ jobs:
           fi
           # APK présent seulement si le job Android a réussi.
           shopt -s nullglob
-          FICHIERS=(./artifacts/*.AppImage ./artifacts/*.exe ./artifacts/*.apk)
+          FICHIERS=(./artifacts/*.AppImage ./artifacts/*.exe ./artifacts/*.apk ./artifacts/*.sig ./artifacts/updater.json)
           gh release create "$TAG" \
             --title "Sion Client $TAG" \
             "${NOTES_ARGS[@]}" \

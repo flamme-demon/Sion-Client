@@ -1,0 +1,29 @@
+.sion-update-banner button,
+.sion-update-notes button {
+  padding: 5px 12px;
+  border-radius: 12px;
+  border: 1px solid currentColor;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+.sion-update-banner button:hover,
+.sion-update-notes button:hover {
+  background: color-mix(in srgb, currentColor 12%, transparent);
+}
+.sion-update-banner button:disabled {
+  cursor: default;
+  opacity: .5;
+}
+.sion-update-banner button:focus-visible,
+.sion-update-notes button:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 3px;
+}
+.sion-update-banner [role="alert"] {
+  flex-basis: 100%;
+  text-align: center;
+  overflow-wrap: anywhere;
+}

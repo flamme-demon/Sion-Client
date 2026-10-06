@@ -346,6 +346,18 @@ if (Test-Path $exePath) {
         # MSI naming so we get "Sion Client_X.Y.Z_x64.exe".
         $cleanNsisName = $nsisPath.Name -replace '-setup\.exe$', '.exe'
         Copy-Item -Force $nsisPath.FullName "$buildAppsDir\$cleanNsisName"
+        # Sign the exact file being published. The signature stays valid after renaming.
+        $localUpdateKey = "$ProjectDir\.update-signing\sion.key"
+        $updateKeyPath = if ($env:TAURI_SIGNING_PRIVATE_KEY_PATH) { $env:TAURI_SIGNING_PRIVATE_KEY_PATH } else { $localUpdateKey }
+        if ($env:TAURI_SIGNING_PRIVATE_KEY -or (Test-Path $updateKeyPath)) {
+            if ($null -eq $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD) { $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = "" }
+            if ($env:TAURI_SIGNING_PRIVATE_KEY) {
+                bun run tauri signer sign "$buildAppsDir\$cleanNsisName"
+            } else {
+                bun run tauri signer sign --private-key-path $updateKeyPath "$buildAppsDir\$cleanNsisName"
+            }
+            if ($LASTEXITCODE -ne 0) { throw "Signature de la mise a jour NSIS impossible." }
+        }
         Write-Host "  Installeur NSIS: $buildAppsDir\$cleanNsisName ($nsisSize MB)" -ForegroundColor White
     }
 

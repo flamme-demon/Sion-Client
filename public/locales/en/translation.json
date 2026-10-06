@@ -4,8 +4,37 @@
     "subtitle": "Matrix voice and text client"
   },
   "update": {
-    "available": "New version v{{version}} available",
-    "download": "Download"
+    "available": "Sion {{version}} is available",
+    "download": "Download",
+    "title": "Updates",
+    "experimental": "Receive experimental updates (alpha and beta)",
+    "experimentalHint": "These versions may contain bugs. Disabling this option stops experimental update offers without downgrading the installed version.",
+    "current": "Installed version: {{version}}",
+    "check": "Check for updates",
+    "checking": "Checking…",
+    "upToDate": "Up to date for the selected channel",
+    "downloading": "Downloading: {{progress}}",
+    "ready": "Sion {{version}} is ready to install",
+    "install": "Install",
+    "installRelaunch": "Install and restart",
+    "installing": "Installing…",
+    "permission": "Allow Sion to install its updates in Android settings.",
+    "finishCall": "Finish your call before installing.",
+    "failed": "The update failed.",
+    "manual": "Download manually",
+    "later": "Later",
+    "notes": "What’s new",
+    "noNotes": "No release notes available.",
+    "releasePage": "Open release page",
+    "close": "Close",
+    "channel": {
+      "alpha": "Alpha release",
+      "beta": "Beta release",
+      "rc": "Release candidate",
+      "experimental": "Experimental release"
+    },
+    "redownload": "Download again",
+    "restartRequired": "The update engine is not loaded. Fully close Sion and restart it with the rebuilt or reinstalled version."
   },
   "download": {
     "saved": "{{filename}} downloaded",

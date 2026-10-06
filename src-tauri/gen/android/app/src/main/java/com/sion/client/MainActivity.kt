@@ -17,6 +17,7 @@ class MainActivity : TauriActivity() {
     /** Interface vivante (WebView créé) : c'est elle qui notifie, avec le
      *  texte déchiffré ; le service ntfy ne prend le relais que sans elle. */
     @Volatile var vivante = false
+    @Volatile var auPremierPlan = false
     private const val DEMANDE_NOTIFICATIONS = 4243
   }
 
@@ -117,8 +118,20 @@ class MainActivity : TauriActivity() {
     }
   }
 
+  @Deprecated("Android settings permission result")
+  override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+    super.onActivityResult(requestCode, resultCode, data)
+    if (requestCode == SionUpdates.REQUEST_PERMISSION) SionUpdates.permissionResult(this)
+  }
+
+  override fun onPause() {
+    auPremierPlan = false
+    super.onPause()
+  }
+
   override fun onResume() {
     super.onResume()
+    auPremierPlan = true
     // Clear push notifications when app comes to foreground
     val manager = getSystemService(NotificationManager::class.java)
     for (notification in manager.activeNotifications) {
@@ -231,6 +244,7 @@ class MainActivity : TauriActivity() {
 
   override fun onDestroy() {
     vivante = false
+    auPremierPlan = false
     voiceActionReceiver?.let { unregisterReceiver(it) }
     super.onDestroy()
   }

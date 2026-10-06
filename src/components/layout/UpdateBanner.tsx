@@ -1,93 +1,63 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { checkForUpdate, type UpdateInfo } from "../../services/updateService";
+import { useUpdateStore } from "../../stores/useUpdateStore";
+import { isMissingUpdaterCommand } from "../../utils/updateError";
+import { useSettingsStore } from "../../stores/useSettingsStore";
+import { useAppStore } from "../../stores/useAppStore";
+import { openExternalUrl } from "../../utils/openExternal";
+import "./UpdateBanner.css";
+import { SUR_ANDROID } from "../../utils/plateforme";
 
 export function UpdateBanner() {
   const { t } = useTranslation();
-  const [update, setUpdate] = useState<UpdateInfo | null>(null);
-  const [dismissed, setDismissed] = useState(false);
-
+  const state = useUpdateStore();
+  const check = state.check;
+  const experimental = useSettingsStore((s) => s.experimentalUpdates);
+  const inCall = useAppStore((s) => !!s.connectedVoiceChannel);
+  const [notesOpen, setNotesOpen] = useState(false);
   useEffect(() => {
-    checkForUpdate().then(setUpdate);
-    const timer = setInterval(() => {
-      checkForUpdate().then(setUpdate);
-    }, 60 * 60 * 1000);
+    void check();
+    const timer = setInterval(() => { void useUpdateStore.getState().check(); }, 60 * 60 * 1000);
     return () => clearInterval(timer);
-  }, []);
+  }, [experimental, check]);
 
-  if (!update || dismissed) return null;
-
-  const handleDownload = () => {
-    if (update.releaseUrl) {
-      if (window.__TAURI_INTERNALS__) {
-        import("../../utils/openExternal").then(({ openExternalUrl }) => openExternalUrl(update.releaseUrl));
-      } else {
-        window.open(update.releaseUrl, "_blank");
-      }
-    }
-  };
-
-  return (
-    <div style={{
-      position: "fixed",
-      top: 0,
-      left: 0,
-      right: 0,
-      zIndex: 9999,
-      display: "flex",
-      alignItems: "center",
-      justifyContent: "center",
-      gap: 10,
-      padding: "6px 16px",
-      background: "linear-gradient(135deg, var(--color-primary), var(--color-tertiary, var(--color-primary)))",
-      color: "var(--color-on-primary)",
-      fontSize: 12,
-      fontWeight: 500,
-      letterSpacing: "0.01em",
+  const { update, status, stagedPath } = state;
+  if (!update || state.dismissed) return null;
+  const busy = ["checking", "downloading", "installing", "permission"].includes(status);
+  const percent = state.total ? Math.min(100, Math.floor(state.downloaded * 100 / state.total)) : null;
+  const channel = update.channel === "stable" ? "" : t(`update.channel.${update.channel}`);
+  const message = status === "downloading" ? t("update.downloading", { progress: percent === null ? `${(state.downloaded / 1048576).toFixed(1)} Mo` : `${percent} %` }) :
+    status === "installing" ? t("update.installing") : status === "permission" ? t("update.permission") :
+    stagedPath ? t("update.ready", { version: update.version }) : t("update.available", { version: update.version });
+  return <>
+    <div className="sion-update-banner" role="region" aria-label={t("update.title")} style={{
+      position: "fixed", top: 0, left: 0, right: 0, zIndex: 9999, display: "flex", flexWrap: "wrap",
+      alignItems: "center", justifyContent: "center", gap: 8, padding: "8px 16px",
+      background: "var(--color-primary)", color: "var(--color-on-primary)", fontSize: 12,
       boxShadow: "0 2px 8px rgba(0,0,0,0.3)",
     }}>
-      <span style={{ opacity: 0.9 }}>
-        {t("update.available", { version: update.version })}
-      </span>
-      <button
-        onClick={handleDownload}
-        style={{
-          padding: "3px 14px",
-          borderRadius: 12,
-          border: "1px solid rgba(255,255,255,0.3)",
-          background: "rgba(255,255,255,0.15)",
-          color: "var(--color-on-primary)",
-          fontSize: 11,
-          fontWeight: 600,
-          cursor: "pointer",
-          fontFamily: "inherit",
-          transition: "background 150ms",
-        }}
-        onMouseEnter={(e) => (e.currentTarget.style.background = "rgba(255,255,255,0.25)")}
-        onMouseLeave={(e) => (e.currentTarget.style.background = "rgba(255,255,255,0.15)")}
-      >
-        {t("update.download")}
-      </button>
-      <button
-        onClick={() => setDismissed(true)}
-        style={{
-          position: "absolute",
-          right: 12,
-          padding: "2px 6px",
-          borderRadius: 6,
-          border: "none",
-          background: "transparent",
-          color: "var(--color-on-primary)",
-          fontSize: 13,
-          cursor: "pointer",
-          opacity: 0.6,
-          transition: "opacity 150ms",
-        }}
-        onMouseEnter={(e) => (e.currentTarget.style.opacity = "1")}
-        onMouseLeave={(e) => (e.currentTarget.style.opacity = "0.6")}
-      >
-        ✕
-      </button>
+      {channel && <strong>{channel}</strong>}
+      <span role="status">{message}</span>
+      {status === "error" && <span role="alert">{isMissingUpdaterCommand(state.error) ? t("update.restartRequired") : <>{t("update.failed")} {state.error}</>}</span>}
+      {!busy && <button disabled={!!stagedPath && inCall} onClick={() => void (stagedPath ? state.install() : state.download())}>
+        {stagedPath ? (SUR_ANDROID ? t("update.install") : t("update.installRelaunch")) : t("update.download")}
+      </button>}
+      {stagedPath && inCall && <span>{t("update.finishCall")}</span>}
+      <button onClick={() => setNotesOpen(true)}>{t("update.notes")}</button>
+      {status === "error" && stagedPath && <button onClick={() => void state.download()}>{t("update.redownload")}</button>}
+      {status === "error" && <button onClick={() => void openExternalUrl(update.downloadUrl)}>{t("update.manual")}</button>}
+      {!busy && <button onClick={state.dismiss}>{t("update.later")}</button>}
+      {status === "downloading" && <progress aria-label={t("update.download")} value={percent ?? undefined} max={100} style={{ width: 100 }} />}
     </div>
-  );
+    {notesOpen && <div style={{ position: "fixed", inset: 0, zIndex: 10000, background: "rgba(0,0,0,.6)", display: "grid", placeItems: "center", padding: 20 }}>
+      <section className="sion-update-notes" role="dialog" aria-modal="true" aria-label={t("update.notes")} onKeyDown={(event) => { if (event.key === "Escape") setNotesOpen(false); }} style={{ background: "var(--color-surface)", color: "var(--color-on-surface)", padding: 24, borderRadius: 16, maxWidth: 650, width: "100%", maxHeight: "80vh", overflow: "auto" }}>
+        <h2>Sion {update.version}</h2>
+        <div style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{update.notes || t("update.noNotes")}</div>
+        <div style={{ display: "flex", gap: 12, marginTop: 16 }}>
+          <button onClick={() => void openExternalUrl(update.releaseUrl)}>{t("update.releasePage")}</button>
+          <button autoFocus onClick={() => setNotesOpen(false)}>{t("update.close")}</button>
+        </div>
+      </section>
+    </div>}
+  </>;
 }

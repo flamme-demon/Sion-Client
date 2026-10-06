@@ -50,6 +50,7 @@ mod lecteur_audio;
 #[cfg(not(target_os = "android"))]
 mod lecteur_video;
 mod media_server;
+mod mises_a_jour;
 mod matrix_pont;
 // Windows : l'appel ne passe pas après un jeu (priorité, bridage d'arrière-plan).
 #[cfg(feature = "native-voice")]
@@ -3840,6 +3841,9 @@ pub fn run() {
 
     #[cfg(not(target_os = "android"))]
     let builder = builder.invoke_handler(tauri::generate_handler![
+        mises_a_jour::update_platform,
+        mises_a_jour::update_download,
+        mises_a_jour::update_install,
         matrix_pont::matrix_moteur,
         matrix_pont::commandes::matrix_etat,
         matrix_pont::commandes::matrix_connecter,
@@ -4069,6 +4073,8 @@ pub fn run() {
 
     #[cfg(target_os = "android")]
     let builder = builder.invoke_handler(tauri::generate_handler![
+        mises_a_jour::update_platform,
+        mises_a_jour::update_download,
         matrix_pont::matrix_moteur,
         matrix_pont::commandes::matrix_etat,
         matrix_pont::commandes::matrix_connecter,
@@ -4236,6 +4242,10 @@ pub fn run() {
     // events under the hood; no JS glue needed for the default behaviour.
     #[cfg(not(target_os = "android"))]
     let builder = builder.plugin(tauri_plugin_window_state::Builder::default().build());
+
+    let builder = builder.manage(mises_a_jour::UpdateState::default());
+    #[cfg(not(target_os = "android"))]
+    let builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
 
     let builder = matrix_pont::enregistrer_protocole(builder);
     // Android : images du partage reçu lues par requêtes (le WebView ne peut

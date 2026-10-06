@@ -52,6 +52,15 @@ class VoiceServiceBridge(private val context: Context) {
     }
 
     @JavascriptInterface
+    fun installUpdate(path: String, version: String): String {
+        val activity = context as? android.app.Activity ?: return "error:Interface Android indisponible."
+        return SionUpdates.install(activity, path, version)
+    }
+
+    @JavascriptInterface
+    fun updateInstallState(): String = SionUpdates.status()
+
+    @JavascriptInterface
     fun startVoiceService(channelName: String, isMuted: Boolean, isDeafened: Boolean) {
         VoiceCallService.start(context, channelName, isMuted, isDeafened)
     }

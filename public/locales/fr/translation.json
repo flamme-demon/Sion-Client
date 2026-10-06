@@ -4,8 +4,37 @@
     "subtitle": "Client vocal et texte Matrix"
   },
   "update": {
-    "available": "Nouvelle version v{{version}} disponible",
-    "download": "Télécharger"
+    "available": "Sion {{version}} est disponible",
+    "download": "Télécharger",
+    "title": "Mises à jour",
+    "experimental": "Recevoir les mises à jour expérimentales (alpha et bêta)",
+    "experimentalHint": "Ces versions peuvent contenir des bugs. Désactiver cette option arrête les propositions expérimentales sans rétrograder la version installée.",
+    "current": "Version installée : {{version}}",
+    "check": "Vérifier les mises à jour",
+    "checking": "Vérification…",
+    "upToDate": "À jour pour le canal choisi",
+    "downloading": "Téléchargement : {{progress}}",
+    "ready": "Sion {{version}} est prêt à installer",
+    "install": "Installer",
+    "installRelaunch": "Installer et relancer",
+    "installing": "Installation en cours…",
+    "permission": "Autorise Sion à installer ses mises à jour dans les paramètres Android.",
+    "finishCall": "Termine l’appel avant d’installer.",
+    "failed": "La mise à jour a échoué.",
+    "manual": "Télécharger manuellement",
+    "later": "Plus tard",
+    "notes": "Voir les nouveautés",
+    "noNotes": "Aucune note disponible.",
+    "releasePage": "Ouvrir la release",
+    "close": "Fermer",
+    "channel": {
+      "alpha": "Version alpha",
+      "beta": "Version bêta",
+      "rc": "Version candidate",
+      "experimental": "Version expérimentale"
+    },
+    "redownload": "Télécharger à nouveau",
+    "restartRequired": "Le moteur de mise à jour n’est pas chargé. Ferme complètement Sion puis relance-le avec la version reconstruite ou réinstallée."
   },
   "download": {
     "saved": "{{filename}} téléchargé",
