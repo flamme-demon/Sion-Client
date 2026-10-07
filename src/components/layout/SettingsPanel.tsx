@@ -563,10 +563,7 @@ export function SettingsPanel() {
           {!isMobile && <div style={{ background: 'var(--color-surface-container)', borderRadius: 16, padding: 16 }}>
             <div style={{ fontSize: 14, color: 'var(--color-on-surface)', marginBottom: 12 }}>{t("layout.backgrounds")}</div>
             {(["chat", "channels", ...PANNEAU_IDS] as const).map((scope) => (
-              <div key={scope} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, padding: '6px 0' }}>
-                <span style={{ fontSize: 12 }}>{t(scope === "chat" ? "layout.chat" : scope === "channels" ? "layout.channels" : PANNEAU_TITRES[scope])}</span>
-                <BackgroundControls scope={scope} inline />
-              </div>
+              <BackgroundControls key={scope} scope={scope} inline label={t(scope === "chat" ? "layout.chat" : scope === "channels" ? "layout.channels" : PANNEAU_TITRES[scope])} />
             ))}
           </div>}
           {/* Profil : thème, fonds et sons dans un seul fichier. */}

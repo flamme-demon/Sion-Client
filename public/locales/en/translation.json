@@ -45,6 +45,7 @@
   },
   "layout": {
     "bgOpacity": "Background opacity",
+    "bgPosition": "Position",
     "bgPick": "Choose a background image",
     "bgPreparing": "Preparing background…",
     "bgRemove": "Remove background",

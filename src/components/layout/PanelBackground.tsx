@@ -2,13 +2,14 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useLayoutStore, type BackgroundScope } from "../../stores/useLayoutStore";
 import { pickPanelBackground, usePanelBackgroundUrl, bgAnchorCss } from "../../services/panelBackground";
+import { CloseIcon } from "../icons";
 
 /**
  * Contrôle d'édition d'un fond d'image : choisir / remplacer, régler
  * l'opacité, retirer. Affiché dans les réglages d'apparence ; la bulle
  * conserve seulement le calque de fond.
  */
-export function BackgroundControls({ scope, inline = false }: { scope: BackgroundScope; inline?: boolean }) {
+export function BackgroundControls({ scope, inline = false, label }: { scope: BackgroundScope; inline?: boolean; label?: string }) {
   const { t } = useTranslation();
   const cfg = useLayoutStore((s) => s.panelBackgrounds[scope]);
   const setPanelBackground = useLayoutStore((s) => s.setPanelBackground);
@@ -20,111 +21,104 @@ export function BackgroundControls({ scope, inline = false }: { scope: Backgroun
 
   const hasImage = !!cfg;
   return (
-    <div style={{
-      position: 'relative', flexWrap: 'wrap',
-      display: 'flex', alignItems: 'center', gap: 6,
-      padding: '3px 6px', borderRadius: 999,
-      background: 'var(--color-surface-container-high)',
-      border: '1px solid var(--color-outline-variant)',
-    }}>
-      <button
-        type="button"
-        // Une vidéo est transcodée à l'import, ce qui prend de plusieurs
-        // secondes à une minute selon le fichier. Sans retour visuel, le clic
-        // paraissait sans effet et l'on recommençait (18/09).
-        disabled={enCours}
-        onClick={() => {
-          setEnCours(true);
-          void pickPanelBackground(scope).finally(() => setEnCours(false));
-        }}
-        aria-label={t("layout.bgPick")}
-        title={enCours
-          ? t("layout.bgPreparing", { defaultValue: "Préparation du fond…" })
-          : hasImage
-            ? t("layout.bgReplace", { defaultValue: "Remplacer l'image de fond" })
-            : t("layout.bgPick", { defaultValue: "Choisir une image de fond" })}
-        style={{ border: 'none', background: 'transparent', cursor: 'pointer', padding: 2, display: 'flex', color: 'var(--color-on-surface-variant)' }}
-      >
-        {enCours ? (
-          // Sablier animé par la même rotation que les autres attentes.
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-            <path d="M21 12a9 9 0 1 1-6.219-8.56">
-              <animateTransform attributeName="transform" type="rotate" from="0 12 12" to="360 12 12" dur="0.9s" repeatCount="indefinite" />
-            </path>
-          </svg>
-        ) : (
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <rect x="3" y="3" width="18" height="18" rx="2" />
-          <circle cx="8.5" cy="8.5" r="1.5" />
-          <path d="m21 15-5-5L5 21" />
-        </svg>
-        )}
-      </button>
+    <div className={`sion-reglage-fond${hasImage ? " sion-reglage-fond--actif" : ""}`}>
+      <div className="sion-reglage-fond-entete">
+        <span>{label}</span>
+        <button
+          className="sion-reglage-fond-action"
+          type="button"
+          // Une vidéo est transcodée à l'import, ce qui prend de plusieurs
+          // secondes à une minute selon le fichier. Sans retour visuel, le clic
+          // paraissait sans effet et l'on recommençait (18/09).
+          disabled={enCours}
+          onClick={() => {
+            setEnCours(true);
+            void pickPanelBackground(scope).finally(() => setEnCours(false));
+          }}
+          aria-label={t(hasImage ? "layout.bgReplace" : "layout.bgPick")}
+          aria-busy={enCours}
+          title={enCours
+            ? t("layout.bgPreparing", { defaultValue: "Préparation du fond…" })
+            : hasImage
+              ? t("layout.bgReplace", { defaultValue: "Remplacer l'image de fond" })
+              : t("layout.bgPick", { defaultValue: "Choisir une image de fond" })}
+        >
+          {enCours ? (
+            // Sablier animé par la même rotation que les autres attentes.
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+              <path d="M21 12a9 9 0 1 1-6.219-8.56">
+                <animateTransform attributeName="transform" type="rotate" from="0 12 12" to="360 12 12" dur="0.9s" repeatCount="indefinite" />
+              </path>
+            </svg>
+          ) : (
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <rect x="3" y="3" width="18" height="18" rx="2" />
+              <circle cx="8.5" cy="8.5" r="1.5" />
+              <path d="m21 15-5-5L5 21" />
+            </svg>
+          )}
+        </button>
+        {hasImage && <button
+          className="sion-reglage-fond-action"
+          type="button"
+          onClick={() => setPanelBackground(scope, null)}
+          title={t("layout.bgRemove", { defaultValue: "Retirer le fond" })}
+          aria-label={t("layout.bgRemove", { defaultValue: "Retirer le fond" })}
+        ><CloseIcon /></button>}
+      </div>
       {hasImage && (
-        <>
-          <button
-            type="button"
-            onClick={() => {
-              const next = cfg.mode === "blur" ? "veil" : "blur";
-              setPanelBackground(scope, { ...cfg, mode: next });
-            }}
-            title={t("layout.bgMode", { defaultValue: "Voile de lisibilité / fond flouté (image pleine)" })}
-            aria-label={t("layout.bgMode", { defaultValue: "Voile de lisibilité / fond flouté (image pleine)" })}
-            style={{
-              border: '1px solid var(--color-outline-variant)', background: 'transparent',
-              cursor: 'pointer', padding: '1px 8px', borderRadius: 999,
-              color: 'var(--color-on-surface-variant)', fontSize: 11.5, lineHeight: 1.3,
-            }}
-          >
-            {cfg.mode === "blur"
-              ? t("layout.bgModeBlur", { defaultValue: "Flou" })
-              : t("layout.bgModeVeil", { defaultValue: "Voile" })}
-          </button>
-          <input
-            type="range" min={0.05} max={1} step={0.05} value={cfg.opacity}
-            onChange={(e) => {
-              const next = parseFloat(e.target.value);
-              const current = useLayoutStore.getState().panelBackgrounds[scope];
-              if (current) setPanelBackground(scope, { ...current, opacity: next });
-            }}
-            title={t("layout.bgOpacity", { defaultValue: "Opacité du fond" })}
-            style={{ width: 64, accentColor: 'var(--color-primary)' }}
-          />
+        <div className="sion-reglage-fond-options">
+          <div className="sion-reglage-fond-ligne">
+            <button
+              className="sion-reglage-fond-mode"
+              type="button"
+              onClick={() => {
+                const next = cfg.mode === "blur" ? "veil" : "blur";
+                setPanelBackground(scope, { ...cfg, mode: next });
+              }}
+              title={t("layout.bgMode", { defaultValue: "Voile de lisibilité / fond flouté (image pleine)" })}
+              aria-label={t("layout.bgMode", { defaultValue: "Voile de lisibilité / fond flouté (image pleine)" })}
+            >
+              {cfg.mode === "blur"
+                ? t("layout.bgModeBlur", { defaultValue: "Flou" })
+                : t("layout.bgModeVeil", { defaultValue: "Voile" })}
+            </button>
+            <label className="sion-reglage-fond-opacite">
+              <span>{t("layout.bgOpacity", { defaultValue: "Opacité du fond" })}<output>{Math.round(cfg.opacity * 100)} %</output></span>
+              <input
+                type="range" min={0.05} max={1} step={0.05} value={cfg.opacity}
+                onChange={(e) => {
+                  const next = parseFloat(e.target.value);
+                  const current = useLayoutStore.getState().panelBackgrounds[scope];
+                  if (current) setPanelBackground(scope, { ...current, opacity: next });
+                }}
+                title={t("layout.bgOpacity", { defaultValue: "Opacité du fond" })}
+                aria-label={t("layout.bgOpacity", { defaultValue: "Opacité du fond" })}
+              />
+            </label>
+          </div>
           {/* Ancrage : « cover » recadre l'image — choisir la zone conservée
               (une photo portrait dans un panneau large : garder le haut). */}
-          <div
-            role="group"
-            aria-label={t("layout.bgAnchor", { defaultValue: "Zone de l'image conservée quand elle est recadrée" })}
-            title={t("layout.bgAnchor", { defaultValue: "Zone de l'image conservée quand elle est recadrée" })}
-            style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 11px)', gap: 2 }}
-          >
-            {(["tl", "tc", "tr", "ml", "mc", "mr", "bl", "bc", "br"] as const).map((a) => (
-              <button
-                key={a}
-                type="button"
-                aria-label={a}
-                aria-pressed={(cfg.anchor ?? "mc") === a}
-                onClick={() => setPanelBackground(scope, { ...cfg, anchor: a })}
-                style={{
-                  width: 11, height: 11, padding: 0, borderRadius: 3, cursor: 'pointer',
-                  border: '1px solid var(--color-outline-variant)',
-                  background: (cfg.anchor ?? "mc") === a ? 'var(--color-primary)' : 'transparent',
-                }}
-              />
-            ))}
+          <div className="sion-reglage-fond-position">
+            <span>{t("layout.bgPosition", { defaultValue: "Position" })}</span>
+            <div
+              className="sion-reglage-fond-ancrage"
+              role="group"
+              aria-label={t("layout.bgAnchor", { defaultValue: "Zone de l'image conservée quand elle est recadrée" })}
+              title={t("layout.bgAnchor", { defaultValue: "Zone de l'image conservée quand elle est recadrée" })}
+            >
+              {(["tl", "tc", "tr", "ml", "mc", "mr", "bl", "bc", "br"] as const).map((a) => (
+                <button
+                  key={a}
+                  type="button"
+                  aria-label={a}
+                  aria-pressed={(cfg.anchor ?? "mc") === a}
+                  onClick={() => setPanelBackground(scope, { ...cfg, anchor: a })}
+                />
+              ))}
+            </div>
           </div>
-          <button
-            type="button"
-            onClick={() => setPanelBackground(scope, null)}
-            title={t("layout.bgRemove", { defaultValue: "Retirer le fond" })}
-            aria-label={t("layout.bgRemove", { defaultValue: "Retirer le fond" })}
-            style={{
-              border: '1px solid var(--color-outline-variant)', background: 'transparent',
-              cursor: 'pointer', padding: '1px 6px', borderRadius: 999,
-              color: 'var(--color-on-surface-variant)', fontSize: 12, lineHeight: 1.2,
-            }}
-          >✕</button>
-        </>
+        </div>
       )}
     </div>
   );

@@ -574,3 +574,24 @@ button[data-fermer-panneau]:hover { background: var(--color-surface-container-hi
 .sion-recherche-panneau > button { display: flex; align-items: center; justify-content: center; flex-shrink: 0; width: 26px; height: 26px; padding: 0; border: 0; border-radius: 8px; background: color-mix(in srgb, var(--color-green) 14%, transparent); color: var(--color-green); cursor: pointer; font-family: inherit; font-size: 20px; line-height: 1; }
 .sion-recherche-panneau > button:hover { background: color-mix(in srgb, var(--color-green) 24%, transparent); }
 .sion-pied-panneau { background: var(--color-surface-container); border-top: 1px solid var(--color-border); }
+
+.sion-reglage-fond { min-width: 0; padding: 5px 0; }
+.sion-reglage-fond--actif { margin: 4px 0 8px; padding: 10px; border: 1px solid var(--color-border); border-radius: 12px; background: var(--color-surface-container-high); }
+.sion-reglage-fond-entete { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.sion-reglage-fond-entete > span { flex: 1; min-width: 0; font-size: 12px; overflow-wrap: anywhere; }
+.sion-reglage-fond--actif .sion-reglage-fond-entete > span { font-weight: 600; }
+.sion-reglage-fond-action { display: flex; align-items: center; justify-content: center; flex-shrink: 0; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 8px; background: transparent; color: var(--color-on-surface-variant); cursor: pointer; }
+.sion-reglage-fond-action:hover { background: var(--color-surface-container-highest); color: var(--color-primary); }
+.sion-reglage-fond-action:disabled { opacity: 0.5; cursor: wait; }
+.sion-reglage-fond-options { display: flex; flex-direction: column; gap: 10px; margin-top: 10px; }
+.sion-reglage-fond-ligne { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.sion-reglage-fond-mode { flex-shrink: 0; padding: 6px 10px; border: 1px solid var(--color-border); border-radius: 8px; background: var(--color-surface-container); color: var(--color-on-surface); cursor: pointer; font: inherit; font-size: 11px; }
+.sion-reglage-fond-opacite { display: flex; flex-direction: column; gap: 4px; flex: 1; min-width: 0; }
+.sion-reglage-fond-opacite > span { display: flex; justify-content: space-between; gap: 4px; color: var(--color-on-surface-variant); font-size: 10px; }
+.sion-reglage-fond-opacite output { flex-shrink: 0; }
+.sion-reglage-fond-opacite > input { width: 100%; min-width: 0; margin: 0; accent-color: var(--color-primary); }
+.sion-reglage-fond-position { display: flex; align-items: center; justify-content: space-between; gap: 10px; color: var(--color-on-surface-variant); font-size: 11px; }
+.sion-reglage-fond-ancrage { display: grid; grid-template-columns: repeat(3, 18px); gap: 3px; flex-shrink: 0; }
+.sion-reglage-fond-ancrage > button { width: 18px; height: 18px; padding: 0; border: 1px solid var(--color-outline-variant); border-radius: 4px; background: transparent; cursor: pointer; }
+.sion-reglage-fond-ancrage > button[aria-pressed="true"] { border-color: var(--color-primary); background: var(--color-primary); }
+.sion-reglage-fond button:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; }

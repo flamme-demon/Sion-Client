@@ -143,3 +143,15 @@ en mode réduit comme déployé.
 D’après `Capture d'écran_20261007_171442.png` : le raccourci CC est retiré de
 la carte de profil. L’onglet Transcription de l’en-tête reste disponible
 pendant un appel, y compris lorsqu’on consulte un autre salon.
+
+D’après `Capture d'écran_20261007_172108.png` : les réglages de fond ne se
+tassent plus dans une capsule à côté du nom du panneau. Un fond configuré
+affiche une carte avec le titre et les actions en haut, le mode Voile / Flou
+et l’opacité chiffrée sur une ligne, puis une grille de position agrandie.
+Les panneaux sans fond conservent une ligne simple pour choisir une image.
+
+![Réglages des fonds à 280 px](interface-bulles-fonds.png)
+
+Aperçu Chromium à 280 px : aucun débordement ; commandes contenues dans la
+carte ; bascule Voile / Flou, changement d’opacité, position et retrait du
+fond vérifiés. Compilation de production réussie.

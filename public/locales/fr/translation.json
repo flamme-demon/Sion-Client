@@ -45,6 +45,7 @@
   },
   "layout": {
     "bgOpacity": "Opacité du fond",
+    "bgPosition": "Position",
     "bgPick": "Choisir une image de fond",
     "bgPreparing": "Préparation du fond…",
     "bgRemove": "Retirer le fond",
