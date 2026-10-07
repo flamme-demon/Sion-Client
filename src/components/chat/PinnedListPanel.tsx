@@ -2,7 +2,6 @@ import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useAppStore } from "../../stores/useAppStore";
 import { useMatrixStore } from "../../stores/useMatrixStore";
-import { DOCK_ZONE_IDS, useLayoutStore } from "../../stores/useLayoutStore";
 import * as matrixService from "../../services/matrixService";
 import { plainPreview } from "../../utils/plainPreview";
 import { allerAuMessage } from "../../services/allerAuMessage";
@@ -29,14 +28,7 @@ export function PinnedListPanel() {
   // Re-lire quand les épingles changent pendant que le panneau est ouvert.
   const pinnedVersion = useMatrixStore((s) => s.pinnedVersion);
   const [pins, setPins] = useState<PinnedSummary[] | null>(null);
-  // Mise en forme selon la zone d'accueil : une colonne à droite, une
-  // pellicule horizontale dans un bandeau. Le bandeau est large et bas ; une
-  // liste verticale n'y montrerait qu'une entrée, alors qu'une rangée de
-  // vignettes s'y parcourt d'un coup d'œil.
-  const enBandeau = useLayoutStore((s) => {
-    const zone = DOCK_ZONE_IDS.find((id) => s.dockZones[id].panels.includes("pinned"));
-    return zone === "bottom" || zone === "top";
-  });
+  const enBandeau = false;
 
   useEffect(() => {
     if (!activeChannel) return;

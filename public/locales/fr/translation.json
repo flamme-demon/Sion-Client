@@ -87,7 +87,10 @@
     "editLayoutHint": "Glissez les blocs dans la grille (haut / droite / bas)",
     "editDone": "Terminé",
     "editReset": "Réinitialiser",
-    "editHidePanel": "Masquer ce bloc"
+    "editHidePanel": "Masquer ce bloc",
+    "backgrounds": "Fonds des panneaux",
+    "chat": "Conversation",
+    "channels": "Salons"
   },
   "server": {
     "online": "En ligne"
@@ -903,7 +906,7 @@
   },
   "profile": {
     "title": "Profil",
-    "hint": "Disposition, thème, fonds de panneaux et sons d'événements dans un seul fichier, pour les partager ou les retrouver sur une autre machine.",
+    "hint": "Exporter ou importer le thème, les fonds et les sons dans un seul fichier.",
     "exportButton": "Exporter mon profil…",
     "importButton": "Importer un profil…",
     "menuHint": "Disposition, thème, fonds et sons, dans un fichier",

@@ -8,7 +8,6 @@ import { usePendingUsersStore } from "../../stores/usePendingUsersStore";
 import { useIsMobile } from "../../hooks/useIsMobile";
 import * as matrixService from "../../services/matrixService";
 import { useLiveKitStore } from "../../stores/useLiveKitStore";
-import { LayoutPresetsMenu } from "../layout/LayoutPresetsMenu";
 
 // Modal lourde (options de partage) hors du chunk de démarrage (perf
 // mémoire, 2026-09-12) : elle n'apparaît qu'au clic sur « Partager ».
@@ -106,9 +105,8 @@ export function ChatHeader() {
   const isMobile = useIsMobile();
   // Panneaux de la dock ouverts (zone droite ou basse) : les bascules du
   // header s'allument quand leur panneau est ouvert quelque part.
-  const dockZones = useLayoutStore((s) => s.dockZones);
-  const dockPanelOpen = (id: "members" | "soundboard" | "memeboard" | "transcript") =>
-    dockZones.right.panels.includes(id) || dockZones.bottom.panels.includes(id);
+  const panneau = useLayoutStore((s) => s.panneau);
+  const panelOpen = (id: string) => panneau === id;
 
   const channel = channels.find((c) => c.id === activeChannel);
   const channelName = channel?.name || "general";
@@ -281,14 +279,14 @@ export function ChatHeader() {
           )}
           {!isMobile && !channel?.isDM && (
             <button
-              onClick={() => useLayoutStore.getState().toggleDockPanel("members")}
+              onClick={() => useLayoutStore.getState().basculerPanneau("members")}
               style={{
                 padding: 6,
                 borderRadius: 8,
                 border: 'none',
                 cursor: 'pointer',
                 background: 'transparent',
-                color: dockPanelOpen("members") ? 'var(--color-primary)' : 'var(--color-on-surface-variant)',
+                color: panelOpen("members") ? 'var(--color-primary)' : 'var(--color-on-surface-variant)',
                 display: 'flex',
                 alignItems: 'center',
                 transition: 'background 200ms',
@@ -302,14 +300,14 @@ export function ChatHeader() {
           )}
           {channels.some((c) => c.isSoundboard) && (
             <button
-              onClick={() => useLayoutStore.getState().toggleDockPanel("soundboard")}
+              onClick={() => useLayoutStore.getState().basculerPanneau("soundboard")}
               style={{
                 padding: 6,
                 borderRadius: 8,
                 border: 'none',
                 cursor: 'pointer',
                 background: 'transparent',
-                color: dockPanelOpen("soundboard") ? 'var(--color-primary)' : 'var(--color-on-surface-variant)',
+                color: panelOpen("soundboard") ? 'var(--color-primary)' : 'var(--color-on-surface-variant)',
                 display: 'flex',
                 alignItems: 'center',
                 transition: 'background 200ms',
@@ -327,14 +325,14 @@ export function ChatHeader() {
           )}
           {channels.some((c) => c.isSoundboard) && (
             <button
-              onClick={() => useLayoutStore.getState().toggleDockPanel("memeboard")}
+              onClick={() => useLayoutStore.getState().basculerPanneau("memeboard")}
               style={{
                 padding: 6,
                 borderRadius: 8,
                 border: 'none',
                 cursor: 'pointer',
                 background: 'transparent',
-                color: dockPanelOpen("memeboard") ? 'var(--color-primary)' : 'var(--color-on-surface-variant)',
+                color: panelOpen("memeboard") ? 'var(--color-primary)' : 'var(--color-on-surface-variant)',
                 display: 'flex',
                 alignItems: 'center',
                 transition: 'background 200ms',
@@ -349,7 +347,6 @@ export function ChatHeader() {
               </svg>
             </button>
           )}
-          {!isMobile && <LayoutPresetsMenu />}
           {!isMobile && (
             channel?.hasVoice ? (
               <span style={{

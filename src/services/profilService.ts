@@ -1,17 +1,17 @@
 /**
  * Profils Sion (`.sionprofil`) : exporter et importer, en une fois, la
- * disposition, le thème (et sa couleur d'accent), les fonds de panneaux et
+ * thème (et sa couleur d'accent), les fonds de panneaux et
  * les sons d'événements.
  *
  * L'archive est écrite et lue par Rust (`profil.rs`) ; ici, on compose le
  * manifeste et on le valide section par section. Rien d'un fichier reçu
  * n'atteint un store sans être passé par le même contrôle que l'import
- * isolé correspondant : `parseLayoutFile`, `parseThemeFile`, bornes des
+ * isolé correspondant : `parseThemeFile`, bornes des
  * fonds et des sons.
  */
 import { invoke } from "@tauri-apps/api/core";
 import {
-  DOCK_PANEL_DEFAULT_ZONE,
+  PANNEAU_IDS,
   useLayoutStore,
   type BackgroundScope,
   type BgAnchor,
@@ -22,18 +22,17 @@ import { useThemeStore } from "../stores/useThemeStore";
 import { BUILTIN_THEMES } from "../themes/builtin";
 import { normaliserAccent } from "../themes/accent";
 import type { Theme } from "../themes/types";
-import { applyLayout, layoutToJson, parseLayoutFile, type Disposition } from "./layoutFile";
 import { parseThemeFile, themeToJson } from "./themeService";
 
 const FORMAT = 1;
 const GENRE = "sion-profile";
 
-export type SectionProfil = "disposition" | "theme" | "fonds" | "sons";
+export type SectionProfil = "theme" | "fonds" | "sons";
 export type SectionsProfil = Record<SectionProfil, boolean>;
 
 /** Cochées par défaut à l'export : les sons restent décochés, ils peuvent
  *  peser lourd et sont plus personnels. */
-export const SECTIONS_PAR_DEFAUT: SectionsProfil = { disposition: true, theme: true, fonds: true, sons: false };
+export const SECTIONS_PAR_DEFAUT: SectionsProfil = { theme: true, fonds: true, sons: false };
 
 // Listes complètes, vérifiées par le compilateur : un `Record` exige chaque clé.
 const CUES: Record<VoiceCue, true> = {
@@ -43,7 +42,7 @@ const CUES: Record<VoiceCue, true> = {
 const ANCRAGES: Record<BgAnchor, true> = {
   tl: true, tc: true, tr: true, ml: true, mc: true, mr: true, bl: true, bc: true, br: true,
 };
-const PORTEES: BackgroundScope[] = ["chat", "channels", ...(Object.keys(DOCK_PANEL_DEFAULT_ZONE) as BackgroundScope[])];
+const PORTEES: BackgroundScope[] = ["chat", "channels", ...PANNEAU_IDS];
 
 /** Ce que la machine peut exporter, pour les cases de la fenêtre. */
 export function contenuExportable() {
@@ -76,7 +75,6 @@ export function composerProfil(sections: SectionsProfil): { manifeste: string; f
     app: typeof __APP_VERSION__ !== "undefined" ? __APP_VERSION__ : null,
     createdAt: new Date().toISOString(),
   };
-  if (sections.disposition) profil.layout = JSON.parse(layoutToJson());
   if (sections.theme) {
     const { themeId, customThemes, accent } = useThemeStore.getState();
     const perso = customThemes.find((t) => t.id === themeId);
@@ -148,7 +146,6 @@ export interface ProfilLu {
   chemin: string;
   app: string | null;
   createdAt: string | null;
-  disposition?: Disposition;
   theme?: ThemeLu;
   fonds?: Partial<Record<BackgroundScope, FondLu>>;
   sons?: Partial<Record<VoiceCue, SonLu>>;
@@ -181,10 +178,7 @@ export function analyserManifeste(
     createdAt: typeof brut.createdAt === "string" ? brut.createdAt.slice(0, 40) : null,
   };
 
-  if (brut.layout && typeof brut.layout === "object") {
-    const lu = parseLayoutFile(JSON.stringify(brut.layout));
-    if ("disposition" in lu) profil.disposition = lu.disposition;
-  }
+  // Les anciens profils peuvent porter layout : cette section est ignorée.
 
   const t = brut.theme as { id?: unknown; custom?: unknown; accent?: unknown } | undefined;
   if (t && typeof t === "object") {
@@ -247,7 +241,6 @@ export async function lireProfil(): Promise<{ profil: ProfilLu } | { error: Erre
 /** Sections présentes dans un profil lu. */
 export function sectionsPresentes(p: ProfilLu): SectionsProfil {
   return {
-    disposition: !!p.disposition,
     theme: !!p.theme,
     fonds: !!p.fonds && Object.keys(p.fonds).length > 0,
     sons: !!p.sons && Object.keys(p.sons).length > 0,
@@ -268,7 +261,6 @@ export async function appliquerProfil(p: ProfilLu, sections: SectionsProfil): Pr
     ? await invoke<Record<string, string>>("profil_extraire", { chemin: p.chemin, noms: aExtraire })
     : {};
 
-  if (sections.disposition && p.disposition) applyLayout(p.disposition);
 
   if (sections.theme && p.theme) {
     const store = useThemeStore.getState();

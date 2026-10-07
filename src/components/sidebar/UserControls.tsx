@@ -48,18 +48,7 @@ export function UserControls({ compact = false }: { compact?: boolean }) {
   const clockSkewMin = useAppStore((s) => s.clockSkewMin);
   const setE2EEUnhealthy = useAppStore((s) => s.setE2EEUnhealthy);
   const { leaveVoiceChannel } = useVoiceChannel();
-  // Le bloc voix vit-il dans le menu ? Dérivé de la DOCK, jamais d'un drapeau
-  // séparé : deux sources de vérité se désynchronisent (état hérité : drapeau
-  // « au menu » + panneau présent dans une zone) et le bloc s'affichait des
-  // DEUX côtés pendant l'édition.
-  const dockZones = useLayoutStore((s) => s.dockZones);
-  const voiceInMenu = !dockZones.top.panels.includes("voice")
-    && !dockZones.right.panels.includes("voice")
-    && !dockZones.bottom.panels.includes("voice");
-  const layoutEditing = useLayoutStore((s) => s.layoutEditing);
-  const transcriptPanelOpen = useLayoutStore(
-    (s) => s.dockZones.right.panels.includes("transcript") || s.dockZones.bottom.panels.includes("transcript"),
-  );
+  const transcriptPanelOpen = useLayoutStore((s) => s.panneau === "transcript");
   const transcriptState = useTranscriptStore((s) => s.state);
   const transcriptInvites = useTranscriptStore((s) => s.armedPeers.length);
   // Brief "done" feedback after the user hits the republish-presence recovery.
@@ -127,56 +116,6 @@ export function UserControls({ compact = false }: { compact?: boolean }) {
     }}>
       <AccountPopover compact={compact} />
 
-      {/* Mode édition : le menu latéral est la cible « origine ». Quand le bloc
-          voix est ici, ce cadre se saisit (on le glisse vers une zone) ; quand
-          il est détaché, c'est ici qu'on le repose pour le rapatrier. */}
-      {layoutEditing && (
-        <div
-          data-dock-zone="menu"
-          title={t("layout.editLayoutHint", { defaultValue: "Glissez les blocs dans la grille (haut / droite / bas)" })}
-          onPointerDown={(e) => {
-            if (!inVoice || !voiceInMenu || e.button !== 0) return;
-            e.preventDefault();
-            useLayoutStore.getState().setPanelDrag("voice");
-            const targetZone = (x: number, y: number) => {
-              const el = document.elementFromPoint(x, y);
-              const value = (el?.closest?.("[data-dock-zone]") as HTMLElement | null)?.dataset?.dockZone;
-              return value === "top" || value === "right" || value === "bottom" ? value : null;
-            };
-            const onMove = (ev: PointerEvent) => {
-              const zone = targetZone(ev.clientX, ev.clientY);
-              if (zone !== useLayoutStore.getState().dragOverZone) useLayoutStore.getState().setPanelDrag("voice", zone);
-            };
-            const onUp = (ev: PointerEvent) => {
-              window.removeEventListener("pointermove", onMove);
-              window.removeEventListener("pointerup", onUp);
-              const zone = targetZone(ev.clientX, ev.clientY);
-              if (zone) useLayoutStore.getState().moveDockPanel("voice", zone);
-              useLayoutStore.getState().setPanelDrag(null);
-            };
-            window.addEventListener("pointermove", onMove);
-            window.addEventListener("pointerup", onUp);
-          }}
-          style={{
-            position: 'absolute', inset: 0, zIndex: 4, borderRadius: 12,
-            border: '2px dashed var(--color-primary)',
-            cursor: inVoice && voiceInMenu ? 'grab' : 'default',
-            pointerEvents: inVoice ? 'auto' : 'none',
-            display: 'flex', alignItems: 'flex-start', justifyContent: 'center',
-          }}
-        >
-          <span style={{
-            marginTop: 4, padding: '2px 8px', borderRadius: 999,
-            background: 'var(--color-surface-container)', color: 'var(--color-primary)',
-            fontSize: 10, fontWeight: 700, letterSpacing: '0.06em', textTransform: 'uppercase',
-          }}>
-            {inVoice && voiceInMenu
-              ? t("layout.zoneMenu", { defaultValue: "Menu" })
-              : t("layout.dropHere", { defaultValue: "Déposer ici" })}
-          </span>
-        </div>
-      )}
-
       {/* Horloge décalée : l'utilisateur ne voit plus personne en vocal et les
           autres ne le voient plus non plus, sans qu'aucun symptôme ne l'explique. */}
       {clockSkewMin !== 0 && (
@@ -204,9 +143,9 @@ export function UserControls({ compact = false }: { compact?: boolean }) {
         )
       )}
 
-      {!inVoice && voiceInMenu && <CarteReconnexion compact={compact} />}
+      {!inVoice && <CarteReconnexion compact={compact} />}
 
-      {inVoice && voiceInMenu && (
+      {inVoice && (
         compact ? (
           // Rail : la carte vocale se réduit à une colonne d'icônes —
           // récupération E2EE, micro, son, transcription, raccrocher. Elle
@@ -242,7 +181,7 @@ export function UserControls({ compact = false }: { compact?: boolean }) {
               <HeadphoneIcon muted={isDeafened} />
             </button>
             <button
-              onClick={() => useLayoutStore.getState().toggleDockPanel("transcript")}
+              onClick={() => useLayoutStore.getState().basculerPanneau("transcript")}
               title={t("transcript.togglePanel", { defaultValue: "Transcription de la réunion" })}
               style={iconBtnStyle(transcriptPanelOpen || transcriptState === 'on' || transcriptInvites > 0, 'accent')}
             >
@@ -326,7 +265,7 @@ export function UserControls({ compact = false }: { compact?: boolean }) {
               transcribing — that's an explicit per-user opt-in inside the
               panel (each participant transcribes their own mic, locally). */}
           <button
-            onClick={() => useLayoutStore.getState().toggleDockPanel("transcript")}
+            onClick={() => useLayoutStore.getState().basculerPanneau("transcript")}
             title={t("transcript.togglePanel", { defaultValue: "Transcription de la réunion" })}
             style={{
               display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,

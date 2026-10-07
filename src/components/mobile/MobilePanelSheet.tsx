@@ -1,7 +1,7 @@
 import { Suspense, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { useLayoutStore, type DockPanelId } from "../../stores/useLayoutStore";
-import { PANEL_BODIES, PANEL_TITLE_KEYS, panneauxOuverts } from "../layout/dockPanels";
+import { useLayoutStore, type PanneauId } from "../../stores/useLayoutStore";
+import { PANNEAU_CORPS, PANNEAU_TITRES, panneauxOuverts } from "../layout/panneaux";
 import { CloseIcon } from "../icons";
 
 /**
@@ -13,8 +13,8 @@ import { CloseIcon } from "../icons";
  */
 export function MobilePanelSheet() {
   const { t } = useTranslation();
-  const [courant, setCourant] = useState<DockPanelId | null>(null);
-  const connusRef = useRef<Set<DockPanelId>>(new Set());
+  const [courant, setCourant] = useState<PanneauId | null>(null);
+  const connusRef = useRef<Set<PanneauId>>(new Set());
 
   useEffect(() => {
     const suivre = () => {
@@ -28,8 +28,8 @@ export function MobilePanelSheet() {
   }, []);
 
   if (!courant) return null;
-  const Corps = PANEL_BODIES[courant];
-  const fermer = () => useLayoutStore.getState().closeDockPanel(courant);
+  const Corps = PANNEAU_CORPS[courant];
+  const fermer = () => useLayoutStore.getState().fermerPanneau();
 
   return (
     <div
@@ -56,7 +56,7 @@ export function MobilePanelSheet() {
         </div>
         <div style={{ display: "flex", alignItems: "center", padding: "4px 8px 8px 16px", gap: 8 }}>
           <span style={{ flex: 1, fontSize: 16, fontWeight: 600, color: "var(--color-on-surface)" }}>
-            {t(PANEL_TITLE_KEYS[courant])}
+            {t(PANNEAU_TITRES[courant])}
           </span>
           <button
             onClick={fermer}

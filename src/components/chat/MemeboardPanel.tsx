@@ -8,7 +8,6 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } fro
 import { useTranslation } from "react-i18next";
 import { useSettingsStore } from "../../stores/useSettingsStore";
 import { useLayoutStore } from "../../stores/useLayoutStore";
-import { useDockZone } from "../layout/dockZoneContext";
 import {
   canSendMessage,
   findSoundboardRoom,
@@ -291,7 +290,7 @@ export function MemeboardPanel() {
   const setActif = useSettingsStore((s) => s.setMemeboardEnabled);
   const volume = useSettingsStore((s) => s.memeboardVolume);
   const setVolume = useSettingsStore((s) => s.setMemeboardVolume);
-  const compact = useDockZone() === "bottom";
+  const compact = false;
   const rafraichirRef = useRef<() => void>(() => {});
 
   const annoncer = useCallback((texte: string) => {
@@ -484,7 +483,7 @@ export function MemeboardPanel() {
   const fermer = (
     <button
       type="button"
-      onClick={() => useLayoutStore.getState().closeDockPanel("memeboard")}
+      onClick={() => useLayoutStore.getState().fermerPanneau()}
       title={t("memeboard.close")}
       style={{ flexShrink: 0, border: 'none', background: 'transparent', color: 'var(--color-on-surface-variant)', cursor: 'pointer', fontSize: compact ? 18 : 20, padding: 2, lineHeight: 1 }}
     >×</button>

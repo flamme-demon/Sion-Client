@@ -1,82 +1,18 @@
-import { describe, it, expect, beforeAll, beforeEach } from "vitest";
-
-// Le store persisté touche localStorage dès l'évaluation : stub minimal avant
-// l'import dynamique (même schéma que appStoreVoice.test.ts).
-const store: Record<string, string> = {};
-beforeAll(() => {
-  Object.defineProperty(globalThis, "localStorage", {
-    configurable: true,
-    value: {
-      getItem: (k: string) => store[k] ?? null,
-      setItem: (k: string, v: string) => { store[k] = v; },
-      removeItem: (k: string) => { delete store[k]; },
-      clear: () => { for (const k of Object.keys(store)) delete store[k]; },
-    },
-  });
-  // Graine de layout v1 (largeur unique de la dock) : la migration doit la
-  // transformer en largeur par panneau (v2), puis en taille de zone (v3).
-  store["sion-layout"] = JSON.stringify({
-    state: { sidebarWidth: 300, sidebarMode: "full", rightPanelWidth: 280 },
-    version: 1,
-  });
-});
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-let useLayoutStore: any;
-let K: {
-  DEFAULT: number; MIN: number; MAX: number; SNAP_IN: number; SNAP_OUT: number;
-  ZONE_MIN: number; ZONE_MAX: number; ZONE_DEFAULT: number;
-  BOTTOM_MIN: number; BOTTOM_MAX: number; BOTTOM_DEFAULT: number;
-  SV_DEFAULT: number; SV_MIN: number; SV_MAX: number;
-  FL_MIN_W: number; FL_MIN_H: number;
+import "../test/interface";
+import { describe, it, expect, beforeEach } from "vitest";
+import { useLayoutStore, SIDEBAR_DEFAULT_WIDTH, SIDEBAR_MIN_WIDTH, SIDEBAR_MAX_WIDTH, SIDEBAR_RAIL_SNAP_IN, SIDEBAR_RAIL_SNAP_OUT, SHARE_VIEW_DEFAULT_VH, SHARE_VIEW_MIN_VH, SHARE_VIEW_MAX_VH, SHARE_FLOATING_MIN_W, SHARE_FLOATING_MIN_H } from "./useLayoutStore";
+const K = {
+  DEFAULT: SIDEBAR_DEFAULT_WIDTH, MIN: SIDEBAR_MIN_WIDTH, MAX: SIDEBAR_MAX_WIDTH,
+  SNAP_IN: SIDEBAR_RAIL_SNAP_IN, SNAP_OUT: SIDEBAR_RAIL_SNAP_OUT,
+  SV_DEFAULT: SHARE_VIEW_DEFAULT_VH, SV_MIN: SHARE_VIEW_MIN_VH, SV_MAX: SHARE_VIEW_MAX_VH,
+  FL_MIN_W: SHARE_FLOATING_MIN_W, FL_MIN_H: SHARE_FLOATING_MIN_H,
 };
-/** État issu de la réhydratation au premier import (migrations en chaîne),
- *  capturé ici car les `beforeEach` de test réinitialisent le store. */
-let migrated: { dockRightSize: number; sidebarWidth: number };
-
-beforeAll(async () => {
-  const mod = await import("./useLayoutStore");
-  useLayoutStore = mod.useLayoutStore;
-  K = {
-    DEFAULT: mod.SIDEBAR_DEFAULT_WIDTH,
-    MIN: mod.SIDEBAR_MIN_WIDTH,
-    MAX: mod.SIDEBAR_MAX_WIDTH,
-    SNAP_IN: mod.SIDEBAR_RAIL_SNAP_IN,
-    SNAP_OUT: mod.SIDEBAR_RAIL_SNAP_OUT,
-    ZONE_MIN: mod.DOCK_SIDE_MIN_SIZE,
-    ZONE_MAX: mod.DOCK_SIDE_MAX_SIZE,
-    ZONE_DEFAULT: mod.DOCK_SIDE_DEFAULT_SIZE,
-    BOTTOM_MIN: mod.DOCK_BOTTOM_MIN_SIZE,
-    BOTTOM_MAX: mod.DOCK_BOTTOM_MAX_SIZE,
-    BOTTOM_DEFAULT: mod.DOCK_BOTTOM_DEFAULT_SIZE,
-    SV_DEFAULT: mod.SHARE_VIEW_DEFAULT_VH,
-    SV_MIN: mod.SHARE_VIEW_MIN_VH,
-    SV_MAX: mod.SHARE_VIEW_MAX_VH,
-    FL_MIN_W: mod.SHARE_FLOATING_MIN_W,
-    FL_MIN_H: mod.SHARE_FLOATING_MIN_H,
-  };
-  const rehydrated = useLayoutStore.getState();
-  migrated = { dockRightSize: rehydrated.dockZones.right.size, sidebarWidth: rehydrated.sidebarWidth };
+const store = new Proxy({} as Record<string, string>, { get: (_, key) => localStorage.getItem(String(key)) });
+const reset = () => useLayoutStore.setState({
+  sidebarWidth: K.DEFAULT, sidebarMode: "full", sidebarSide: "left",
+  panneau: null, largeurPanneau: 360, panelBackgrounds: {},
+  shareViewMaxVh: K.SV_DEFAULT, shareDock: "inline", shareFloating: { x: -1, y: -1, w: 440, h: 300 },
 });
-
-const reset = () =>
-  useLayoutStore.setState({
-    sidebarWidth: K.DEFAULT,
-    sidebarMode: "full",
-    dockZones: {
-      // 96 = DOCK_TOP_DEFAULT_SIZE (bandeau haut) — répété ici comme les
-      // bornes des cartes flottantes : toute dérive doit se voir dans le diff.
-      top: { panels: [], active: null, size: 96 },
-      right: { panels: [], active: null, size: K.ZONE_DEFAULT },
-      bottom: { panels: [], active: null, size: K.BOTTOM_DEFAULT },
-    },
-    floatingPanels: {},
-    voiceInMenu: true,
-    shareViewMaxVh: K.SV_DEFAULT,
-    shareDock: "inline",
-    shareFloating: { x: -1, y: -1, w: 440, h: 300 },
-  });
-
 describe("useLayoutStore — sidebar modulable", () => {
   beforeEach(reset);
 
@@ -153,10 +89,6 @@ describe("useLayoutStore — sidebar modulable", () => {
     s().setSidebarSide("left");
     expect(s().sidebarSide).toBe("left");
 
-    // Le grand reset ramène le menu à gauche.
-    s().toggleSidebarSide();
-    s().resetLayout();
-    expect(s().sidebarSide).toBe("left");
   });
 
   it("persiste le layout sous la clé sion-layout (mémoire au relaunch)", () => {
@@ -169,195 +101,41 @@ describe("useLayoutStore — sidebar modulable", () => {
     expect(parsed.state.sidebarMode).toBe("rail");
   });
 
-  it("migre un layout v1 (largeur unique de la dock) en taille de zone droite", () => {
-    expect(migrated.dockRightSize).toBe(280);
-    expect(migrated.sidebarWidth).toBe(300);
-  });
 });
-
-describe("useLayoutStore — dock à zones (§1.6)", () => {
+describe("useLayoutStore — panneau unique", () => {
   beforeEach(reset);
-
-  it("borne la taille des zones (droite et basse)", () => {
-    const s = () => useLayoutStore.getState();
-
-    s().setDockZoneSize("right", 10);
-    expect(s().dockZones.right.size).toBe(K.ZONE_MIN);
-    s().setDockZoneSize("right", 9999);
-    expect(s().dockZones.right.size).toBe(K.ZONE_MAX);
-
-    s().setDockZoneSize("bottom", 10);
-    expect(s().dockZones.bottom.size).toBe(K.BOTTOM_MIN);
-    s().setDockZoneSize("bottom", 9999);
-    expect(s().dockZones.bottom.size).toBe(K.BOTTOM_MAX);
+  it("un seul panneau ouvert à la fois", () => {
+    useLayoutStore.getState().ouvrirPanneau("soundboard");
+    useLayoutStore.getState().ouvrirPanneau("members");
+    expect(useLayoutStore.getState().panneau).toBe("members");
   });
-
-  it("borne aussi le bandeau HAUT (plus court par nature : 44→400)", () => {
-    const s = () => useLayoutStore.getState();
-
-    s().setDockZoneSize("top", 10);
-    expect(s().dockZones.top.size).toBe(44);
-    s().setDockZoneSize("top", 9999);
-    expect(s().dockZones.top.size).toBe(400);
+  it("basculer referme le panneau actif", () => {
+    useLayoutStore.getState().basculerPanneau("soundboard");
+    expect(useLayoutStore.getState().panneau).toBe("soundboard");
+    useLayoutStore.getState().basculerPanneau("soundboard");
+    expect(useLayoutStore.getState().panneau).toBeNull();
+    useLayoutStore.getState().ouvrirPanneau("pinned");
+    useLayoutStore.getState().fermerPanneau();
+    expect(useLayoutStore.getState().panneau).toBeNull();
   });
-
-  it("un panneau se déplace aussi vers le bandeau haut", () => {
-    const s = () => useLayoutStore.getState();
-
-    s().openDockPanel("members");
-    s().moveDockPanel("members", "top");
-    expect(s().dockZones.top.panels).toEqual(["members"]);
-    expect(s().dockZones.top.active).toBe("members");
-    expect(s().dockZones.right.panels).toEqual([]);
+  it("borne la largeur et répare une valeur non numérique", () => {
+    useLayoutStore.getState().setLargeurPanneau(100);
+    expect(useLayoutStore.getState().largeurPanneau).toBe(300);
+    useLayoutStore.getState().setLargeurPanneau(2000);
+    expect(useLayoutStore.getState().largeurPanneau).toBe(520);
+    useLayoutStore.getState().setLargeurPanneau(NaN);
+    expect(useLayoutStore.getState().largeurPanneau).toBe(360);
   });
-
-  it("ouvre, active, déplace et ferme les panneaux de la dock", () => {
-    const s = () => useLayoutStore.getState();
-
-    s().openDockPanel("members");
-    s().openDockPanel("soundboard");
-    expect(s().dockZones.right.panels).toEqual(["members", "soundboard"]);
-    expect(s().dockZones.right.active).toBe("soundboard");
-
-    // Re-cliquer un panneau ouvert mais en arrière-plan l'active (onglet).
-    s().toggleDockPanel("members");
-    expect(s().dockZones.right.active).toBe("members");
-    expect(s().dockZones.right.panels).toEqual(["members", "soundboard"]);
-
-    // Re-cliquer le panneau actif le ferme ; l'autre prend la main.
-    s().toggleDockPanel("members");
-    expect(s().dockZones.right.panels).toEqual(["soundboard"]);
-    expect(s().dockZones.right.active).toBe("soundboard");
-
-    // Déplacement vers la zone basse : sort de la droite, devient l'onglet actif.
-    s().moveDockPanel("soundboard", "bottom");
-    expect(s().dockZones.right.panels).toEqual([]);
-    expect(s().dockZones.right.active).toBeNull();
-    expect(s().dockZones.bottom.panels).toEqual(["soundboard"]);
-    expect(s().dockZones.bottom.active).toBe("soundboard");
-
-    // Fermeture depuis le menu de zone.
-    s().closeDockPanel("soundboard");
-    expect(s().dockZones.bottom.panels).toEqual([]);
-    expect(s().dockZones.bottom.active).toBeNull();
-  });
-
-  it("closeAllDockPanels ferme tout sans toucher aux tailles", () => {
-    const s = () => useLayoutStore.getState();
-    s().setDockZoneSize("right", 480);
-    s().openDockPanel("members");
-    s().openDockPanel("transcript");
-    s().moveDockPanel("transcript", "bottom");
-    s().closeAllDockPanels();
-    expect(s().dockZones.right.panels).toEqual([]);
-    expect(s().dockZones.bottom.panels).toEqual([]);
-    expect(s().dockZones.right.size).toBe(480);
-  });
-
-  it("l'insertion se fait DEVANT le bloc visé — c'est l'ordre choisi", () => {
-    const s = () => useLayoutStore.getState();
-    s().openDockPanel("members");
-    s().openDockPanel("soundboard");
-    expect(s().dockZones.right.panels).toEqual(["members", "soundboard"]);
-
-    // Insérer la transcription devant la soundboard.
-    s().moveDockPanel("transcript", "right", "soundboard");
-    expect(s().dockZones.right.panels).toEqual(["members", "transcript", "soundboard"]);
-
-    // Réordonner dans la MÊME zone : la soundboard passe en tête.
-    s().moveDockPanel("soundboard", "right", "members");
-    expect(s().dockZones.right.panels).toEqual(["soundboard", "members", "transcript"]);
-
-    // Sans cible : en fin de zone.
-    s().moveDockPanel("soundboard", "right");
-    expect(s().dockZones.right.panels).toEqual(["members", "transcript", "soundboard"]);
-  });
-
-  it("le bloc voix se place sous la soundboard dans le bandeau bas", () => {
-    const s = () => useLayoutStore.getState();
-    s().openDockPanel("soundboard");
-    s().moveDockPanel("soundboard", "bottom");
-    s().sendVoiceToDock(); // par défaut : zone basse, en fin de liste
-    expect(s().dockZones.bottom.panels).toEqual(["soundboard", "voice"]);
-    // L'utilisateur peut inverser l'ordre, c'est le tableau qui fait foi.
-    s().moveDockPanel("voice", "bottom", "soundboard");
-    expect(s().dockZones.bottom.panels).toEqual(["voice", "soundboard"]);
-  });
-
-  it("déplacer un panneau déjà dans la zone ne le duplique pas", () => {
-    const s = () => useLayoutStore.getState();
-    s().openDockPanel("members");
-    s().moveDockPanel("members", "bottom");
-    s().moveDockPanel("members", "bottom");
-    expect(s().dockZones.bottom.panels).toEqual(["members"]);
-    expect(s().dockZones.right.panels).toEqual([]);
-  });
-
-  it("l'état de drag est éphémère et n'est jamais persisté", () => {
-    const s = () => useLayoutStore.getState();
-    expect(s().draggingPanel).toBeNull();
-
-    s().setPanelDrag("members");
-    expect(s().draggingPanel).toBe("members");
-    expect(s().dragOverZone).toBeNull();
-
-    s().setPanelDrag("members", "bottom");
-    expect(s().dragOverZone).toBe("bottom");
-
-    // Rien de tout ça ne part dans localStorage (partialize).
-    const raw = JSON.parse(store["sion-layout"]);
-    expect(raw.state.draggingPanel).toBeUndefined();
-    expect(raw.state.dragOverZone).toBeUndefined();
-
-    s().setPanelDrag(null);
-    expect(s().draggingPanel).toBeNull();
-    expect(s().dragOverZone).toBeNull();
-  });
-
-  it("le bloc voix se détache dans la dock et revient au menu", () => {
-    const s = () => useLayoutStore.getState();
-    expect(s().voiceInMenu).toBe(true);
-
-    // Détachement par défaut : bandeau bas, onglet actif.
-    s().sendVoiceToDock();
-    expect(s().voiceInMenu).toBe(false);
-    expect(s().dockZones.bottom.panels).toEqual(["voice"]);
-    expect(s().dockZones.bottom.active).toBe("voice");
-    expect(JSON.parse(store["sion-layout"]).state.voiceInMenu).toBe(false);
-
-    // Déplacement vers la droite : une seule instance, la zone basse se vide.
-    s().moveDockPanel("voice", "right");
-    expect(s().dockZones.bottom.panels).toEqual([]);
-    expect(s().dockZones.right.panels).toEqual(["voice"]);
-
-    // Retour au menu : plus aucune zone ne le contient.
-    s().returnVoiceToMenu();
-    expect(s().voiceInMenu).toBe(true);
-    expect(s().dockZones.right.panels).toEqual([]);
-
-    // Fermer le bloc alors qu'il est détaché le renvoie aussi au menu
-    // (sinon l'utilisateur perdrait ses commandes vocales).
-    s().sendVoiceToDock();
-    s().closeDockPanel("voice");
-    expect(s().voiceInMenu).toBe(true);
-    expect(s().dockZones.bottom.panels).toEqual([]);
-  });
-
-  it("resetLayout remet tout à zéro", () => {
-    const s = () => useLayoutStore.getState();
-    s().setSidebarWidth(380);
-    s().setDockZoneSize("right", 480);
-    s().openDockPanel("members");
-    s().toggleShareDock();
-    s().resetLayout();
-    expect(s().sidebarMode).toBe("full");
-    expect(s().sidebarWidth).toBe(K.DEFAULT);
-    expect(s().dockZones.right.panels).toEqual([]);
-    expect(s().dockZones.right.size).toBe(K.ZONE_DEFAULT);
-    expect(s().shareDock).toBe("inline");
+  it("persiste panneau, largeur et fonds sans les champs supprimés", () => {
+    useLayoutStore.getState().ouvrirPanneau("pinned");
+    useLayoutStore.getState().setLargeurPanneau(410);
+    useLayoutStore.getState().setPanelBackground("chat", { path: "/fond.webp", opacity: 0.4 });
+    const raw = JSON.parse(localStorage.getItem("sion-layout")!);
+    expect(raw.version).toBe(6);
+    expect(raw.state).toMatchObject({ panneau: "pinned", largeurPanneau: 410, panelBackgrounds: { chat: { path: "/fond.webp", opacity: 0.4 } } });
+    expect(Object.keys(raw.state).sort()).toEqual(["sidebarWidth", "sidebarMode", "sidebarSide", "panneau", "largeurPanneau", "panelBackgrounds", "shareViewMaxVh", "shareDock", "shareFloating"].sort());
   });
 });
-
 describe("useLayoutStore — zone de partage", () => {
   beforeEach(reset);
 
@@ -400,60 +178,3 @@ describe("useLayoutStore — zone de partage", () => {
   });
 });
 
-describe("useLayoutStore — panneaux flottants (§1.6)", () => {
-  beforeEach(reset);
-
-  // Mêmes bornes que le store (`FLOATING_PANEL_MIN_W/H`, `FLOATING_PANEL_MAX`) —
-  // répétées ici pour que toute dérive de contrat soit visible dans le diff.
-  const MIN_W = 260;
-  const MIN_H = 200;
-  const MAX_FLOATING = 2;
-
-  it("détache un panneau en carte flottante, puis le rattache", () => {
-    const s = () => useLayoutStore.getState();
-    s().openDockPanel("members");
-
-    s().floatDockPanel("members");
-    expect(s().dockZones.right.panels).toEqual([]);
-    expect(s().floatingPanels.members).toEqual({ x: -1, y: -1, w: 360, h: 440 });
-
-    // Bornes minimales appliquées même via un merge partiel.
-    s().setFloatingRect("members", { w: 10, h: 10 });
-    expect(s().floatingPanels.members.w).toBe(MIN_W);
-    expect(s().floatingPanels.members.h).toBe(MIN_H);
-
-    // Déplacement/taille mémorisés.
-    s().setFloatingRect("members", { x: 100, y: 80, w: 420 });
-    expect(s().floatingPanels.members).toMatchObject({ x: 100, y: 80, w: 420 });
-
-    // Rattachement : retour dans la dock, l'onglet devient actif, la carte
-    // disparaît.
-    s().dockFloatingPanel("members");
-    expect(s().floatingPanels.members).toBeUndefined();
-    expect(s().dockZones.right.panels).toEqual(["members"]);
-    expect(s().dockZones.right.active).toBe("members");
-  });
-
-  it("plafond de cartes flottantes, fermeture par le bouton du header, nettoyage global", () => {
-    const s = () => useLayoutStore.getState();
-    s().floatDockPanel("members");
-    s().floatDockPanel("soundboard");
-    // Au-delà du plafond, le troisième reste fermé.
-    s().floatDockPanel("transcript");
-    expect(Object.keys(s().floatingPanels)).toHaveLength(MAX_FLOATING);
-    expect(s().floatingPanels.transcript).toBeUndefined();
-
-    // Clic sur le bouton du header : la carte flottante se referme.
-    s().toggleDockPanel("members");
-    expect(s().floatingPanels.members).toBeUndefined();
-
-    // closeDockPanel ferme aussi une carte flottante (croix de la carte).
-    s().closeDockPanel("soundboard");
-    expect(s().floatingPanels).toEqual({});
-
-    // Et le grand nettoyage n'oublie personne.
-    s().floatDockPanel("members");
-    s().resetLayout();
-    expect(s().floatingPanels).toEqual({});
-  });
-});

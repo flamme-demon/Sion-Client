@@ -26,7 +26,6 @@ import { formatCombo } from "../../utils/keyCombo";
 import { UserAvatar } from "../sidebar/UserAvatar";
 import { loadHotkeys, onHotkeysChange, pruneHotkeys, resyncHotkeys } from "../../services/soundboardHotkeys";
 import { useLayoutStore } from "../../stores/useLayoutStore";
-import { useDockZone } from "../layout/dockZoneContext";
 import { SUR_ANDROID } from "../../utils/plateforme";
 
 // Build a nested tree from "Films/Kamelott" paths so the pill navigation can
@@ -376,8 +375,7 @@ export function SoundboardPanel() {
   // (titre, onglets, recherche, volume) pour que la hauteur restante aille
   // aux sons, pas au châssis. En colonne droite, la mise en page d'origine
   // reste telle quelle.
-  const dockZone = useDockZone();
-  const compact = dockZone === "bottom";
+  const compact = false;
 
   const tabDefs = [
     { key: "sounds" as const, label: t("soundboard.tabSounds"), show: true },
@@ -466,7 +464,7 @@ export function SoundboardPanel() {
 
   const closeButton = (size: number) => (
     <button
-      onClick={() => useLayoutStore.getState().closeDockPanel("soundboard")}
+      onClick={() => useLayoutStore.getState().fermerPanneau()}
       title={t("soundboard.close")}
       style={{ flexShrink: 0, border: 'none', background: 'transparent', color: 'var(--color-on-surface-variant)', cursor: 'pointer', fontSize: size, padding: 2, lineHeight: 1 }}
     >×</button>

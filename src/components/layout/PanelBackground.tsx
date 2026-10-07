@@ -9,21 +9,20 @@ import { pickPanelBackground, usePanelBackgroundUrl, bgAnchorCss } from "../../s
  * lui-même est un simple style de conteneur, posé par
  * `usePanelBackgroundStyle` (services/panelBackground).
  */
-export function BackgroundControls({ scope }: { scope: BackgroundScope }) {
+export function BackgroundControls({ scope, inline = false }: { scope: BackgroundScope; inline?: boolean }) {
   const { t } = useTranslation();
-  const layoutEditing = useLayoutStore((s) => s.layoutEditing);
   const cfg = useLayoutStore((s) => s.panelBackgrounds[scope]);
   const setPanelBackground = useLayoutStore((s) => s.setPanelBackground);
   // Déclaré AVANT tout retour anticipé : un hook appelé conditionnellement
   // casse l'ordre des hooks et vide l'écran au premier rendu où la condition
   // change — c'est exactement ce qui s'est produit le 17/09.
   const [enCours, setEnCours] = useState(false);
-  if (!layoutEditing) return null;
+  if (!inline) return null;
 
   const hasImage = !!cfg;
   return (
     <div style={{
-      position: 'absolute', top: 4, right: 4, zIndex: 6,
+      position: 'relative', flexWrap: 'wrap',
       display: 'flex', alignItems: 'center', gap: 6,
       padding: '3px 6px', borderRadius: 999,
       background: 'var(--color-surface-container-high)',
@@ -39,6 +38,7 @@ export function BackgroundControls({ scope }: { scope: BackgroundScope }) {
           setEnCours(true);
           void pickPanelBackground(scope).finally(() => setEnCours(false));
         }}
+        aria-label={t("layout.bgPick")}
         title={enCours
           ? t("layout.bgPreparing", { defaultValue: "Préparation du fond…" })
           : hasImage

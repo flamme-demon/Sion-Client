@@ -87,7 +87,10 @@
     "editLayoutHint": "Drag the blocks into the grid (top / right / bottom)",
     "editDone": "Done",
     "editReset": "Reset",
-    "editHidePanel": "Hide this block"
+    "editHidePanel": "Hide this block",
+    "backgrounds": "Panel backgrounds",
+    "chat": "Conversation",
+    "channels": "Channels"
   },
   "server": {
     "online": "Online"
@@ -903,7 +906,7 @@
   },
   "profile": {
     "title": "Profile",
-    "hint": "Layout, theme, panel backgrounds and event sounds in a single file, to share them or find them on another computer.",
+    "hint": "Export or import your theme, backgrounds and sounds in one file.",
     "exportButton": "Export my profile…",
     "importButton": "Import a profile…",
     "menuHint": "Layout, theme, backgrounds and sounds, in one file",

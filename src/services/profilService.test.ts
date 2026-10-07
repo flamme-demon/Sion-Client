@@ -35,7 +35,7 @@ beforeAll(async () => {
   mod = await import("./profilService");
 });
 
-const tous = { disposition: true, theme: true, fonds: true, sons: true };
+const tous = { theme: true, fonds: true, sons: true };
 
 describe("profils Sion", () => {
   it("compose un manifeste et la liste de ses fichiers", () => {
@@ -47,6 +47,7 @@ describe("profils Sion", () => {
     const { manifeste, fichiers } = mod.composerProfil(tous);
     const m = JSON.parse(manifeste);
     expect(m.kind).toBe("sion-profile");
+    expect(m.layout).toBeUndefined();
     expect(m.theme).toEqual({ id: "sion-light", accent: "#7e57c2" });
     expect(m.backgrounds.chat).toEqual({ file: "fichiers/fond-chat.jpg", opacity: 0.4, anchor: "tc" });
     expect(m.voiceSounds.join).toEqual({ file: "fichiers/son-join.ogg", start: 0.2, end: 1.5, gain: 1.2 });
@@ -111,7 +112,7 @@ describe("profils Sion", () => {
     themes.useThemeStore.getState().setThemeId("sion-dark");
     themes.useThemeStore.getState().setAccent(null);
     appels.length = 0;
-    await mod.appliquerProfil(r.profil, { ...tous, disposition: false });
+    await mod.appliquerProfil(r.profil, tous);
 
     const extraction = appels.find((a) => a.cmd === "profil_extraire");
     expect((extraction!.args as { noms: string[] }).noms.sort()).toEqual(["fichiers/fond-chat.jpg", "fichiers/son-join.ogg"]);
@@ -124,4 +125,20 @@ describe("profils Sion", () => {
     const menage = appels.find((a) => a.cmd === "profil_nettoyer");
     expect((menage!.args as { conserves: string[] }).conserves).toContain("/donnees/profils/import-1/fond-chat.jpg");
   });
+  it("importe un ancien profil en ignorant sa disposition", async () => {
+    layout.useLayoutStore.setState({ panneau: "members", largeurPanneau: 400 });
+    const r = mod.analyserManifeste("/ancien.sionprofil", JSON.stringify({
+      kind: "sion-profile", format: 1,
+      layout: { kind: "sion-layout", format: 1, layout: { dockZones: {}, floatingPanels: {} } },
+      theme: { id: "sion-light", accent: null },
+      backgrounds: { chat: { file: "fichiers/fond.png", opacity: 0.6 } },
+    }), new Set(["fichiers/fond.png"]));
+    if (!("profil" in r)) throw new Error("rejeté");
+    expect(r.profil).not.toHaveProperty("disposition");
+    await mod.appliquerProfil(r.profil, mod.sectionsPresentes(r.profil));
+    expect(layout.useLayoutStore.getState()).toMatchObject({ panneau: "members", largeurPanneau: 400 });
+    expect(themes.useThemeStore.getState().themeId).toBe("sion-light");
+    expect(layout.useLayoutStore.getState().panelBackgrounds.chat?.path).toBe("/donnees/profils/import-1/fond.png");
+  });
+
 });

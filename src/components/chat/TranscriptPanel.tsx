@@ -303,7 +303,7 @@ export function TranscriptPanel() {
             {t("transcript.title", { defaultValue: "Transcription" })}
           </span>
           <button
-            onClick={() => useLayoutStore.getState().closeDockPanel("transcript")}
+            onClick={() => useLayoutStore.getState().fermerPanneau()}
             title={t("members.close", { defaultValue: "Fermer" })}
             style={{ border: 'none', background: 'transparent', color: 'var(--color-on-surface-variant)', cursor: 'pointer', fontSize: 18, padding: 2, lineHeight: 1 }}
           >×</button>

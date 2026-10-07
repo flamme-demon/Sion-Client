@@ -142,7 +142,7 @@ export function MemberPanel() {
           {t("members.title")} ({entries.length})
         </span>
         <button
-          onClick={() => useLayoutStore.getState().closeDockPanel("members")}
+          onClick={() => useLayoutStore.getState().fermerPanneau()}
           title={t("members.close")}
           style={{
             border: 'none',

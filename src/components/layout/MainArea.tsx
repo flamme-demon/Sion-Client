@@ -7,8 +7,6 @@ import { ChatInput } from "../chat/ChatInput";
 import { IndicateurFrappe } from "../chat/IndicateurFrappe";
 import { ApercuMessage } from "../chat/ApercuMessage";
 import { DropZone } from "../chat/DropZone";
-import { DockZone } from "./DockZone";
-import { FloatingPanels } from "./FloatingPanels";
 import { MobilePanelSheet } from "../mobile/MobilePanelSheet";
 import { BackgroundControls, PanelBackgroundLayer } from "./PanelBackground";
 import { usePanelBackgroundStyle } from "../../services/panelBackground";
@@ -111,7 +109,6 @@ export function MainArea() {
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
     >
-      {!isMobile && <DockZone zone="top" />}
       <div className="flex-1 flex min-h-0 min-w-0">
         <div className="flex-1 flex flex-col min-w-0 relative" style={chatBg}>
           <BackgroundControls scope="chat" />
@@ -131,10 +128,7 @@ export function MainArea() {
           <DropZone />
           <ApercuMessage />
         </div>
-        {!isMobile && <DockZone zone="right" />}
       </div>
-      {!isMobile && <DockZone zone="bottom" />}
-      {!isMobile && <FloatingPanels />}
       {isMobile && <MobilePanelSheet />}
     </div>
   );

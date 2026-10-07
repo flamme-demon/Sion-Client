@@ -22,6 +22,6 @@ export function allerAuMessage(eventId: string): void {
   // Téléphone : la feuille des épinglés couvre le fil — on la referme pour
   // montrer le message.
   if (typeof window !== "undefined" && window.innerWidth < 768) {
-    useLayoutStore.getState().closeDockPanel("pinned");
+    useLayoutStore.getState().fermerPanneau();
   }
 }

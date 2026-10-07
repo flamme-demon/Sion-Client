@@ -62,7 +62,7 @@ export function PinnedBar() {
   const handleClick = () => {
     // Aucun épinglé chargé dans la rotation : on ouvre le panneau, qui va
     // les chercher sur le serveur.
-    if (!currentPinned) { useLayoutStore.getState().openDockPanel("pinned"); return; }
+    if (!currentPinned) { useLayoutStore.getState().ouvrirPanneau("pinned"); return; }
     const eventId = currentPinned.eventId || String(currentPinned.id);
     allerAuMessage(eventId);
   };
@@ -169,7 +169,7 @@ export function PinnedBar() {
         // Ouvre le PANNEAU des épinglés au lieu d'une bulle ancrée : la vidéo
         // d'un partage est une fenêtre native posée par-dessus la page, sous
         // laquelle toute bulle disparaît (18/09). Un panneau se déplace.
-        onClick={(e) => { e.stopPropagation(); useLayoutStore.getState().toggleDockPanel("pinned"); }}
+        onClick={(e) => { e.stopPropagation(); useLayoutStore.getState().basculerPanneau("pinned"); }}
         title={t("chat.pinnedList", { defaultValue: "Messages épinglés" })}
         style={{
           width: 24, height: 24, borderRadius: 6, border: 'none', flexShrink: 0,

@@ -20,7 +20,7 @@ interface Props {
   onClose: () => void;
 }
 
-const ORDRE: SectionProfil[] = ["disposition", "theme", "fonds", "sons"];
+const ORDRE: SectionProfil[] = ["theme", "fonds", "sons"];
 
 /**
  * Fenêtre d'export ou d'import d'un profil Sion : une case par section.
@@ -93,7 +93,6 @@ export function ProfilModal({ mode, onClose }: Props) {
     const titre = t(`profile.section.${s}`);
     if (mode === "export") {
       switch (s) {
-        case "disposition": return { titre, detail: t("profile.layoutHint") };
         case "theme": return { titre, detail: `${findTheme(exportable.themeId).name} — ${nomAccent(exportable.accent)}` };
         case "fonds": return { titre, detail: exportable.fonds > 0 ? t("profile.images", { count: exportable.fonds }) : null };
         case "sons": return { titre, detail: exportable.sons > 0 ? t("profile.sounds", { count: exportable.sons }) : null };
@@ -101,7 +100,6 @@ export function ProfilModal({ mode, onClose }: Props) {
     }
     if (!profil) return { titre, detail: null };
     switch (s) {
-      case "disposition": return { titre, detail: profil.disposition ? t("profile.layoutHint") : null };
       case "theme": return { titre, detail: profil.theme ? `${profil.theme.theme.name} — ${nomAccent(profil.theme.accent)}` : null };
       case "fonds": {
         const n = Object.keys(profil.fonds ?? {}).length;

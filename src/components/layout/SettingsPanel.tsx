@@ -1,3 +1,6 @@
+import { BackgroundControls } from "./PanelBackground";
+import { PANNEAU_TITRES } from "./panneaux";
+import { PANNEAU_IDS } from "../../stores/useLayoutStore";
 import { useTranslation } from "react-i18next";
 import i18n from "../../i18n";
 import { Fragment, useEffect, useState, useRef, useCallback } from "react";
@@ -557,7 +560,16 @@ export function SettingsPanel() {
             )}
             <input ref={themeFileRef} type="file" accept="application/json,.json" onChange={handleThemeImport} style={{ display: 'none' }} />
           </div>
-          {/* Profil : disposition, thème, fonds et sons dans un seul fichier. */}
+          {!isMobile && <div style={{ background: 'var(--color-surface-container)', borderRadius: 16, padding: 16 }}>
+            <div style={{ fontSize: 14, color: 'var(--color-on-surface)', marginBottom: 12 }}>{t("layout.backgrounds")}</div>
+            {(["chat", "channels", ...PANNEAU_IDS] as const).map((scope) => (
+              <div key={scope} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, padding: '6px 0' }}>
+                <span style={{ fontSize: 12 }}>{t(scope === "chat" ? "layout.chat" : scope === "channels" ? "layout.channels" : PANNEAU_TITRES[scope])}</span>
+                <BackgroundControls scope={scope} inline />
+              </div>
+            ))}
+          </div>}
+          {/* Profil : thème, fonds et sons dans un seul fichier. */}
           <div style={{ background: 'var(--color-surface-container)', borderRadius: 16, padding: 16 }}>
             <div style={{ fontSize: 14, color: 'var(--color-on-surface)', marginBottom: 6 }}>{t("profile.title")}</div>
             <div style={{ fontSize: 11, color: 'var(--color-outline)', lineHeight: 1.45 }}>{t("profile.hint")}</div>

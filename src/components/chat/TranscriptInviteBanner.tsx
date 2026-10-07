@@ -41,7 +41,7 @@ export function TranscriptInviteBanner() {
   }
 
   const handleJoin = () => {
-    useLayoutStore.getState().openDockPanel("transcript");
+    useLayoutStore.getState().ouvrirPanneau("transcript");
     armTranscription(connectedVoice).catch((err) => {
       console.error("[Sion][transcribe] arm failed:", err);
       useTranscriptStore.getState().setState("error", String((err as Error)?.message || err));
