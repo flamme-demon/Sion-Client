@@ -352,7 +352,7 @@ export function ChannelItem({ channel, compact = false }: { channel: Channel; co
           gap: compact ? 0 : 10,
           justifyContent: compact ? 'center' : undefined,
           padding: compact ? (channel.hasVoice && voiceUsers.length > 0 ? '6px 0' : '9px 0') : '10px 16px',
-          borderRadius: 28,
+          borderRadius: isMobile ? 28 : 12,
           border: 'none',
           cursor: 'pointer',
           fontSize: 13,
@@ -360,8 +360,8 @@ export function ChannelItem({ channel, compact = false }: { channel: Channel; co
           fontFamily: 'inherit',
           textAlign: 'left' as const,
           transition: 'all 200ms cubic-bezier(0.2, 0, 0, 1)',
-          background: isActive ? 'var(--color-secondary-container)' : 'transparent',
-          color: isActive ? 'var(--color-on-secondary-container)' : 'var(--color-on-surface-variant)',
+          background: isActive ? (isMobile ? 'var(--color-secondary-container)' : 'var(--color-surface-container-high)') : 'transparent',
+          color: isActive ? (isMobile ? 'var(--color-on-secondary-container)' : 'var(--color-on-surface)') : 'var(--color-on-surface-variant)',
           letterSpacing: '0.01em',
         }}
       >
@@ -510,7 +510,7 @@ export function ChannelItem({ channel, compact = false }: { channel: Channel; co
             )
           ) : voiceUsers.length > 0 ? (
             <span
-              onClick={(e) => { if (!isConnectedChannel) { e.stopPropagation(); setExpandedVoice((v) => !v); } }}
+              onClick={(e) => { if (!isMobile || !isConnectedChannel) { e.stopPropagation(); setExpandedVoice((v) => !v); } }}
               style={{ display: 'flex', alignItems: 'center', flexShrink: 0, cursor: isConnectedChannel ? 'inherit' : 'pointer' }}
               title={isConnectedChannel ? voiceUsers.map((u) => u.name).join(", ") : (expandedVoice ? "Replier" : "Voir les membres")}
             >
@@ -633,7 +633,7 @@ export function ChannelItem({ channel, compact = false }: { channel: Channel; co
       {/* Voice users — full detail only for your connected channel, or when you
           click the stacked avatars to peek at another channel. Jamais en rail :
           les noms ne tiennent pas dans 72px, la pastille suffit. */}
-      {!compact && channel.hasVoice && voiceUsers.length > 0 && (isConnectedChannel || expandedVoice) && (
+      {!compact && channel.hasVoice && voiceUsers.length > 0 && ((isMobile && isConnectedChannel) || expandedVoice) && (
         <div style={{
           display: 'flex',
           flexDirection: 'column',

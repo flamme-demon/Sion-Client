@@ -1,3 +1,5 @@
+import { Bulle } from "./Bulle";
+import { useFenetreEtroite } from "../../hooks/useFenetreEtroite";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ServerHeader } from "../sidebar/ServerHeader";
@@ -10,8 +12,6 @@ import { useAppStore } from "../../stores/useAppStore";
 import { useMatrixStore } from "../../stores/useMatrixStore";
 import { MOBILE_VOICE_BAR_HEIGHT } from "../mobile/MobileVoiceBar";
 import { ResizeHandle } from "./ResizeHandle";
-import { BackgroundControls, PanelBackgroundLayer } from "./PanelBackground";
-import { usePanelBackgroundStyle } from "../../services/panelBackground";
 import {
   useLayoutStore,
   SIDEBAR_RAIL_WIDTH,
@@ -70,13 +70,11 @@ export function Sidebar() {
   const connectedVoice = useAppStore((s) => s.connectedVoiceChannel);
   const sidebarMode = useLayoutStore((s) => s.sidebarMode);
   const sidebarSide = useLayoutStore((s) => s.sidebarSide);
-  // Drag du menu entier en mode édition (état local : c'est de l'UI éphémère).
   const sidebarWidth = useLayoutStore((s) => s.sidebarWidth);
   const setSidebarWidth = useLayoutStore((s) => s.setSidebarWidth);
   const resetSidebar = useLayoutStore((s) => s.resetSidebar);
-  // Fond d'image du menu latéral (portée « channels ») — même mécanisme que
-  // la zone de chat et les blocs de la dock.
-  const channelsBg = usePanelBackgroundStyle("channels");
+  // Les petites fenêtres replient seulement le rendu, sans changer le mode enregistré.
+  const etroite = useFenetreEtroite();
   // Un autre appareil demande une vérification : les emojis à comparer ne
   // s'affichent que menu déployé — on le déploie (29/09 : demande restée
   // invisible, menu en rail).
@@ -112,7 +110,7 @@ export function Sidebar() {
     return <HiddenSidebarHandle side={sidebarSide} onReveal={() => useLayoutStore.getState().setSidebarMode("rail")} />;
   }
 
-  const compact = sidebarMode === "rail";
+  const compact = sidebarMode === "rail" || etroite;
   const width = compact ? SIDEBAR_RAIL_WIDTH : sidebarWidth;
   // Menu à droite : la poignée passe sur son bord GAUCHE (le bord intérieur,
   // côté contenu) et le sens de tirage s'inverse. Sinon elle reste entre le
@@ -139,31 +137,12 @@ export function Sidebar() {
   return (
     <div style={{ display: 'flex', height: '100%', flexShrink: 0 }}>
       {onRight && handle}
-      <div style={{
-        width,
-        minWidth: width,
-        maxWidth: width,
-        background: 'var(--color-surface-container-low)',
-        display: 'flex',
-        flexDirection: 'column',
-        height: '100%',
-        position: 'relative',
-        // Fond d'image éventuel du menu (posé SOUS le contenu, voile color-mix
-        // calculé depuis l'opacité — même mécanisme que le chat et les blocs).
-        ...(channelsBg ?? {}),
-        // Pendant un drag vers le bas, le contenu (noms de salons) est rogné
-        // plutôt que de déborder sur le chat.
-        overflow: 'hidden',
-      }}>
-        {/* Édition : fond du menu (choisir / opacité / retirer). */}
-        <BackgroundControls scope="channels" />
-        {/* Mode « flou » : l'image vit dans ce calque, sous le contenu. */}
-        <PanelBackgroundLayer scope="channels" />
+      <Bulle as="nav" scope="channels" aria-label={t("layout.channels")} style={{ width, minWidth: width, maxWidth: width, height: '100%' }}>
         <ServerHeader compact={compact} />
         <VerificationBanner compact={compact} />
         <ChannelList compact={compact} />
         <UserControls compact={compact} />
-      </div>
+      </Bulle>
       {!onRight && handle}
 
     </div>

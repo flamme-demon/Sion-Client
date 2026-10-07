@@ -28,7 +28,6 @@ export function PinnedListPanel() {
   // Re-lire quand les épingles changent pendant que le panneau est ouvert.
   const pinnedVersion = useMatrixStore((s) => s.pinnedVersion);
   const [pins, setPins] = useState<PinnedSummary[] | null>(null);
-  const enBandeau = false;
 
   useEffect(() => {
     if (!activeChannel) return;
@@ -54,12 +53,7 @@ export function PinnedListPanel() {
         {pins ? ` (${pins.length})` : ""}
       </div>
 
-      <div style={enBandeau
-        ? {
-          flex: '1 1 auto', minHeight: 0, padding: '0 6px 6px',
-          display: 'flex', gap: 8, overflowX: 'auto', overflowY: 'hidden',
-        }
-        : { flex: '1 1 auto', overflowY: 'auto', minHeight: 0, padding: '0 6px 6px' }}>
+      <div style={{ flex: '1 1 auto', overflowY: 'auto', minHeight: 0, padding: '0 6px 6px' }}>
         {pins === null && (
           <div style={{ padding: '10px 8px', fontSize: 12, color: 'var(--color-outline)' }}>
             {t("chat.loading")}
@@ -77,16 +71,7 @@ export function PinnedListPanel() {
             key={pin.eventId}
             type="button"
             onClick={() => allerAuMessage(pin.eventId)}
-            style={enBandeau
-              ? {
-                display: 'flex', flexDirection: 'column', gap: 6,
-                width: 168, flex: '0 0 auto', textAlign: 'left',
-                border: '1px solid var(--color-outline-variant)',
-                background: 'transparent', cursor: 'pointer',
-                padding: 8, borderRadius: 10, fontFamily: 'inherit',
-                alignItems: 'stretch',
-              }
-              : {
+            style={{
                 display: 'flex', gap: 8, width: '100%', textAlign: 'left',
                 border: 'none', background: 'transparent', cursor: 'pointer',
                 padding: '8px', borderRadius: 8, fontFamily: 'inherit',
@@ -104,14 +89,14 @@ export function PinnedListPanel() {
                 alt=""
                 loading="lazy"
                 style={{
-                  width: enBandeau ? '100%' : 56, height: enBandeau ? 84 : 56,
+                  width: 56, height: 56,
                   flex: '0 0 auto', objectFit: 'cover',
                   borderRadius: 6, background: 'var(--color-surface-container)',
                 }}
               />
             )}
             {pin.mediaUrl && pin.media === "video" && (
-              <AfficheVideo pin={pin} largeur={enBandeau ? '100%' : 56} hauteur={enBandeau ? 84 : 56} />
+              <AfficheVideo pin={pin} largeur={56} hauteur={56} />
             )}
 
             <div style={{ minWidth: 0, flex: '1 1 auto' }}>

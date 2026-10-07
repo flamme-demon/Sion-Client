@@ -375,7 +375,7 @@ export function ChatInput() {
     });
   };
 
-  const handleChange = (value: string) => {
+  const handleChange = (value: string, position?: number) => {
     setInputText(value);
     autoGrow();
     // Une modification de message n'est pas « écrire » pour les autres.
@@ -385,7 +385,7 @@ export function ChatInput() {
     // Detect @mention query
     const textarea = textareaRef.current;
     if (textarea) {
-      const cursorPos = textarea.selectionStart;
+      const cursorPos = position ?? textarea.selectionStart;
       const textBeforeCursor = value.slice(0, cursorPos);
 
       // Check for @mention
@@ -469,7 +469,34 @@ export function ChatInput() {
     });
   };
 
+  const inserer = (texte: string, selection?: [number, number]) => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    const start = textarea.selectionStart;
+    const end = textarea.selectionEnd;
+    handleChange(inputText.slice(0, start) + texte + inputText.slice(end), start + texte.length);
+    requestAnimationFrame(() => {
+      textarea.focus();
+      textarea.setSelectionRange(start + (selection?.[0] ?? texte.length), start + (selection?.[1] ?? texte.length));
+      autoGrow();
+    });
+  };
+  const insererLien = () => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    const libelle = inputText.slice(textarea.selectionStart, textarea.selectionEnd) || t("chat.linkText");
+    const lien = `[${libelle}](https://)`;
+    const debut = lien.indexOf("https://");
+    inserer(lien, [debut, debut + 8]);
+  };
+
   const hasContent = inputText.trim().length > 0 || pendingFiles.length > 0;
+
+  const boutonEnvoi = <button type="button" className={isMobile ? undefined : "sion-envoyer"} onClick={handleSend}
+    aria-label={t("chat.send")} disabled={!canSend || (!isMobile && !hasContent)}
+    style={isMobile ? { border: 'none', cursor: canSend ? 'pointer' : 'not-allowed', padding: 10, display: 'flex', flexShrink: 0, borderRadius: '50%', background: hasContent && canSend ? 'var(--color-primary)' : 'transparent', color: hasContent && canSend ? 'var(--color-on-primary)' : 'var(--color-outline)', opacity: hasContent && canSend ? 1 : 0.4 } : undefined}>
+    {!isMobile && t("chat.send")}<SendIcon />
+  </button>;
 
   return (
     <div style={{ padding: '8px 20px 20px 20px' }}>
@@ -614,7 +641,7 @@ export function ChatInput() {
       {/* M3 Filled text field container */}
       <div style={{
         background: 'var(--color-surface-container-high)',
-        borderRadius: (editingMessage || replyingTo) ? '0 0 28px 28px' : 28,
+        borderRadius: isMobile ? ((editingMessage || replyingTo) ? '0 0 28px 28px' : 28) : 'var(--sion-carte-rayon)',
         transition: 'all 200ms',
         border: editingMessage
           ? '2px solid var(--color-primary)'
@@ -709,12 +736,15 @@ export function ChatInput() {
         )}
 
         <FilePreview />
-        <div style={{ display: 'flex', alignItems: 'flex-end', gap: 4, padding: '6px 8px 6px 4px' }}>
-          {!editingMessage && <AttachButton />}
+        <div className={isMobile ? undefined : 'sion-saisie-ligne'} style={{ display: 'flex', alignItems: 'flex-end', gap: 4, padding: '6px 8px 6px 4px' }}>
+          {!editingMessage && <AttachButton plus={!isMobile} disabled={!canSend} />}
           {!editingMessage && (
-            <div ref={emojiPickerRef} style={{ position: 'relative', display: 'flex', flexShrink: 0 }}>
+            <div ref={emojiPickerRef} className={isMobile ? undefined : "sion-saisie-picker"} style={{ position: 'relative', display: 'flex', flexShrink: 0 }}>
+              {!isMobile && <button type="button" aria-label={t("chat.gifTab")} disabled={!canSend} onMouseDown={(e) => { e.preventDefault(); setPickerTab("gif"); setShowEmojiPicker(true); }} style={{ border: 0, padding: 10, background: 'transparent', color: 'var(--color-on-surface-variant)', cursor: 'pointer', fontFamily: 'inherit', fontSize: 10, fontWeight: 700 }}>GIF</button>}
               <button
                 type="button"
+                disabled={!canSend}
+                aria-label={t("chat.emojiTab")}
                 onMouseDown={(e) => { e.preventDefault(); setShowEmojiPicker((v) => !v); }}
                 style={{
                   border: 'none',
@@ -729,7 +759,7 @@ export function ChatInput() {
                 }}
                 onMouseEnter={(e) => { if (!showEmojiPicker) e.currentTarget.style.background = 'var(--color-surface-container)'; }}
                 onMouseLeave={(e) => { if (!showEmojiPicker) e.currentTarget.style.background = 'transparent'; }}
-                title="Emoji"
+                title={t("chat.emojiTab")}
               >
                 <EmojiIcon />
               </button>
@@ -740,8 +770,8 @@ export function ChatInput() {
                   style={{
                     position: isMobile ? 'fixed' : 'absolute',
                     bottom: isMobile ? `${VOICE_BAR_HEIGHT + 60}px` : '100%',
-                    left: isMobile ? 0 : 0,
-                    right: isMobile ? 0 : undefined,
+                    left: isMobile ? 0 : undefined,
+                    right: 0,
                     marginBottom: isMobile ? 0 : 4,
                     width: isMobile ? 'auto' : 352,
                     height: isMobile ? '45dvh' : 400,
@@ -886,27 +916,16 @@ export function ChatInput() {
               opacity: canSend ? 1 : 0.5,
             }}
           />
-          {/* M3 FAB-style send */}
-          <button
-            type="button"
-            onClick={handleSend}
-            disabled={!canSend}
-            style={{
-              border: 'none',
-              cursor: canSend ? 'pointer' : 'not-allowed',
-              padding: 10,
-              display: 'flex',
-              flexShrink: 0,
-              borderRadius: '50%',
-              transition: 'all 200ms',
-              background: hasContent && canSend ? 'var(--color-primary)' : 'transparent',
-              color: hasContent && canSend ? 'var(--color-on-primary)' : 'var(--color-outline)',
-              opacity: hasContent && canSend ? 1 : 0.4,
-            }}
-          >
-            <SendIcon />
-          </button>
+          {isMobile && boutonEnvoi}
         </div>
+        {!isMobile && <div className="sion-saisie-actions">
+          {!editingMessage && <>
+            <button type="button" aria-label={t("chat.mention")} title={t("chat.mention")} disabled={!canSend} onMouseDown={(e) => e.preventDefault()} onClick={() => inserer("@")}>@</button>
+            <button type="button" aria-label={t("chat.insertLink")} title={t("chat.insertLink")} disabled={!canSend} onMouseDown={(e) => e.preventDefault()} onClick={insererLien}>🔗</button>
+            <AttachButton direct disabled={!canSend} />
+          </>}
+          {boutonEnvoi}
+        </div>}
       </div>
     </div>
   );

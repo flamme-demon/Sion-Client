@@ -710,11 +710,10 @@ interface ZonePage {
   height: number;
 }
 
-/** Ce qui peut passer devant une vidéo : ce qui sort du flux. Sion n'a ni
- *  portail ni feuille de style qui positionne un calque — tout passe par une
- *  classe Tailwind ou un style en ligne. */
+/** Calques pouvant recouvrir une vidéo, dont le panneau positionné par CSS
+ *  dans une fenêtre étroite. */
 const SELECTEUR_CALQUES =
-  '[class*="fixed"], [class*="absolute"], [style*="position: fixed"], [style*="position: absolute"]';
+  '.sion-panneau, [class*="fixed"], [class*="absolute"], [style*="position: fixed"], [style*="position: absolute"]';
 
 /** Même plafond que Rust ; au-delà, un seul trou : leur enveloppe. */
 const TROUS_MAX = 16;

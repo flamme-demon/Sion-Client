@@ -29,6 +29,11 @@ describe("réhydratation de la disposition", () => {
     const s = await rehydrater({ dockZones: { right: { panels: ["voice"], active: "voice" } } }, 5);
     expect(s.panneau).toBeNull();
   });
+  it("tolère une ancienne liste de panneaux abîmée", async () => {
+    const s = await rehydrater({ dockZones: { right: { panels: "soundboard", size: 380 } } }, 5);
+    expect(s.panneau).toBeNull();
+    expect(s.largeurPanneau).toBe(380);
+  });
   it("migre aussi les préférences v1 et v2", async () => {
     expect((await rehydrater({ rightPanelWidth: 380, sidebarWidth: 300 }, 1)).largeurPanneau).toBe(380);
     expect((await rehydrater({ rightPanelWidths: { members: 400, soundboard: 340 } }, 2)).largeurPanneau).toBe(400);

@@ -1,8 +1,8 @@
+import { useCompteurPanneau } from "../layout/panneauxCompteurs";
 import { useEffect, useState, useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import { useAppStore } from "../../stores/useAppStore";
 import { useMatrixStore } from "../../stores/useMatrixStore";
-import { useLayoutStore } from "../../stores/useLayoutStore";
 import { getMatrixClient, getMemberPowerLevel, getRoomClientVersions } from "../../services/matrixService";
 import { UserAvatar } from "../sidebar/UserAvatar";
 import * as cacheRust from "../../services/cacheRust";
@@ -29,8 +29,8 @@ function plToRole(pl: number): Role {
 }
 
 /**
- * Liste des membres du salon courant — contenu pur : la coquille (largeur,
- * zone droite ou basse, onglets) est portée par `DockZone` (§1.6).
+ * Liste des membres du salon courant ; le titre et la fermeture sont portés
+ * par le panneau latéral ou la feuille mobile.
  */
 export function MemberPanel() {
   const { t } = useTranslation();
@@ -119,6 +119,8 @@ export function MemberPanel() {
     return list;
   }, [activeChannel, tick, versionCache]);
 
+  useCompteurPanneau("members", entries.length);
+
   if (!activeChannel || channel?.isDM) return null;
 
   const sections: { role: Role; entries: Entry[] }[] = [
@@ -131,30 +133,6 @@ export function MemberPanel() {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, overflow: 'hidden' }}>
-      <div style={{
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        padding: '10px 14px',
-        borderBottom: '1px solid var(--color-outline-variant)',
-      }}>
-        <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-on-surface)' }}>
-          {t("members.title")} ({entries.length})
-        </span>
-        <button
-          onClick={() => useLayoutStore.getState().fermerPanneau()}
-          title={t("members.close")}
-          style={{
-            border: 'none',
-            background: 'transparent',
-            color: 'var(--color-on-surface-variant)',
-            cursor: 'pointer',
-            fontSize: 18,
-            padding: 2,
-            lineHeight: 1,
-          }}
-        >×</button>
-      </div>
       <div style={{ overflowY: 'auto', flex: 1, padding: '6px 6px 12px' }}>
         {sections.map((sec) => sec.entries.length > 0 && (
           <div key={sec.role}>

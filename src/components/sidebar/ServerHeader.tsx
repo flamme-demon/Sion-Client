@@ -51,6 +51,13 @@ export function ServerHeader({ compact = false }: { compact?: boolean }) {
     }
   })();
 
+  if (!isMobile) return (
+    <div style={{ padding: compact ? '16px 8px' : '20px 18px', borderBottom: '1px solid var(--color-outline-variant)', flexShrink: 0 }}>
+      <div title={serverName} style={{ fontSize: 14, fontWeight: 700, color: 'var(--color-on-surface)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textAlign: compact ? 'center' : 'left' }}>{compact ? "S" : serverName}</div>
+      {!compact && <div style={{ marginTop: 4, fontSize: 11, color: 'var(--color-on-surface-variant)' }}>{t("server.online")}</div>}
+    </div>
+  );
+
   return (
     <div style={{
       display: 'flex',

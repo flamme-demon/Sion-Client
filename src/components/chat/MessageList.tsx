@@ -784,7 +784,7 @@ export function MessageList() {
         onTouchStart={arreterAncre}
         onMouseDown={arreterAncre}
         onKeyDown={arreterAncre}
-        className="flex-1 overflow-y-auto overflow-x-hidden px-6 py-5 flex flex-col min-w-0"
+        className="sion-messages flex-1 overflow-y-auto overflow-x-hidden px-6 py-5 flex flex-col min-w-0"
         onScroll={handleScroll}
       >
         <div ref={contentRef} className="flex flex-col min-w-0">

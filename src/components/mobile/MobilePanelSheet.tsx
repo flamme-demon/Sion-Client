@@ -5,11 +5,8 @@ import { PANNEAU_CORPS, PANNEAU_TITRES, panneauxOuverts } from "../layout/pannea
 import { CloseIcon } from "../icons";
 
 /**
- * Téléphone : les panneaux de la dock (épinglés, membres, soundboard…)
- * s'ouvrent en feuille qui monte du bas. Sans elle, la dock n'étant pas
- * rendue sur mobile, leurs boutons ouvraient des panneaux invisibles
- * (29/09 : « les épingles ne marchent pas »). Le dernier ouvert est affiché ;
- * fermer la feuille le ferme (croix, fond, retour d'Android).
+ * Téléphone : le panneau courant s'ouvre en feuille qui monte du bas.
+ * Fermer la feuille ferme le panneau (croix, fond, retour d'Android).
  */
 export function MobilePanelSheet() {
   const { t } = useTranslation();
@@ -78,4 +75,3 @@ export function MobilePanelSheet() {
     </div>
   );
 }
-

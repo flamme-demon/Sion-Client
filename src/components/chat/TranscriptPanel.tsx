@@ -3,7 +3,6 @@ import { useTranslation } from "react-i18next";
 import { useAppStore } from "../../stores/useAppStore";
 import { useMatrixStore } from "../../stores/useMatrixStore";
 import { useTranscriptStore } from "../../stores/useTranscriptStore";
-import { useLayoutStore } from "../../stores/useLayoutStore";
 import { armTranscription, disarmTranscription, endSessionForAll, summarizeMeeting } from "../../services/transcriptionService";
 import { backfillTranscript } from "../../services/matrixService";
 import { scopeTranscriptEntries } from "../../utils/transcriptScope";
@@ -35,7 +34,7 @@ const NO_SUMMARIES: Record<string, { text: string; ts: number }> = {};
  *  (durable Matrix events, visible to every room member). */
 export function TranscriptPanel() {
   const { t } = useTranslation();
-  // Dock : la coquille (largeur, zone, onglets) est portée par `DockZone`.
+  // Le panneau latéral porte le titre et la fermeture.
   const engineState = useTranscriptStore((s) => s.state);
   const engineError = useTranscriptStore((s) => s.error);
   const downloadPct = useTranscriptStore((s) => s.downloadPct);
@@ -168,7 +167,6 @@ export function TranscriptPanel() {
     }
   };
 
-  const statusDot = running ? "var(--color-error)" : armed ? "var(--color-pending)" : engineState === "error" ? "var(--color-error)" : "var(--color-outline)";
 
   const primaryBtn = (label: string, onClick: () => void, opts?: { disabled?: boolean }) => (
     <button
@@ -297,17 +295,6 @@ export function TranscriptPanel() {
     <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, overflow: 'hidden' }}>
       {/* Header */}
       <div style={{ padding: '10px 12px 8px', borderBottom: '1px solid var(--color-outline-variant)' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-          <span style={{ width: 8, height: 8, borderRadius: '50%', background: statusDot, flexShrink: 0 }} />
-          <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-on-surface)', flex: 1 }}>
-            {t("transcript.title", { defaultValue: "Transcription" })}
-          </span>
-          <button
-            onClick={() => useLayoutStore.getState().fermerPanneau()}
-            title={t("members.close", { defaultValue: "Fermer" })}
-            style={{ border: 'none', background: 'transparent', color: 'var(--color-on-surface-variant)', cursor: 'pointer', fontSize: 18, padding: 2, lineHeight: 1 }}
-          >×</button>
-        </div>
         {/* Tabs */}
         <div style={{ display: 'flex', gap: 4, background: 'var(--color-surface-container)', borderRadius: 10, padding: 3 }}>
           {tabBtn("live", t("transcript.tabLive", { defaultValue: "Direct" }), () => { setTab("live"); setViewedId(null); })}

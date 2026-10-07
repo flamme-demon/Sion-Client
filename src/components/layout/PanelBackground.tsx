@@ -5,9 +5,8 @@ import { pickPanelBackground, usePanelBackgroundUrl, bgAnchorCss } from "../../s
 
 /**
  * Contrôle d'édition d'un fond d'image : choisir / remplacer, régler
- * l'opacité, retirer. N'apparaît qu'en mode « Réorganiser » — le rendu du fond
- * lui-même est un simple style de conteneur, posé par
- * `usePanelBackgroundStyle` (services/panelBackground).
+ * l'opacité, retirer. Affiché dans les réglages d'apparence ; la bulle
+ * conserve seulement le calque de fond.
  */
 export function BackgroundControls({ scope, inline = false }: { scope: BackgroundScope; inline?: boolean }) {
   const { t } = useTranslation();
@@ -186,7 +185,7 @@ export function PanelBackgroundLayer({ scope }: { scope: BackgroundScope }) {
         // Déborde du conteneur : les bords adoucis par le flou restent hors
         // champ (sinon on voit une bande claire sur les bords).
         inset: -32,
-        zIndex: 0,
+        zIndex: -1,
         pointerEvents: 'none',
         backgroundImage: `linear-gradient(${veil}, ${veil}), url(${url})`,
         backgroundSize: 'cover',
@@ -197,4 +196,3 @@ export function PanelBackgroundLayer({ scope }: { scope: BackgroundScope }) {
     />
   );
 }
-

@@ -90,7 +90,11 @@
     "editHidePanel": "Hide this block",
     "backgrounds": "Panel backgrounds",
     "chat": "Conversation",
-    "channels": "Channels"
+    "channels": "Channels",
+    "navigation": "Navigation",
+    "toggleSidebar": "Toggle channels (Ctrl+B)",
+    "panels": "Panels",
+    "resizePanel": "Resize panel"
   },
   "server": {
     "online": "Online"
@@ -239,7 +243,12 @@
     "clickToPause": "Click to pause",
     "closePlayer": "Close player",
     "videoInMiniPlayer": "Playing in mini player",
-    "fullscreen": "Fullscreen"
+    "fullscreen": "Fullscreen",
+    "more": "More actions",
+    "send": "Send",
+    "mention": "Mention someone",
+    "insertLink": "Insert a link",
+    "linkText": "Link text"
   },
   "poll": {
     "menuItem": "Poll",

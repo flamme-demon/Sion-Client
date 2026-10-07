@@ -216,7 +216,7 @@ export const useLayoutStore = create<LayoutState>()(
         const oldWidth = right?.size ?? s.rightPanelWidth ?? (legacy ? Math.max(...Object.values(legacy)) : undefined);
         return preferences({
           ...s,
-          panneau: estPanneau(right?.active) ? right.active : right?.panels?.find(estPanneau) ?? null,
+          panneau: estPanneau(right?.active) ? right.active : Array.isArray(right?.panels) ? right.panels.find(estPanneau) ?? null : null,
           largeurPanneau: oldWidth,
         });
       },

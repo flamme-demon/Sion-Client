@@ -8,8 +8,9 @@ import { IndicateurFrappe } from "../chat/IndicateurFrappe";
 import { ApercuMessage } from "../chat/ApercuMessage";
 import { DropZone } from "../chat/DropZone";
 import { MobilePanelSheet } from "../mobile/MobilePanelSheet";
-import { BackgroundControls, PanelBackgroundLayer } from "./PanelBackground";
-import { usePanelBackgroundStyle } from "../../services/panelBackground";
+import { Bulle } from "./Bulle";
+import { PanneauLateral } from "./PanneauLateral";
+import { PanelBackgroundLayer } from "./PanelBackground";
 import { useAppStore } from "../../stores/useAppStore";
 import { useLiveKitStore } from "../../stores/useLiveKitStore";
 import { useIsMobile } from "../../hooks/useIsMobile";
@@ -39,8 +40,7 @@ export function MainArea() {
   useEffect(() => {
     if (hasActiveShare) setShareViewMounted(true);
   }, [hasActiveShare]);
-  // Fond d'image du chat (optionnel) — voir « Réorganiser » pour le choisir.
-  const chatBg = usePanelBackgroundStyle("chat");
+  // Les fonds du chat et des panneaux se règlent dans l'apparence.
 
   const handleDragOver = useCallback((e: DragEvent) => {
     e.preventDefault();
@@ -101,6 +101,19 @@ export function MainArea() {
 
   const needsVoiceBarPadding = isMobile && !!connectedVoice;
 
+  const conversation = <>
+    <ChatHeader />
+    <PinnedBar />
+    <TranscriptInviteBanner />
+    {/* La surface vidéo native reste rectangulaire dans la bulle arrondie. */}
+    {shareViewMounted && <Suspense fallback={null}><ScreenShareView /></Suspense>}
+    <MessageList />
+    <IndicateurFrappe />
+    <ChatInput />
+    <DropZone />
+    <ApercuMessage />
+  </>;
+
   return (
     <div
       className="flex-1 flex flex-col min-w-0 relative"
@@ -109,26 +122,17 @@ export function MainArea() {
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
     >
-      <div className="flex-1 flex min-h-0 min-w-0">
-        <div className="flex-1 flex flex-col min-w-0 relative" style={chatBg}>
-          <BackgroundControls scope="chat" />
-          {/* Mode « flou » : l'image vit dans ce calque, sous le contenu. */}
+      {isMobile ? (
+        <div className="flex-1 flex flex-col min-w-0 relative" style={{ isolation: "isolate", minHeight: 0 }}>
           <PanelBackgroundLayer scope="chat" />
-          <ChatHeader />
-          <PinnedBar />
-          <TranscriptInviteBanner />
-          {shareViewMounted && (
-            <Suspense fallback={null}>
-              <ScreenShareView />
-            </Suspense>
-          )}
-          <MessageList />
-          <IndicateurFrappe />
-          <ChatInput />
-          <DropZone />
-          <ApercuMessage />
+          {conversation}
         </div>
-      </div>
+      ) : (
+        <div className="sion-main-area" style={{ display: "flex", gap: "var(--sion-bulle-ecart)", flex: 1, minHeight: 0, minWidth: 0, position: "relative" }}>
+          <Bulle as="main" scope="chat" className="sion-conversation" style={{ flex: 1 }}>{conversation}</Bulle>
+          <PanneauLateral />
+        </div>
+      )}
       {isMobile && <MobilePanelSheet />}
     </div>
   );

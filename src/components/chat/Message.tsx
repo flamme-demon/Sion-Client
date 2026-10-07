@@ -1,3 +1,4 @@
+import { useIsMobile } from "../../hooks/useIsMobile";
 import React, { useState, useEffect, useRef, useMemo, lazy, Suspense } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
@@ -652,6 +653,7 @@ interface MessageProps {
 
 export const Message = React.memo(function Message({ message, showHeader, isFirst, highlighted }: MessageProps) {
   const { t } = useTranslation();
+  const isMobile = useIsMobile();
   const currentUserId = useMatrixStore((s) => s.currentUserId);
   const deleteMessage = useMatrixStore((s) => s.deleteMessage);
   const activeChannel = useAppStore((s) => s.activeChannel);
@@ -851,6 +853,174 @@ export const Message = React.memo(function Message({ message, showHeader, isFirs
     transition: 'background 150ms',
   };
 
+  const actionsMessage = (!isMobile || isHovered || showReactionPicker) && (
+        <div style={{
+          display: 'flex',
+          gap: 2,
+          background: isMobile ? 'var(--color-surface-container-high)' : 'transparent',
+          borderRadius: 12,
+          boxShadow: isMobile ? '0 2px 8px rgba(0,0,0,0.2)' : undefined,
+          padding: 2,
+          alignSelf: isMobile || isOwnMessage ? 'flex-end' : 'flex-start',
+          flexShrink: 0,
+          position: 'relative',
+          marginTop: isMobile ? 0 : 4,
+        }}>
+          {/* Reaction emoji button + picker */}
+          <div ref={reactionPickerRef} style={{ position: 'relative', display: 'flex' }}>
+            <button
+              onMouseDown={(e) => {
+                e.preventDefault();
+                const willOpen = !showReactionPicker;
+                if (willOpen) {
+                  // Decide anchor side from actual viewport geometry rather
+                  // than the isOwnMessage proxy: 320 px picker needs to fit
+                  // to one side of the button. Prefer rightward expansion
+                  // when it fits; fall back to leftward otherwise.
+                  const anchor = reactionPickerRef.current;
+                  const PICKER_WIDTH = 320;
+                  const EDGE_MARGIN = 8; // small breathing room from the edge
+                  if (anchor) {
+                    const rect = anchor.getBoundingClientRect();
+                    const spaceRight = window.innerWidth - rect.left - EDGE_MARGIN;
+                    const spaceLeft = rect.right - EDGE_MARGIN;
+                    if (spaceRight >= PICKER_WIDTH) {
+                      setReactionPickerSide("left");   // extend right
+                    } else if (spaceLeft >= PICKER_WIDTH) {
+                      setReactionPickerSide("right");  // extend left
+                    } else {
+                      // Neither side has enough space → pick the side with
+                      // more room; picker will clip slightly but stay as in-
+                      // view as possible. Extremely narrow windows only.
+                      setReactionPickerSide(spaceRight >= spaceLeft ? "left" : "right");
+                    }
+                  }
+                }
+                setShowReactionPicker((v) => !v);
+              }}
+              onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--color-secondary-container)'; }}
+              onMouseLeave={(e) => { if (!showReactionPicker) e.currentTarget.style.background = 'transparent'; }}
+              style={{ ...actionButtonStyle, background: showReactionPicker ? 'var(--color-secondary-container)' : 'transparent' }}
+              title={t("chat.react")}
+            >
+              <EmojiIcon />
+            </button>
+            {showReactionPicker && (
+              <div style={{
+                position: 'absolute',
+                bottom: '100%',
+                left: reactionPickerSide === "left" ? 0 : undefined,
+                right: reactionPickerSide === "right" ? 0 : undefined,
+                marginBottom: 4,
+                width: 320,
+                height: 360,
+                background: 'var(--color-surface-container)',
+                borderRadius: 16,
+                boxShadow: '0 -4px 24px rgba(0,0,0,0.3)',
+                display: 'flex',
+                flexDirection: 'column',
+                overflow: 'hidden',
+                zIndex: 200,
+              }}>
+                <EmojiGridPanel onPick={handleReaction} emojiSize={34} />
+              </div>
+            )}
+          </div>
+          <button
+            onClick={handleReply}
+            onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--color-secondary-container)'; }}
+            onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
+            style={actionButtonStyle}
+            title={t("chat.reply")}
+          >
+            <ReplyIcon />
+          </button>
+          {isOwnMessage && message.text && (
+            <button
+              onClick={handleEdit}
+              onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--color-secondary-container)'; }}
+              onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
+              style={actionButtonStyle}
+              title={t("chat.editMessage")}
+            >
+              <PencilIcon />
+            </button>
+          )}
+          {canModerate && (
+            <button
+              onClick={handlePin}
+              onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--color-secondary-container)'; }}
+              onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
+              style={{
+                ...actionButtonStyle,
+                // Épinglé : couleur d'accent et icône pleine. L'action étant
+                // une bascule, l'état doit se lire avant le clic.
+                color: isPinned ? 'var(--color-primary)' : actionButtonStyle.color,
+              }}
+              title={isPinned
+                ? t("chat.unpinMessage", { defaultValue: "Désépingler" })
+                : t("chat.pinMessage")}
+              aria-pressed={isPinned}
+            >
+              <PinIcon filled={isPinned} />
+            </button>
+          )}
+          {!isOwnMessage && moteurRust() && message.eventId && activeChannel && (
+            <button
+              onClick={() => setShowReport(true)}
+              onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--color-secondary-container)'; }}
+              onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
+              style={actionButtonStyle}
+              title={t("report.action")}
+            >
+              <FlagIcon />
+            </button>
+          )}
+          {canDelete && !showDeleteConfirm && (
+            <button
+              onClick={handleDelete}
+              onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--color-error-container)'; }}
+              onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
+              style={{ ...actionButtonStyle, color: 'var(--color-error)' }}
+              title={t("chat.deleteMessage")}
+            >
+              <TrashIcon />
+            </button>
+          )}
+          {canDelete && showDeleteConfirm && (
+            <>
+              <button
+                onClick={confirmDelete}
+                title={t("chat.deleteMessageConfirm")}
+                style={{
+                  ...actionButtonStyle,
+                  background: 'var(--color-error)',
+                  color: 'var(--color-on-error)',
+                  fontWeight: 700,
+                  fontSize: 13,
+                  padding: '6px 10px',
+                }}
+              >
+                ✓
+              </button>
+              <button
+                onClick={cancelDelete}
+                title={t("auth.cancel")}
+                style={{
+                  ...actionButtonStyle,
+                  color: 'var(--color-on-surface-variant)',
+                  fontWeight: 700,
+                  fontSize: 13,
+                  padding: '6px 10px',
+                }}
+              >
+                ✗
+              </button>
+            </>
+          )}
+        </div>
+      );
+
   return (
     <div
       onMouseEnter={() => setIsHovered(true)}
@@ -858,7 +1028,7 @@ export const Message = React.memo(function Message({ message, showHeader, isFirs
       style={{
       display: 'flex',
       flexDirection: isOwnMessage ? 'row-reverse' : 'row',
-      alignItems: 'flex-end',
+      alignItems: isMobile ? 'flex-end' : 'flex-start',
       gap: 8,
       minWidth: 0,
       marginTop: showHeader ? (isFirst ? 0 : 20) : 4,
@@ -1172,175 +1342,9 @@ export const Message = React.memo(function Message({ message, showHeader, isFirs
             })}
           </div>
         )}
+      {!isMobile && actionsMessage}
       </div>
-
-      {/* Hover action bar — outside: right for others, left for own */}
-      {(isHovered || showReactionPicker) && (
-        <div style={{
-          display: 'flex',
-          gap: 2,
-          background: 'var(--color-surface-container-high)',
-          borderRadius: 12,
-          boxShadow: '0 2px 8px rgba(0,0,0,0.2)',
-          padding: 2,
-          alignSelf: 'flex-end',
-          flexShrink: 0,
-          position: 'relative',
-        }}>
-          {/* Reaction emoji button + picker */}
-          <div ref={reactionPickerRef} style={{ position: 'relative', display: 'flex' }}>
-            <button
-              onMouseDown={(e) => {
-                e.preventDefault();
-                const willOpen = !showReactionPicker;
-                if (willOpen) {
-                  // Decide anchor side from actual viewport geometry rather
-                  // than the isOwnMessage proxy: 320 px picker needs to fit
-                  // to one side of the button. Prefer rightward expansion
-                  // when it fits; fall back to leftward otherwise.
-                  const anchor = reactionPickerRef.current;
-                  const PICKER_WIDTH = 320;
-                  const EDGE_MARGIN = 8; // small breathing room from the edge
-                  if (anchor) {
-                    const rect = anchor.getBoundingClientRect();
-                    const spaceRight = window.innerWidth - rect.left - EDGE_MARGIN;
-                    const spaceLeft = rect.right - EDGE_MARGIN;
-                    if (spaceRight >= PICKER_WIDTH) {
-                      setReactionPickerSide("left");   // extend right
-                    } else if (spaceLeft >= PICKER_WIDTH) {
-                      setReactionPickerSide("right");  // extend left
-                    } else {
-                      // Neither side has enough space → pick the side with
-                      // more room; picker will clip slightly but stay as in-
-                      // view as possible. Extremely narrow windows only.
-                      setReactionPickerSide(spaceRight >= spaceLeft ? "left" : "right");
-                    }
-                  }
-                }
-                setShowReactionPicker((v) => !v);
-              }}
-              onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--color-secondary-container)'; }}
-              onMouseLeave={(e) => { if (!showReactionPicker) e.currentTarget.style.background = 'transparent'; }}
-              style={{ ...actionButtonStyle, background: showReactionPicker ? 'var(--color-secondary-container)' : 'transparent' }}
-              title={t("chat.react")}
-            >
-              <EmojiIcon />
-            </button>
-            {showReactionPicker && (
-              <div style={{
-                position: 'absolute',
-                bottom: '100%',
-                left: reactionPickerSide === "left" ? 0 : undefined,
-                right: reactionPickerSide === "right" ? 0 : undefined,
-                marginBottom: 4,
-                width: 320,
-                height: 360,
-                background: 'var(--color-surface-container)',
-                borderRadius: 16,
-                boxShadow: '0 -4px 24px rgba(0,0,0,0.3)',
-                display: 'flex',
-                flexDirection: 'column',
-                overflow: 'hidden',
-                zIndex: 200,
-              }}>
-                <EmojiGridPanel onPick={handleReaction} emojiSize={34} />
-              </div>
-            )}
-          </div>
-          <button
-            onClick={handleReply}
-            onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--color-secondary-container)'; }}
-            onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
-            style={actionButtonStyle}
-            title={t("chat.reply")}
-          >
-            <ReplyIcon />
-          </button>
-          {isOwnMessage && message.text && (
-            <button
-              onClick={handleEdit}
-              onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--color-secondary-container)'; }}
-              onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
-              style={actionButtonStyle}
-              title={t("chat.editMessage")}
-            >
-              <PencilIcon />
-            </button>
-          )}
-          {canModerate && (
-            <button
-              onClick={handlePin}
-              onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--color-secondary-container)'; }}
-              onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
-              style={{
-                ...actionButtonStyle,
-                // Épinglé : couleur d'accent et icône pleine. L'action étant
-                // une bascule, l'état doit se lire avant le clic.
-                color: isPinned ? 'var(--color-primary)' : actionButtonStyle.color,
-              }}
-              title={isPinned
-                ? t("chat.unpinMessage", { defaultValue: "Désépingler" })
-                : t("chat.pinMessage")}
-              aria-pressed={isPinned}
-            >
-              <PinIcon filled={isPinned} />
-            </button>
-          )}
-          {!isOwnMessage && moteurRust() && message.eventId && activeChannel && (
-            <button
-              onClick={() => setShowReport(true)}
-              onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--color-secondary-container)'; }}
-              onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
-              style={actionButtonStyle}
-              title={t("report.action")}
-            >
-              <FlagIcon />
-            </button>
-          )}
-          {canDelete && !showDeleteConfirm && (
-            <button
-              onClick={handleDelete}
-              onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--color-error-container)'; }}
-              onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
-              style={{ ...actionButtonStyle, color: 'var(--color-error)' }}
-              title={t("chat.deleteMessage")}
-            >
-              <TrashIcon />
-            </button>
-          )}
-          {canDelete && showDeleteConfirm && (
-            <>
-              <button
-                onClick={confirmDelete}
-                title={t("chat.deleteMessageConfirm")}
-                style={{
-                  ...actionButtonStyle,
-                  background: 'var(--color-error)',
-                  color: 'var(--color-on-error)',
-                  fontWeight: 700,
-                  fontSize: 13,
-                  padding: '6px 10px',
-                }}
-              >
-                ✓
-              </button>
-              <button
-                onClick={cancelDelete}
-                title={t("auth.cancel")}
-                style={{
-                  ...actionButtonStyle,
-                  color: 'var(--color-on-surface-variant)',
-                  fontWeight: 700,
-                  fontSize: 13,
-                  padding: '6px 10px',
-                }}
-              >
-                ✗
-              </button>
-            </>
-          )}
-        </div>
-      )}
+      {isMobile && actionsMessage}
 
       {showReport && message.eventId && activeChannel && (
         <ModaleSignalement salon={activeChannel} eventId={message.eventId} auteur={message.user} onClose={() => setShowReport(false)} />

@@ -1,3 +1,4 @@
+import { RailServeurs } from "./components/layout/RailServeurs";
 import { Suspense, lazy, useEffect, useState, useCallback, useRef } from "react";
 import { Sidebar } from "./components/layout/Sidebar";
 import { MainArea } from "./components/layout/MainArea";
@@ -476,7 +477,8 @@ export default function App() {
     <Suspense fallback={
       <div className="app-loading">Loading...</div>
     }>
-      <div className="app-root">
+      <div className={`app-root${isMobile ? "" : " app-root--desktop"}`}>
+        {!isMobile && <RailServeurs />}
         {/* Mobile: show sidebar OR chat based on mobileView */}
         {/* Desktop: always show sidebar */}
         {(!isMobile || mobileView === "sidebar") && sidebarSide === "left" && <Sidebar />}

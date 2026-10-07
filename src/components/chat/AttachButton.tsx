@@ -1,6 +1,6 @@
 import { useRef, useState, lazy, Suspense } from "react";
 import { useTranslation } from "react-i18next";
-import { PaperclipIcon, FileIcon, PollIcon } from "../icons";
+import { PaperclipIcon, FileIcon, PollIcon, PlusIcon } from "../icons";
 import { useAppStore } from "../../stores/useAppStore";
 import { PollCreateModal } from "./PollCreateModal";
 import { SUR_ANDROID } from "../../utils/plateforme";
@@ -11,7 +11,7 @@ const ExternalVideoImport = lazy(() =>
   import("./ExternalVideoImport").then((m) => ({ default: m.ExternalVideoImport })),
 );
 
-export function AttachButton() {
+export function AttachButton({ direct = false, plus = false, disabled = false }: { direct?: boolean; plus?: boolean; disabled?: boolean }) {
   const { t } = useTranslation();
   const inputRef = useRef<HTMLInputElement>(null);
   const addPendingFile = useAppStore((s) => s.addPendingFile);
@@ -37,16 +37,19 @@ export function AttachButton() {
     <>
       <div
         style={{ position: 'relative', display: 'flex' }}
-        onMouseEnter={() => setMenuOpen(true)}
+        onMouseEnter={() => { if (!direct && !disabled) setMenuOpen(true); }}
         onMouseLeave={() => setMenuOpen(false)}
       >
         <button
           type="button"
-          onClick={() => setMenuOpen((o) => !o)}
+          disabled={disabled}
+          aria-label={t("chat.attachFile")}
+          aria-expanded={direct ? undefined : menuOpen}
+          onClick={() => direct ? inputRef.current?.click() : setMenuOpen((o) => !o)}
           style={{ background: 'transparent', border: 'none', cursor: 'pointer', padding: 10, display: 'flex', borderRadius: '50%', color: 'var(--color-on-surface-variant)', transition: 'background 200ms' }}
           title={t("chat.attachFile")}
         >
-          <PaperclipIcon />
+          {plus ? <PlusIcon /> : <PaperclipIcon />}
         </button>
         <input ref={inputRef} type="file" multiple style={{ display: 'none' }} onChange={handleChange} />
 

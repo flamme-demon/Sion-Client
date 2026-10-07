@@ -1,6 +1,7 @@
+import { OngletsPanneaux } from "./OngletsPanneaux";
 import { useRef, useState, useEffect, lazy, Suspense } from "react";
 import { useTranslation } from "react-i18next";
-import { ScreenIcon, PencilIcon, HashIcon, ArrowLeftIcon, UserAddIcon, UsersIcon } from "../icons";
+import { ScreenIcon, PencilIcon, HashIcon, ArrowLeftIcon, UserAddIcon, UsersIcon, PinIcon } from "../icons";
 import { ChannelIcon } from "../sidebar/ChannelIcon";
 import { useAppStore } from "../../stores/useAppStore";
 import { useMatrixStore } from "../../stores/useMatrixStore";
@@ -111,6 +112,15 @@ export function ChatHeader() {
   const channel = channels.find((c) => c.id === activeChannel);
   const channelName = channel?.name || "general";
 
+  const [plusActions, setPlusActions] = useState(false);
+  const plusRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!plusActions) return;
+    const fermer = (e: MouseEvent) => { if (!plusRef.current?.contains(e.target as Node)) setPlusActions(false); };
+    document.addEventListener("mousedown", fermer);
+    return () => document.removeEventListener("mousedown", fermer);
+  }, [plusActions]);
+
   const [showEditModal, setShowEditModal] = useState(false);
   const [editName, setEditName] = useState("");
   const [editTopic, setEditTopic] = useState("");
@@ -198,6 +208,7 @@ export function ChatHeader() {
 
   return (
     <>
+      {isMobile ? (<>
       {/* M3 Top App Bar */}
       <div style={{
         height: isMobile ? 56 : 64,
@@ -433,6 +444,26 @@ export function ChatHeader() {
           </div>
         )}
       </div>
+      </>) : (
+        <div className="sion-chat-header">
+          <div className="sion-chat-salon"><ChannelIcon channel={channel} /><span title={channelName}>{channelName}</span></div>
+          <OngletsPanneaux salonVocal={!!channel?.hasVoice} />
+          <div className="sion-chat-actions">
+            <button type="button" aria-label={t("chat.pinnedList")} title={t("chat.pinnedList")} aria-pressed={panelOpen("pinned")} onClick={() => useLayoutStore.getState().basculerPanneau("pinned")}><PinIcon /></button>
+            {!channel?.isDM && <button type="button" aria-label={t("members.title")} title={t("members.title")} aria-pressed={panelOpen("members")} onClick={() => useLayoutStore.getState().basculerPanneau("members")}><UsersIcon /></button>}
+            {connectedVoice && <button type="button" aria-label={isScreenSharing ? t("chat.stopShare") : t("chat.shareScreen")} title={isScreenSharing ? t("chat.stopShare") : t("chat.shareScreen")} aria-pressed={isScreenSharing}
+              onClick={() => isScreenSharing ? toggleScreenShare() : setShowScreenShareOptions(true)}><ScreenIcon /></button>}
+            {((!channel?.isDM && (canEdit || (canInvite && isInviteOnly))) || isScreenSharing) && <div ref={plusRef} style={{ position: 'relative' }} onKeyDown={(e) => { if (e.key === 'Escape') { setPlusActions(false); (plusRef.current?.querySelector('button') as HTMLButtonElement)?.focus(); } }}>
+              <button type="button" aria-label={t("chat.more")} title={t("chat.more")} aria-expanded={plusActions} aria-haspopup="true" onClick={() => setPlusActions((v) => !v)}>⋯</button>
+              {plusActions && <div className="sion-chat-plus">
+                {canEdit && !channel?.isDM && <button type="button" onClick={() => { setPlusActions(false); openEditModal(); }}><PencilIcon />{t("channels.settings")}</button>}
+                {canInvite && isInviteOnly && !channel?.isDM && <button type="button" onClick={() => { setPlusActions(false); setServerUsers([...knownUserIds].filter((id) => id !== monId()).sort()); setShowInviteModal(true); }}><UserAddIcon />{t("channels.inviteUser")}</button>}
+                {isScreenSharing && <button type="button" onClick={() => { setPlusActions(false); setShowScreenShareOptions(true); }}><ScreenIcon />{t("screenShare.title")}</button>}
+              </div>}
+            </div>}
+          </div>
+        </div>
+      )}
 
       {isMobile && connectedVoice && <VoiceWaveBar />}
 

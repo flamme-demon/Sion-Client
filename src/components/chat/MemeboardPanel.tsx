@@ -1,3 +1,4 @@
+import { useCompteurPanneau } from "../layout/panneauxCompteurs";
 // Memeboard : la grille des memes du salon, et leur import.
 //
 // Un clic fait surgir le meme par-dessus l'écran de tout le salon vocal — jeux
@@ -7,7 +8,6 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useSettingsStore } from "../../stores/useSettingsStore";
-import { useLayoutStore } from "../../stores/useLayoutStore";
 import {
   canSendMessage,
   findSoundboardRoom,
@@ -290,7 +290,6 @@ export function MemeboardPanel() {
   const setActif = useSettingsStore((s) => s.setMemeboardEnabled);
   const volume = useSettingsStore((s) => s.memeboardVolume);
   const setVolume = useSettingsStore((s) => s.setMemeboardVolume);
-  const compact = false;
   const rafraichirRef = useRef<() => void>(() => {});
 
   const annoncer = useCallback((texte: string) => {
@@ -423,7 +422,7 @@ export function MemeboardPanel() {
         borderRadius: 8, display: 'flex', color: actif ? 'var(--color-on-surface)' : 'var(--color-error)',
       }}
     >
-      <svg width={compact ? 15 : 18} height={compact ? 15 : 18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
         <rect x="2" y="4" width="20" height="16" rx="3" />
         {actif
           ? <polygon points="10 9 15 12 10 15 10 9" fill="currentColor" />
@@ -433,7 +432,7 @@ export function MemeboardPanel() {
   );
 
   const reglageVolume = (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0, flex: compact ? '0 0 auto' : 1, color: 'var(--color-on-surface-variant)' }}>
+    <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0, flex: 1, color: 'var(--color-on-surface-variant)' }}>
       {bascule}
       <input
         type="range" min={0} max={1} step={0.05} value={volume}
@@ -442,7 +441,7 @@ export function MemeboardPanel() {
         onChange={(e) => setVolume(parseFloat(e.target.value))}
         title={t("memeboard.volume")}
         style={{
-          width: compact ? 90 : undefined, flex: compact ? '0 0 auto' : 1,
+          width: undefined, flex: 1,
           opacity: actif ? 1 : 0.4, cursor: actif ? 'pointer' : 'not-allowed',
           '--sion-range-progress': `${Math.round(volume * 100)}%`,
         } as React.CSSProperties}
@@ -451,16 +450,18 @@ export function MemeboardPanel() {
     </div>
   );
 
+  useCompteurPanneau("memeboard", memes.length);
+
   const champRecherche = (
     <input
       value={recherche}
       onChange={(e) => setRecherche(e.target.value)}
       placeholder={t("memeboard.search")}
       style={{
-        flex: compact ? '0 1 200px' : 1, minWidth: 0, boxSizing: 'border-box',
-        padding: compact ? '4px 10px' : '8px 12px', borderRadius: compact ? 999 : 12,
+        flex: 1, minWidth: 0, boxSizing: 'border-box',
+        padding: '8px 12px', borderRadius: 12,
         border: '1px solid var(--color-outline-variant)', background: 'var(--color-surface-container)',
-        color: 'var(--color-on-surface)', fontSize: compact ? 12 : 13, fontFamily: 'inherit', outline: 'none',
+        color: 'var(--color-on-surface)', fontSize: 13, fontFamily: 'inherit', outline: 'none',
       }}
     />
   );
@@ -473,44 +474,18 @@ export function MemeboardPanel() {
       onClick={() => setImport(true)}
       title={t("memeboard.add")}
       style={{
-        width: compact ? 28 : 36, height: compact ? 28 : 36, flexShrink: 0, borderRadius: compact ? 999 : 12,
+        width: 36, height: 36, flexShrink: 0, borderRadius: 12,
         border: 'none', background: 'var(--color-primary)', color: 'var(--color-on-primary)',
-        cursor: 'pointer', fontSize: compact ? 17 : 20, display: 'flex', alignItems: 'center', justifyContent: 'center', lineHeight: 1,
+        cursor: 'pointer', fontSize: 20, display: 'flex', alignItems: 'center', justifyContent: 'center', lineHeight: 1,
       }}
     >+</button>
-  );
-
-  const fermer = (
-    <button
-      type="button"
-      onClick={() => useLayoutStore.getState().fermerPanneau()}
-      title={t("memeboard.close")}
-      style={{ flexShrink: 0, border: 'none', background: 'transparent', color: 'var(--color-on-surface-variant)', cursor: 'pointer', fontSize: compact ? 18 : 20, padding: 2, lineHeight: 1 }}
-    >×</button>
   );
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, overflow: 'hidden' }}>
       <style>{`.meme-tuile:hover .meme-suppr, .meme-tuile:hover .meme-modif { display: flex !important; }`}</style>
-      {compact ? (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0, padding: '5px 10px', borderBottom: '1px solid var(--color-outline-variant)' }}>
-          <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--color-on-surface)', flexShrink: 0 }}>{t("memeboard.title")}</span>
-          <span style={{ fontSize: 11, color: 'var(--color-on-surface-variant)', flexShrink: 0 }}>{t("memeboard.count", { count: memes.length })}</span>
-          <div style={{ flex: 1 }} />
-          {roomId && champRecherche}
-          {roomId && boutonAjouter}
-          {reglageVolume}
-          {fermer}
-        </div>
-      ) : (
+      {(
         <>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 16px 10px' }}>
-            <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, minWidth: 0 }}>
-              <span style={{ fontSize: 17, fontWeight: 700, color: 'var(--color-on-surface)' }}>{t("memeboard.title")}</span>
-              <span style={{ fontSize: 12, color: 'var(--color-on-surface-variant)' }}>{t("memeboard.count", { count: memes.length })}</span>
-            </div>
-            {fermer}
-          </div>
           {roomId && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10, padding: '0 16px 12px' }}>
               <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
@@ -537,7 +512,7 @@ export function MemeboardPanel() {
         </div>
       ) : (
         <div style={{
-          flex: 1, minHeight: 0, overflowY: 'auto', padding: compact ? '8px 10px' : '4px 16px 16px',
+          flex: 1, minHeight: 0, overflowY: 'auto', padding: '4px 16px 16px',
           display: 'grid', gap: 10, alignContent: 'start',
           gridTemplateColumns: 'repeat(auto-fill, minmax(112px, 1fr))',
         }}>

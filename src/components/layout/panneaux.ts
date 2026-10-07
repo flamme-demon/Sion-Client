@@ -4,6 +4,7 @@
  */
 import { lazy, type ComponentType } from "react";
 import { useLayoutStore, type PanneauId } from "../../stores/useLayoutStore";
+export { PANNEAU_COMPTEURS } from "./panneauxCompteurs";
 
 // Blocs lourds chargés à la demande (perf mémoire, 2026-09-12) : le soundboard
 // embarquait dans le chunk de démarrage tout son sous-graphe (panneau vocal,
