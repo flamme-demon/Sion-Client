@@ -1,3 +1,4 @@
+import { RecherchePanneau } from "./RecherchePanneau";
 import { useCompteurPanneau } from "../layout/panneauxCompteurs";
 // Memeboard : la grille des memes du salon, et leur import.
 //
@@ -452,34 +453,9 @@ export function MemeboardPanel() {
 
   useCompteurPanneau("memeboard", memes.length);
 
-  const champRecherche = (
-    <input
-      value={recherche}
-      onChange={(e) => setRecherche(e.target.value)}
-      placeholder={t("memeboard.search")}
-      style={{
-        flex: 1, minWidth: 0, boxSizing: 'border-box',
-        padding: '8px 12px', borderRadius: 12,
-        border: '1px solid var(--color-outline-variant)', background: 'var(--color-surface-container)',
-        color: 'var(--color-on-surface)', fontSize: 13, fontFamily: 'inherit', outline: 'none',
-      }}
-    />
-  );
-
-  // Créer un meme passe par ffmpeg (analyse, découpe) : pas sur téléphone,
-  // où l'on déclenche seulement ceux du salon.
-  const boutonAjouter = peutEnvoyer && !SUR_ANDROID && (
-    <button
-      type="button"
-      onClick={() => setImport(true)}
-      title={t("memeboard.add")}
-      style={{
-        width: 36, height: 36, flexShrink: 0, borderRadius: 12,
-        border: 'none', background: 'var(--color-primary)', color: 'var(--color-on-primary)',
-        cursor: 'pointer', fontSize: 20, display: 'flex', alignItems: 'center', justifyContent: 'center', lineHeight: 1,
-      }}
-    >+</button>
-  );
+  // L'import ffmpeg reste réservé aux ordinateurs.
+  const champRecherche = <RecherchePanneau valeur={recherche} onChange={setRecherche} libelle={t("memeboard.search")}
+    ajout={peutEnvoyer && !SUR_ANDROID ? { libelle: t("memeboard.add"), onClick: () => setImport(true) } : undefined} />;
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, overflow: 'hidden' }}>
@@ -490,7 +466,6 @@ export function MemeboardPanel() {
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10, padding: '0 16px 12px' }}>
               <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                 {champRecherche}
-                {boutonAjouter}
               </div>
               {reglageVolume}
             </div>
@@ -528,7 +503,7 @@ export function MemeboardPanel() {
                 style={{
                   position: 'relative', display: 'flex', flexDirection: 'column', gap: 6,
                   padding: 6, borderRadius: 12, cursor: actif ? 'pointer' : 'not-allowed',
-                  border: '1px solid var(--color-outline-variant)', background: 'var(--color-surface-container)',
+                  border: '1px solid var(--color-border)', background: 'var(--color-surface-container)',
                   opacity: actif ? 1 : 0.45, transition: 'border-color 120ms',
                 }}
                 onMouseEnter={(e) => {
@@ -536,7 +511,7 @@ export function MemeboardPanel() {
                   setSurvolee(m.eventId);
                 }}
                 onMouseLeave={(e) => {
-                  e.currentTarget.style.borderColor = 'var(--color-outline-variant)';
+                  e.currentTarget.style.borderColor = 'var(--color-border)';
                   setSurvolee((id) => (id === m.eventId ? null : id));
                 }}
               >

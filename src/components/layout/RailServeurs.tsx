@@ -9,6 +9,7 @@ import { useAdminStore } from "../../stores/useAdminStore";
 import { usePendingUsersStore } from "../../stores/usePendingUsersStore";
 import { useLayoutStore } from "../../stores/useLayoutStore";
 import { preloadHeavyScreens } from "../../services/lazyScreens";
+import { useFenetreEtroite } from "../../hooks/useFenetreEtroite";
 
 export function RailServeurs() {
   const { t } = useTranslation();
@@ -19,6 +20,7 @@ export function RailServeurs() {
   const showAccount = useAppStore((s) => s.showAccountPanel);
   const showAdmin = useAppStore((s) => s.showAdmin);
   const showSettings = useAppStore((s) => s.showSettings);
+  const etroite = useFenetreEtroite();
   const nom = credentials?.displayName || credentials?.userId || "Sion";
   return (
     <>
@@ -39,11 +41,13 @@ export function RailServeurs() {
           {pendingCount > 0 && <span className="sion-rail-compteur">{pendingCount}</span>}
         </button>}
         <div style={{ flex: 1 }} />
-        <hr style={{ width: 32, border: 0, borderTop: "1px solid var(--color-outline-variant)" }} />
-        <button className="sion-rail-bouton" data-panel-toggle aria-label={t("settings.title")} title={t("settings.title")} aria-pressed={showSettings}
-          onPointerEnter={() => preloadHeavyScreens(0)} onClick={() => useAppStore.getState().toggleSettings()}>
-          <SettingsIcon />
-        </button>
+        {(mode !== "full" || etroite) && <>
+          <hr style={{ width: 32, border: 0, borderTop: "1px solid var(--color-border)" }} />
+          <button className="sion-rail-bouton" data-panel-toggle aria-label={t("settings.title")} title={t("settings.title")} aria-pressed={showSettings}
+            onPointerEnter={() => preloadHeavyScreens(0)} onClick={() => useAppStore.getState().toggleSettings()}>
+            <SettingsIcon />
+          </button>
+        </>}
       </Bulle>
       <AccountPopover compact />
     </>

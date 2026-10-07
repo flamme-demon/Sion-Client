@@ -13,10 +13,12 @@ Sur ordinateur, quatre espaces séparés composent la fenêtre : rail de
 navigation, salons, conversation et panneau latéral. Les bulles ont un rayon
 de 20 px et un écart de 12 px ; les cartes internes utilisent un rayon de 14 px.
 
-Le rail permet de replier les salons, ouvrir le compte, l'administration
-(si autorisée) et les réglages. La carte de profil au pied des salons réunit
+Le rail permet de replier les salons, ouvrir le compte et l'administration
+(si autorisée). La carte de profil au pied des salons réunit
 les commandes audio et le raccrochage lorsqu'un appel est actif. Les avatars
-vocaux restent sur la ligne du salon ; un clic les déplie.
+vocaux restent sur la ligne du salon ; un clic les déplie. Paramètres est
+affiché dans cette carte lorsque le menu est déployé ; lorsque le menu est
+compact ou masqué, le rail prend le relais avec ce même accès.
 
 Les onglets de conversation ouvrent transcription (salon vocal), soundboard
 ou memeboard. Épinglés et membres utilisent le même panneau ; un nouveau
@@ -85,3 +87,21 @@ Les vérifications réelles en appel (micro / F8, sons, partage reçu), les
 transitions du lecteur et le placement HWND Windows restent à effectuer.
 Les aperçus avec données fictives ne valident pas ces fonctions matérielles.
 La branche ne doit pas être fusionnée dans `main` avant la 2.0.0 finale.
+
+## Retouches après comparaison à la maquette
+
+D’après la capture annotée `Capture d'écran_20261007_133803.png` :
+
+- Contours des bulles, cartes et séparateurs adoucis avec le token de thème
+  `color-border`, au lieu de `color-outline-variant`.
+- Un seul accès Paramètres visible : profil en mode déployé, rail en mode
+  compact ou masqué. L’accès reste disponible dans une fenêtre étroite.
+- Recherche commune aux sons et memes, fond `surface-container-high`,
+  bouton + vert intégré au champ, affiché selon les mêmes autorisations.
+- Fonds `surface-container` du profil et du pied de volume du soundboard.
+- Icône de note de musique dans l’onglet Soundboard, comme la référence.
+
+Vérifications : compilation TypeScript, tests concernés, aperçus sombre et
+clair ; recherche et filtres, ajout intégré, accès Paramètres unique à
+1600 / 1000 / 768 px, feuille téléphone à 390 px. Aperçu WebKitGTK actualisé.
+La mesure CPU de 60 secondes ci-dessus est celle de l’implémentation initiale.

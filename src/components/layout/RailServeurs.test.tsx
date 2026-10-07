@@ -9,6 +9,7 @@ vi.mock("../../i18n", () => ({ default: { t: (key: string) => key, changeLanguag
 vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 vi.mock("../sidebar/AccountPopover", () => ({ AccountPopover: () => null }));
 vi.mock("../../services/lazyScreens", () => ({ preloadHeavyScreens: vi.fn() }));
+vi.mock("../../hooks/useFenetreEtroite", () => ({ useFenetreEtroite: () => false }));
 const vue = montage();
 beforeEach(() => { useLayoutStore.setState({ sidebarMode: "full" }); useAdminStore.setState({ isAdmin: false }); });
 it("le logo replie et déplie la barre des salons", async () => {

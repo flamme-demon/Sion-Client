@@ -1,3 +1,4 @@
+import { RecherchePanneau } from "./RecherchePanneau";
 import { useCompteurPanneau } from "../layout/panneauxCompteurs";
 import { useEffect, useState, useMemo, useRef } from "react";
 import { useTranslation } from "react-i18next";
@@ -361,7 +362,7 @@ export function SoundboardPanel() {
         display: 'flex', alignItems: 'center', gap: 5, flexShrink: 0,
         padding: '5px 12px', borderRadius: 999, cursor: 'pointer',
         fontSize: 12, fontWeight: 600, fontFamily: 'inherit', whiteSpace: 'nowrap',
-        border: active ? '1px solid var(--color-primary)' : '1px solid var(--color-outline-variant)',
+        border: active ? '1px solid var(--color-primary)' : '1px solid var(--color-border)',
         background: active ? 'var(--color-primary)' : 'transparent',
         color: active ? 'var(--color-on-primary)' : 'var(--color-on-surface-variant)',
         opacity: opts?.dim ? 0.5 : 1,
@@ -379,31 +380,6 @@ export function SoundboardPanel() {
     { key: "voices" as const, label: t("tts.tab"), show: canUpload && !SUR_ANDROID },
     { key: "members" as const, label: `${t("soundboard.tabMembers")} · ${members.length}`, show: canManageMembers },
   ].filter((x) => x.show);
-
-  const searchBox = (inHeader: boolean) => (
-    <div style={{
-      position: 'relative', display: 'flex', alignItems: 'center', minWidth: 0,
-      flex: inHeader ? '0 1 220px' : 1,
-    }}>
-      <span style={{ position: 'absolute', left: inHeader ? 10 : 12, color: 'var(--color-on-surface-variant)', display: 'flex', pointerEvents: 'none' }}>
-        <svg width={inHeader ? 13 : 15} height={inHeader ? 13 : 15} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" />
-        </svg>
-      </span>
-      <input
-        value={search}
-        onChange={(e) => setSearch(e.target.value)}
-        placeholder={t("soundboard.searchPlaceholder")}
-        style={{
-          width: '100%', minWidth: 0, boxSizing: 'border-box',
-          padding: inHeader ? '4px 10px 4px 28px' : '9px 12px 9px 34px',
-          borderRadius: inHeader ? 999 : 12,
-          border: '1px solid var(--color-outline-variant)', background: 'var(--color-surface-container)',
-          color: 'var(--color-on-surface)', fontSize: inHeader ? 12 : 13, fontFamily: 'inherit', outline: 'none',
-        }}
-      />
-    </div>
-  );
 
   const volumeControl = (inHeader: boolean) => (
     <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0, flexShrink: 0, color: 'var(--color-on-surface-variant)' }}>
@@ -445,19 +421,6 @@ export function SoundboardPanel() {
     </div>
   );
 
-  const uploadButton = (small: boolean) => (
-    <button
-      onClick={() => setShowUpload(true)}
-      aria-label={t("soundboard.upload")} title={t("soundboard.upload")}
-      style={{
-        width: small ? 28 : 38, height: small ? 28 : 38, flexShrink: 0,
-        borderRadius: small ? 999 : 12, border: 'none',
-        background: 'var(--color-primary)', color: 'var(--color-on-primary)', cursor: 'pointer',
-        fontSize: small ? 17 : 20, fontWeight: 400, display: 'flex', alignItems: 'center', justifyContent: 'center', lineHeight: 1,
-      }}
-    >+</button>
-  );
-
   return (
     <div className="soundboard-panel" style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, overflow: 'hidden' }}>
       <style>{`
@@ -473,7 +436,7 @@ export function SoundboardPanel() {
           {/* Tabs — défilement horizontal (masqué) pour ne jamais rogner quand le
               panneau est étroit. */}
           {roomId && (canUpload || canManageMembers) && (
-            <div className="sb-pills" onWheel={onPillWheel} style={{ display: 'flex', gap: 18, padding: '0 16px', borderBottom: '1px solid var(--color-outline-variant)', overflowX: 'auto' }}>
+            <div className="sb-pills" onWheel={onPillWheel} style={{ display: 'flex', gap: 18, padding: '0 16px', borderBottom: '1px solid var(--color-border)', overflowX: 'auto' }}>
               {tabDefs.map((x) => (
                 <button
                   key={x.key}
@@ -546,12 +509,11 @@ export function SoundboardPanel() {
 
       {roomId && tab === "sounds" && (
         <>
-          {/* Search + add — en zone basse, la recherche et le « + » vivent dans
-              la ligne d'en-tête (châssis compact). */}
+          {/* Recherche et ajout réunis dans un même champ. */}
           {(
             <div style={{ padding: '12px 16px 8px', display: 'flex', gap: 8, alignItems: 'center' }}>
-              {searchBox(false)}
-              {canUpload && uploadButton(false)}
+              <RecherchePanneau valeur={search} onChange={setSearch} libelle={t("soundboard.searchPlaceholder")}
+                ajout={canUpload ? { libelle: t("soundboard.upload"), onClick: () => setShowUpload(true) } : undefined} />
             </div>
           )}
 
@@ -580,7 +542,7 @@ export function SoundboardPanel() {
                 type="button"
                 onClick={() => setSelectedCat(parentPath(anchorNode.fullPath))}
                 title={t("soundboard.back")}
-                style={{ flexShrink: 0, width: 30, height: 30, borderRadius: 999, border: '1px solid var(--color-outline-variant)', background: 'transparent', color: 'var(--color-on-surface-variant)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+                style={{ flexShrink: 0, width: 30, height: 30, borderRadius: 999, border: '1px solid var(--color-border)', background: 'transparent', color: 'var(--color-on-surface-variant)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
               >
                 <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6" /></svg>
               </button>
@@ -625,13 +587,13 @@ export function SoundboardPanel() {
                       style={{
                         position: 'relative', display: 'flex', flexDirection: 'column', gap: 8,
                         padding: 12, borderRadius: 'var(--sion-carte-rayon)',
-                        border: '1px solid var(--color-outline-variant)',
+                        border: '1px solid var(--color-border)',
                         background: 'var(--color-surface-container)',
                         cursor: 'pointer', opacity: enabled ? 1 : 0.4, pointerEvents: enabled ? 'auto' : 'none',
                         transition: 'background 120ms, border-color 120ms',
                       }}
                       onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--color-surface-container-high)'; e.currentTarget.style.borderColor = 'var(--color-primary)'; }}
-                      onMouseLeave={(e) => { e.currentTarget.style.background = 'var(--color-surface-container)'; e.currentTarget.style.borderColor = 'var(--color-outline-variant)'; }}
+                      onMouseLeave={(e) => { e.currentTarget.style.background = 'var(--color-surface-container)'; e.currentTarget.style.borderColor = 'var(--color-border)'; }}
                     >
                       <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between' }}>
                         <div style={{ width: 38, height: 38, borderRadius: 11, background: 'var(--color-surface-container-highest)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 20 }}>
@@ -701,8 +663,8 @@ export function SoundboardPanel() {
 
           {/* Volume en pied de panneau. */}
           {(
-            <div style={{
-              padding: '8px 16px', borderTop: '1px solid var(--color-outline-variant)',
+            <div className="sion-pied-panneau" style={{
+              padding: '8px 16px',
               display: 'flex', alignItems: 'center', gap: 8, fontSize: 11, color: 'var(--color-on-surface-variant)',
             }}>
               {volumeControl(false)}

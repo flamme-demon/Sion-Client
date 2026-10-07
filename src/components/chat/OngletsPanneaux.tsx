@@ -1,5 +1,5 @@
 import { useTranslation } from "react-i18next";
-import { MicIcon, SpeakerIcon } from "../icons";
+import { MicIcon } from "../icons";
 import { useLayoutStore, type PanneauId } from "../../stores/useLayoutStore";
 
 export function OngletsPanneaux({ salonVocal }: { salonVocal: boolean }) {
@@ -8,7 +8,7 @@ export function OngletsPanneaux({ salonVocal }: { salonVocal: boolean }) {
   const basculer = useLayoutStore((s) => s.basculerPanneau);
   const onglets: { id: PanneauId; titre: string; icone: React.ReactNode }[] = [
     ...(salonVocal ? [{ id: "transcript" as const, titre: "transcript.title", icone: <MicIcon /> }] : []),
-    { id: "soundboard", titre: "soundboard.title", icone: <SpeakerIcon /> },
+    { id: "soundboard", titre: "soundboard.title", icone: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M9 18V5l12-3v13" /><circle cx="6" cy="18" r="3" /><circle cx="18" cy="15" r="3" /></svg> },
     { id: "memeboard", titre: "memeboard.title", icone: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="4" /><path d="m10 9 5 3-5 3Z" /></svg> },
   ];
   return <div className="sion-onglets-panneaux" role="group" aria-label={t("layout.panels")}>

@@ -122,7 +122,7 @@ body {
   border-radius: var(--sion-bulle-rayon);
   overflow: hidden;
   background: var(--color-surface-container-low);
-  border: 1px solid var(--color-outline-variant);
+  border: 1px solid var(--color-border);
   position: relative;
   display: flex;
   flex-direction: column;
@@ -534,7 +534,7 @@ select option {
   border-right: 1px solid var(--color-outline);
 }
 
-.sion-chat-header { display: flex; align-items: center; gap: 12px; padding: 14px 18px; min-height: 58px; flex-shrink: 0; border-bottom: 1px solid var(--color-outline-variant); }
+.sion-chat-header { display: flex; align-items: center; gap: 12px; padding: 14px 18px; min-height: 58px; flex-shrink: 0; border-bottom: 1px solid var(--color-border); }
 .sion-conversation .sion-messages { padding: 20px 24px; }
 .sion-chat-salon { display: flex; align-items: center; gap: 8px; min-width: 0; font-weight: 700; font-size: 13px; }
 .sion-chat-salon > span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 180px; }
@@ -561,7 +561,15 @@ select option {
 
 .sion-saisie-ligne > textarea { order: 1; min-width: 0; }
 .sion-saisie-picker { order: 2; }
-.sion-saisie-actions { display: flex; align-items: center; gap: 4px; padding: 6px 10px; border-top: 1px solid var(--color-outline-variant); }
+.sion-saisie-actions { display: flex; align-items: center; gap: 4px; padding: 6px 10px; border-top: 1px solid var(--color-border); }
 .sion-saisie-actions > button { display: flex; align-items: center; justify-content: center; border: none; background: transparent; color: var(--color-on-surface-variant); padding: 7px; border-radius: 8px; cursor: pointer; font-family: inherit; font-size: 16px; }
 .sion-saisie-actions > .sion-envoyer { margin-left: auto; background: var(--color-primary); color: var(--color-on-primary); gap: 8px; padding: 8px 12px; font-size: 12px; font-weight: 600; }
 .sion-saisie-actions > button:disabled { opacity: 0.4; cursor: default; }
+
+.sion-recherche-panneau { display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1; min-height: 36px; padding: 3px 6px 3px 12px; border: 1px solid var(--color-border); border-radius: 12px; background: var(--color-surface-container-high); color: var(--color-on-surface-variant); }
+.sion-recherche-panneau:focus-within { border-color: var(--color-primary); }
+.sion-recherche-panneau > svg { flex-shrink: 0; }
+.sion-recherche-panneau > input { flex: 1; min-width: 0; padding: 6px 0; border: 0; outline: none; background: transparent; color: var(--color-on-surface); font-family: inherit; font-size: 12px; }
+.sion-recherche-panneau > button { display: flex; align-items: center; justify-content: center; flex-shrink: 0; width: 26px; height: 26px; padding: 0; border: 0; border-radius: 8px; background: color-mix(in srgb, var(--color-green) 14%, transparent); color: var(--color-green); cursor: pointer; font-family: inherit; font-size: 20px; line-height: 1; }
+.sion-recherche-panneau > button:hover { background: color-mix(in srgb, var(--color-green) 24%, transparent); }
+.sion-pied-panneau { background: var(--color-surface-container); border-top: 1px solid var(--color-border); }

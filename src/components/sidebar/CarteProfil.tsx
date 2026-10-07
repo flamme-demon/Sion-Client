@@ -74,12 +74,12 @@ export function CarteProfil({ compact = false }: { compact?: boolean }) {
   const raccrocher = inVoice && <button type="button" aria-label={t("voice.disconnect")} title={t("voice.disconnect")}
     onClick={() => leaveVoiceChannel(connectedVoice!)} style={{ ...audioBouton(true), marginLeft: compact ? 0 : 'auto' }}><DisconnectIcon /></button>;
   return (
-    <div style={{ padding: compact ? '14px 8px' : '14px 14px 12px', borderTop: '1px solid var(--color-outline-variant)', flexShrink: 0, display: 'flex', flexDirection: 'column', gap: 10 }}>
+    <div className="sion-carte-profil" style={{ padding: compact ? '14px 8px' : '14px 14px 12px', borderTop: '1px solid var(--color-border)', background: 'var(--color-surface-container)', flexShrink: 0, display: 'flex', flexDirection: 'column', gap: 10 }}>
       <button type="button" data-panel-toggle aria-label={t("settings.account")} onClick={toggleAccountPanel}
         title={displayName} style={{ display: 'flex', alignItems: 'center', justifyContent: compact ? 'center' : 'flex-start', gap: 10, background: 'transparent', border: 0, padding: 0, cursor: 'pointer', color: 'var(--color-on-surface)', textAlign: 'left', fontFamily: 'inherit', minWidth: 0 }}>
         <span style={{ position: 'relative', display: 'flex', flexShrink: 0 }}>
           <UserAvatar name={displayName} speaking={false} size="md" avatarUrl={avatarUrl} />
-          <span style={{ position: 'absolute', right: 0, bottom: 0, width: 10, height: 10, borderRadius: '50%', background: 'var(--color-green)', border: '2px solid var(--color-surface-container-low)' }} />
+          <span style={{ position: 'absolute', right: 0, bottom: 0, width: 10, height: 10, borderRadius: '50%', background: 'var(--color-green)', border: '2px solid var(--color-surface-container)' }} />
         </span>
         {!compact && <span style={{ minWidth: 0, flex: 1 }}>
           <span style={{ display: 'block', fontSize: 12, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{displayName}</span>
