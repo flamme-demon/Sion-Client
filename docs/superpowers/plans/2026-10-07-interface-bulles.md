@@ -26,6 +26,27 @@ change. Le téléphone garde sa feuille de panneaux (`MobilePanelSheet`).
 **Branche :** `feat/interface-bulles`, partie de `main` après la beta 8, créée
 avec ce plan. Hors v2 : ne pas fusionner avant la 2.0.0.
 
+## Suivi de réalisation — 07/10/2026
+
+Les tâches 1 à 8 sont implémentées dans `feat/interface-bulles`. Les étapes
+cochées attestent le code, les vérifications ou les commits effectués ; les
+étapes demandant une session native réelle restent ouvertes. Le travail a
+été exécuté séquentiellement dans `/tmp/sion-interface-bulles` pour préserver
+les modifications locales de `main`.
+
+Commits : `c1bb7fd` (bulle), `0732615` (store et retrait de la dock),
+`344b922` (assemblage de l’interface). Les changements des tâches 3 à 8 sont
+regroupés dans ce dernier commit. Le point de départ de `main` et de la
+branche était identique ; aucune fusion n’était nécessaire.
+
+Validation automatique : TypeScript / build réussis, lint à 0 erreur,
+436 tests front et 172 tests Rust réussis. Aperçus Chromium et WebKitGTK,
+CPU WebKitGTK de 9,73 % sur 60 s avec données fictives et fond statique.
+APK debug ARM64 construit par la CLI Tauri, sans installation automatique.
+Restent les essais en appel réel, fond animé / lecteur / partage dans la
+session Tauri, le rendu sur téléphone réel et la surface HWND Windows.
+Voir [le bilan complet](../../interface-bulles.md).
+
 ## Contraintes globales
 
 - **Bureau seulement** pour la mise en page ; sous 768 px (`useIsMobile`), le
@@ -105,14 +126,14 @@ téléphone), renommé `panneaux.ts` à la tâche 2.
 - Produit : `function Bulle(props: { as?: "aside" | "main" | "nav" | "section"; scope?: BackgroundScope; className?: string; style?: React.CSSProperties; children: React.ReactNode; "aria-label"?: string }): JSX.Element`
 - Produit (CSS) : `--sion-bulle-rayon: 20px`, `--sion-bulle-ecart: 12px`, `--sion-carte-rayon: 14px`, classe `.sion-bulle`.
 
-- [ ] **Étape 1 :** `git switch feat/interface-bulles`, puis `git merge main` pour repartir du `main` le plus récent.
+- [x] **Étape 1 :** `git switch feat/interface-bulles`, puis `git merge main` pour repartir du `main` le plus récent.
 - [ ] **Étape 2 : test qui échoue** — `Bulle.test.tsx` :
   - `it("rend un contenant arrondi avec la classe sion-bulle")` : `container.firstElementChild.classList.contains("sion-bulle")` et la balise vaut `as` (défaut `section`).
   - `it("pose le fond d'image de sa portée")` : avec `scope="chat"` et un fond posé dans le store, le calque `PanelBackgroundLayer` est rendu dans la bulle.
 - [ ] **Étape 3 :** lancer `bunx vitest run src/components/layout/Bulle.test.tsx` → ÉCHEC (module absent).
-- [ ] **Étape 4 :** écrire `Bulle.tsx` et la classe CSS : `border-radius: var(--sion-bulle-rayon)`, `overflow: hidden`, `background: var(--color-surface-container-low)`, `border: 1px solid var(--color-outline-variant)`, `position: relative`, `display: flex; flex-direction: column; min-height: 0; min-width: 0`. Le fond par portée réutilise `PanelBackgroundLayer` et `BackgroundControls` (`src/services/panelBackground.ts`).
-- [ ] **Étape 5 :** relancer le test → SUCCÈS ; `bunx tsc -b`.
-- [ ] **Étape 6 :** commit `feat(interface): contenant « bulle » et jetons de forme`.
+- [x] **Étape 4 :** écrire `Bulle.tsx` et la classe CSS : `border-radius: var(--sion-bulle-rayon)`, `overflow: hidden`, `background: var(--color-surface-container-low)`, `border: 1px solid var(--color-outline-variant)`, `position: relative`, `display: flex; flex-direction: column; min-height: 0; min-width: 0`. Le fond par portée réutilise `PanelBackgroundLayer` et `BackgroundControls` (`src/services/panelBackground.ts`).
+- [x] **Étape 5 :** relancer le test → SUCCÈS ; `bunx tsc -b`.
+- [x] **Étape 6 :** commit `feat(interface): contenant « bulle » et jetons de forme`.
 
 ### Tâche 2 : Retirer la dock, un seul panneau latéral
 
@@ -141,10 +162,10 @@ téléphone), renommé `panneaux.ts` à la tâche 2.
   - `it("persiste panneau et largeur, pas l'état éphémère")`.
   - `profilService.test.ts` : `it("importe un ancien profil avec disposition en ignorant la disposition")` — le thème et les fonds sont appliqués, aucune erreur.
 - [ ] **Étape 2 :** `bunx vitest run src/stores/useLayoutStore.test.ts src/services/profilService.test.ts` → ÉCHEC.
-- [ ] **Étape 3 :** réécrire le store : `version: 6`, `migrate` qui reprend `dockZones.right.active ?? dockZones.right.panels[0] ?? null` (seulement si ce n'est pas `"voice"`) comme `panneau`, et la taille de zone droite comme `largeurPanneau`. Retirer `layoutEditing`, `draggingPanel`, `moveDockPanel`, `floatDockPanel`, `sendVoiceToDock`, `returnVoiceToMenu`, `resetLayout` (la réinitialisation de la barre reste `resetSidebar`). Dans `profilService`, retirer la section « disposition » de l'export ; à l'import, la lire et l'ignorer.
-- [ ] **Étape 4 :** mettre à jour les appelants vers `ouvrirPanneau` / `basculerPanneau` / `fermerPanneau`. `useDockZone()` disparaît : `SoundboardPanel` et `MemeboardPanel` perdent leur mode `compact` (zone basse) — supprimer ces branches. Retirer Ctrl+Shift+L de `useKeyboardShortcuts.ts`. Dans `MainArea.tsx`, remplacer provisoirement les trois `DockZone` et `FloatingPanels` par rien (le panneau revient à la tâche 6) : l'appli doit compiler et tourner.
+- [x] **Étape 3 :** réécrire le store : `version: 6`, `migrate` qui reprend `dockZones.right.active ?? dockZones.right.panels[0] ?? null` (seulement si ce n'est pas `"voice"`) comme `panneau`, et la taille de zone droite comme `largeurPanneau`. Retirer `layoutEditing`, `draggingPanel`, `moveDockPanel`, `floatDockPanel`, `sendVoiceToDock`, `returnVoiceToMenu`, `resetLayout` (la réinitialisation de la barre reste `resetSidebar`). Dans `profilService`, retirer la section « disposition » de l'export ; à l'import, la lire et l'ignorer.
+- [x] **Étape 4 :** mettre à jour les appelants vers `ouvrirPanneau` / `basculerPanneau` / `fermerPanneau`. `useDockZone()` disparaît : `SoundboardPanel` et `MemeboardPanel` perdent leur mode `compact` (zone basse) — supprimer ces branches. Retirer Ctrl+Shift+L de `useKeyboardShortcuts.ts`. Dans `MainArea.tsx`, remplacer provisoirement les trois `DockZone` et `FloatingPanels` par rien (le panneau revient à la tâche 6) : l'appli doit compiler et tourner.
 - [ ] **Étape 5 :** `bunx tsc -b`, `bun run lint`, `bun run test` → verts. Lancer `./build-scripts/run-native.sh` : la conversation s'affiche, aucune erreur dans la console.
-- [ ] **Étape 6 :** commit `refactor(interface): un seul panneau latéral au lieu de la dock`.
+- [x] **Étape 6 :** commit `refactor(interface): un seul panneau latéral au lieu de la dock`.
 
 ### Tâche 3 : Coque à quatre bulles et barre d'icônes
 
@@ -162,9 +183,9 @@ téléphone), renommé `panneaux.ts` à la tâche 2.
   - `it("n'affiche le bouton Administration qu'aux admins")` : `isAdmin=false` → absent ; `true` → présent.
   - `it("chaque bouton a un nom accessible")` : tous les `button` ont `aria-label` non vide.
 - [ ] **Étape 2 :** lancer → ÉCHEC.
-- [ ] **Étape 3 :** écrire `RailServeurs` (largeur 72 px, boutons ronds de 48 px, actif = fond `var(--color-primary)`). `.app-root` : `display: flex; gap: var(--sion-bulle-ecart); padding: var(--sion-bulle-ecart); background: var(--color-surface)`. `App.tsx` desktop : `RailServeurs` | `Sidebar` (dans une `Bulle as="nav" scope="channels"`) | `MainArea`. `MainArea` met la conversation dans une `Bulle as="main" scope="chat"`. `ServerHeader` garde le nom du serveur et le nombre de membres en ligne ; ses boutons Administration / Déconnexion / profil passent au rail (tâche 3) et à la carte de profil (tâche 5) — retirer leur doublon ici.
+- [x] **Étape 3 :** écrire `RailServeurs` (largeur 72 px, boutons ronds de 48 px, actif = fond `var(--color-primary)`). `.app-root` : `display: flex; gap: var(--sion-bulle-ecart); padding: var(--sion-bulle-ecart); background: var(--color-surface)`. `App.tsx` desktop : `RailServeurs` | `Sidebar` (dans une `Bulle as="nav" scope="channels"`) | `MainArea`. `MainArea` met la conversation dans une `Bulle as="main" scope="chat"`. `ServerHeader` garde le nom du serveur et le nombre de membres en ligne ; ses boutons Administration / Déconnexion / profil passent au rail (tâche 3) et à la carte de profil (tâche 5) — retirer leur doublon ici.
 - [ ] **Étape 4 :** tests → SUCCÈS ; `bunx tsc -b` ; `run-native.sh` : trois bulles visibles, arrondies, espacées de 12 px, fond de chat et fond de salons toujours appliqués.
-- [ ] **Étape 5 :** commit `feat(interface): coque à bulles et barre d'icônes`.
+- [x] **Étape 5 :** commit `feat(interface): coque à bulles et barre d'icônes`.
 
 ### Tâche 4 : En-tête de la conversation et onglets de panneaux
 
@@ -182,9 +203,9 @@ téléphone), renommé `panneaux.ts` à la tâche 2.
   - `it("l'onglet actif est marqué aria-pressed")`.
   - `it("Transcription n'apparaît que dans un salon vocal")`.
 - [ ] **Étape 2 :** lancer → ÉCHEC.
-- [ ] **Étape 3 :** écrire `OngletsPanneaux`. Dans `ChatHeader` : à gauche, icône du salon + nom + `OngletsPanneaux` ; à droite, dans cet ordre, épinglés (`basculerPanneau("pinned")`), membres (`basculerPanneau("members")`), partage d'écran (bouton surligné quand on partage). Paramètres du salon et Inviter passent dans un menu « ⋯ » à droite. Supprimer l'ancien rendu des boutons Soundboard / Memeboard / Membres. Commenter dans le JSX que la vidéo native (partage inline) reste rectangulaire dans la bulle arrondie (point de vigilance 1).
-- [ ] **Étape 4 :** ajouter la clé `chat.more` (fr « Plus d'actions », en « More actions ») pour le menu « ⋯ » ; tests → SUCCÈS, `i18nKeys.test.ts` vert.
-- [ ] **Étape 5 :** commit `feat(interface): onglets de panneaux dans l'en-tête`.
+- [x] **Étape 3 :** écrire `OngletsPanneaux`. Dans `ChatHeader` : à gauche, icône du salon + nom + `OngletsPanneaux` ; à droite, dans cet ordre, épinglés (`basculerPanneau("pinned")`), membres (`basculerPanneau("members")`), partage d'écran (bouton surligné quand on partage). Paramètres du salon et Inviter passent dans un menu « ⋯ » à droite. Supprimer l'ancien rendu des boutons Soundboard / Memeboard / Membres. Commenter dans le JSX que la vidéo native (partage inline) reste rectangulaire dans la bulle arrondie (point de vigilance 1).
+- [x] **Étape 4 :** ajouter la clé `chat.more` (fr « Plus d'actions », en « More actions ») pour le menu « ⋯ » ; tests → SUCCÈS, `i18nKeys.test.ts` vert.
+- [x] **Étape 5 :** commit `feat(interface): onglets de panneaux dans l'en-tête`.
 
 ### Tâche 5 : Liste des salons et carte de profil
 
@@ -202,9 +223,9 @@ téléphone), renommé `panneaux.ts` à la tâche 2.
   - `it("micro et casque reflètent et basculent l'état")` : `aria-pressed` suit `isMuted` / `isDeafened`, le clic appelle `toggleMute` / `toggleDeafen`.
   - `it("en rail, seuls l'avatar et raccrocher restent")` avec `compact`.
 - [ ] **Étape 2 :** lancer → ÉCHEC.
-- [ ] **Étape 3 :** écrire `CarteProfil` à partir de `UserControls` (en garder la logique, pas la mise en page) ; `Sidebar` la pose en pied de bulle. `ChannelItem` : salon actif en pilule (`var(--color-surface-container-high)`, rayon 12 px) ; salon vocal occupé → avatars superposés des participants (3 au plus) suivis de `+N` sur la même ligne, au lieu de la liste dépliée (la liste détaillée reste au survol / dépliage existant) ; compteur de non-lus en pastille ronde à droite (`unreadCount` existant). `ChannelList` garde ses onglets Salons / MP et leur pastille de non-lus.
+- [x] **Étape 3 :** écrire `CarteProfil` à partir de `UserControls` (en garder la logique, pas la mise en page) ; `Sidebar` la pose en pied de bulle. `ChannelItem` : salon actif en pilule (`var(--color-surface-container-high)`, rayon 12 px) ; salon vocal occupé → avatars superposés des participants (3 au plus) suivis de `+N` sur la même ligne, au lieu de la liste dépliée (la liste détaillée reste au survol / dépliage existant) ; compteur de non-lus en pastille ronde à droite (`unreadCount` existant). `ChannelList` garde ses onglets Salons / MP et leur pastille de non-lus.
 - [ ] **Étape 4 :** tests → SUCCÈS ; `run-native.sh` en appel : couper le micro depuis la carte et depuis F8 donne le même état.
-- [ ] **Étape 5 :** commit `feat(interface): carte de profil et liste des salons`.
+- [x] **Étape 5 :** commit `feat(interface): carte de profil et liste des salons`.
 
 ### Tâche 6 : Bulle du panneau latéral
 
@@ -222,9 +243,9 @@ téléphone), renommé `panneaux.ts` à la tâche 2.
   - `it("affiche le titre du panneau et le ferme avec ✕")`.
   - `it("un seul ✕ : le panneau n'en dessine plus")` : soundboard ouvert, un seul bouton dont l'`aria-label` vaut `chat.close` (clé existante, « Fermer »), celui de la bulle.
 - [ ] **Étape 2 :** lancer → ÉCHEC.
-- [ ] **Étape 3 :** écrire `PanneauLateral`, le poser à droite de la conversation dans `MainArea`, retirer titres et ✕ des panneaux. Échap ferme le panneau quand le focus y est.
+- [x] **Étape 3 :** écrire `PanneauLateral`, le poser à droite de la conversation dans `MainArea`, retirer titres et ✕ des panneaux. Échap ferme le panneau quand le focus y est.
 - [ ] **Étape 4 :** tests → SUCCÈS ; `run-native.sh` : ouvrir chaque panneau depuis l'en-tête ; redimensionner ; réduire la fenêtre à 1000 px : le panneau passe par-dessus.
-- [ ] **Étape 5 :** commit `feat(interface): bulle du panneau latéral`.
+- [x] **Étape 5 :** commit `feat(interface): bulle du panneau latéral`.
 
 ### Tâche 7 : Soundboard à la maquette
 
@@ -239,9 +260,9 @@ téléphone), renommé `panneaux.ts` à la tâche 2.
   - `it("la grille est sur deux colonnes")` : `gridTemplateColumns` vaut `repeat(2, minmax(0, 1fr))`.
   - `it("le volume est en pied de panneau")` : le curseur de volume est le dernier élément de la bulle.
 - [ ] **Étape 2 :** lancer → ÉCHEC.
-- [ ] **Étape 3 :** onglets Sons / Voix / Membres en tête (déjà présents, restylés en soulignement accent) ; champ de recherche + bouton ＋ (ajout) sur une ligne ; puces de filtre en pilules (puce active `var(--color-primary)`) ; cartes de son 2 colonnes, rayon `--sion-carte-rayon`, emoji en haut à gauche, étoile favori en haut à droite, titre en gras, catégorie en petites capitales ; volume + pourcentage en pied.
+- [x] **Étape 3 :** onglets Sons / Voix / Membres en tête (déjà présents, restylés en soulignement accent) ; champ de recherche + bouton ＋ (ajout) sur une ligne ; puces de filtre en pilules (puce active `var(--color-primary)`) ; cartes de son 2 colonnes, rayon `--sion-carte-rayon`, emoji en haut à gauche, étoile favori en haut à droite, titre en gras, catégorie en petites capitales ; volume + pourcentage en pied.
 - [ ] **Étape 4 :** tests → SUCCÈS ; `run-native.sh` en appel : jouer un son, le mettre en favori, filtrer.
-- [ ] **Étape 5 :** commit `feat(interface): soundboard en cartes`.
+- [x] **Étape 5 :** commit `feat(interface): soundboard en cartes`.
 
 ### Tâche 8 : Saisie sur deux lignes et messages
 
@@ -257,9 +278,9 @@ téléphone), renommé `panneaux.ts` à la tâche 2.
   - `it("le bouton Envoyer porte son libellé et est désactivé à vide")` : texte `chat.send` (clé à créer : fr « Envoyer », en « Send »), `disabled` tant que la saisie est vide.
   - `it("@ insère une mention et ouvre la liste")` : clic sur @ → la saisie se termine par « @ » et `mentionQuery` est ouverte.
 - [ ] **Étape 2 :** lancer → ÉCHEC.
-- [ ] **Étape 3 :** carte arrondie (`--sion-carte-rayon`) en pied de conversation : ligne 1, ＋ (menu `AttachButton` : fichier, vidéo externe, sondage) + `textarea` + GIF + emoji ; ligne 2, @ (mention), 🔗 (lien), 📎 (fichier direct) à gauche ; à droite le bouton **Envoyer** (fond `var(--color-primary)`). Pas de bouton micro : Sion n'envoie pas de message vocal, on ne montre pas d'action qui n'existe pas. `Message.tsx` : la barre de réactions / Répondre / emoji passe sous le texte (comme la maquette) au lieu de flotter au survol, en ligne discrète.
+- [x] **Étape 3 :** carte arrondie (`--sion-carte-rayon`) en pied de conversation : ligne 1, ＋ (menu `AttachButton` : fichier, vidéo externe, sondage) + `textarea` + GIF + emoji ; ligne 2, @ (mention), 🔗 (lien), 📎 (fichier direct) à gauche ; à droite le bouton **Envoyer** (fond `var(--color-primary)`). Pas de bouton micro : Sion n'envoie pas de message vocal, on ne montre pas d'action qui n'existe pas. `Message.tsx` : la barre de réactions / Répondre / emoji passe sous le texte (comme la maquette) au lieu de flotter au survol, en ligne discrète.
 - [ ] **Étape 4 :** tests → SUCCÈS ; `run-native.sh` : envoyer, répondre, éditer, coller un gros texte (bascule en fichier), GIF.
-- [ ] **Étape 5 :** commit `feat(interface): saisie sur deux lignes`.
+- [x] **Étape 5 :** commit `feat(interface): saisie sur deux lignes`.
 
 ### Tâche 9 : Vérification bout à bout et notes
 
@@ -267,8 +288,8 @@ téléphone), renommé `panneaux.ts` à la tâche 2.
 - Créer : `docs/interface-bulles.md` (ce qui a changé, ce qui a disparu avec la dock, limites connues)
 - Modifier : `docs/roadmap-2.0.0.md` (renvoi : interface bulles prévue après la 2.0.0)
 
-- [ ] **Étape 1 :** `bunx tsc -b`, `bun run lint` (0 erreur), `bun run test`, `cd src-tauri && cargo test -j4 --lib` → verts.
+- [x] **Étape 1 :** `bunx tsc -b`, `bun run lint` (0 erreur), `bun run test`, `cd src-tauri && cargo test -j4 --lib` → verts.
 - [ ] **Étape 2 :** sous Linux Wayland (`run-native.sh`), parcourir : thème clair d'accent différent, fond animé dans le chat, partage d'écran reçu dans la conversation (coins carrés acceptés), lecteur vidéo plein écran, fenêtre à 1000 px, Ctrl+B, Ctrl+Shift+P. Mesurer le CPU de WebKit au repos comme le 06/10 (sur 60 s) : **pas plus que les 27 % relevés avant la branche**.
 - [ ] **Étape 3 :** construire l'APK (`build-scripts/build-android.sh debug`) : l'affichage téléphone est inchangé.
 - [ ] **Étape 4 :** sous Windows (flammemob, `C:\sion-client\build-rust.ps1`), vérifier que la surface vidéo HWND se place dans la bulle et que le plein écran du lecteur marche toujours.
-- [ ] **Étape 5 :** écrire `docs/interface-bulles.md`, commit `docs: interface en bulles`, pousser la branche (`git push -u origin feat/interface-bulles`). Ne pas fusionner dans `main` avant la 2.0.0.
+- [x] **Étape 5 :** écrire `docs/interface-bulles.md`, commit `docs: interface en bulles`, pousser la branche (`git push -u origin feat/interface-bulles`). Ne pas fusionner dans `main` avant la 2.0.0.

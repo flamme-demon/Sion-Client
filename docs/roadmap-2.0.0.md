@@ -1,18 +1,21 @@
-# Roadmap 2.0.0 — Layout modulable, lecteur natif, PIP système, thèmes
+# Roadmap 2.0.0 — Interface en bulles, lecteur natif, PIP système, thèmes
 
-Document vivant pour la 2.0.0 finale, remis en phase avec le code après
-2.0.0-alpha.9 (24/09/2026).
+Document vivant pour la 2.0.0 finale. Interface actualisée le 07/10/2026 sur
+`feat/interface-bulles` ; validations du lecteur et des thèmes ci-dessous
+conservées depuis le bilan du 24/09.
 
-> **État d'avancement (24/09/2026)**
+> **État d'avancement de l'interface (07/10/2026)**
 >
-> ✅ **Chantier 1 (layout)** : socle complet — `useLayoutStore` persisté (v5 +
-> migrations), sidebar déployée / rail / masquée (Ctrl+B), côté gauche ou
-> droit, dock à **trois zones** (haut, droite, bas) avec onglets, glisser-
-> déposer, cartes flottantes (deux au plus), presets Chat / Voix / Streaming,
-> **mode édition** de la disposition (Ctrl+Maj+L ou menu « Dispositions »),
-> fonds d'image par panneau, et depuis le 24/09 les **profils** : disposition,
-> thème et accent, fonds et sons d'événements dans un fichier `.sionprofil`,
-> une case par section (`profilService.ts`, `profil.rs`).
+> ✅ **Chantier 1 (interface en bulles)** : rail de navigation, bulle des
+> salons, conversation et panneau latéral unique. Store `sion-layout` v6
+> migré depuis les dispositions précédentes ; sidebar déployée / rail /
+> masquée (Ctrl+B), côté gauche ou droit, panneau redimensionnable de 300 à
+> 520 px et superposé sous 1100 px. La voix reste dans la carte de profil.
+> Les fonds se règlent dans l'apparence ; les profils `.sionprofil`
+> conservent thème, accent, fonds et sons, et ignorent l'ancienne disposition.
+> Le mode édition, les trois zones, les presets et les panneaux flottants
+> de la dock sont retirés. Le partage flottant et le PIP natif restent disponibles.
+> Détails et validations : [interface-bulles.md](interface-bulles.md).
 >
 > 🟡 **Chantier 2 (partage et lecteur natifs)** : surface native par défaut
 > sous Linux (GtkGLArea rendu à la demande, agrandissement bicubique et pose
@@ -43,7 +46,7 @@ Document vivant pour la 2.0.0 finale, remis en phase avec le code après
 
 | Sujet | Constat | Fichier |
 |---|---|---|
-| Layout | store v5 migré, sidebar trois états et deux côtés, dock haut/droite/bas, onglets, cartes flottantes, presets, mode édition, profils exportables | `useLayoutStore.ts`, `DockZone.tsx`, `FloatingPanels.tsx`, `profilService.ts` |
+| Interface | store v6 migré, sidebar trois états et deux côtés, bulles, panneau unique, onglets, carte de profil, profils sans disposition | `useLayoutStore.ts`, `Bulle.tsx`, `PanneauLateral.tsx`, `CarteProfil.tsx`, `profilService.ts` |
 | Partage natif | Linux : I420 → BGRA → texture d'un `GtkGLArea` rendu à la demande (bicubique, pose au pixel près) ; sous-surface EGL en opt-in ; Windows : I420 → BGRA → HWND/GDI, agrandi par libyuv. Surface percée sous les menus. Opt-out diagnostic `SION_DISABLE_NATIVE_VIDEO_SURFACE=1` | `native_video_surface.rs`, `voice_engine.rs`, `voiceNativeService.ts` |
 | Lecteur vidéo du fil | ffmpeg en sous-processus → plans I420 → même surface native ; contrôles incrustés en Rust, mini-lecteur, ffmpeg livré | `lecteur_video.rs`, `incrustation_lecteur.rs`, `NativeVideoPlayer.tsx` |
 | PIP système | vraie fenêtre OS winit + softbuffer, always-on-top, redimensionnable, persistée et alimentée directement en BGRA | `src-tauri/src/pip_window.rs` |
@@ -57,198 +60,35 @@ latest-wins par expéditeur et peint les frames directement.
 
 ---
 
-## 1. Chantier 1 — Panneaux redimensionnables / pliables
+## 1. Chantier 1 — Interface en bulles
 
-### 1.1 Principe
+Implémentation du [plan du 07/10](superpowers/plans/2026-10-07-interface-bulles.md)
+sur `feat/interface-bulles`, à intégrer pour la 2.0.0 finale.
 
-Deux briques nouvelles, utilisées partout ensuite :
+- **Coque** : rail de 72 px, bulle des salons, bulle de conversation et bulle
+  du panneau. Rayon 20 px, écart 12 px, cartes de contenu à rayon 14 px ;
+  couleurs issues du thème et fonds par portée conservés.
+- **Navigation** : le rail ouvre le compte, l'administration si autorisée,
+  les réglages et replie le menu. Transcription, soundboard et memeboard
+  passent en onglets de conversation ; épinglés et membres restent à droite.
+- **Voix** : carte de profil en bas du menu, commandes micro / casque /
+  réglages / raccrocher ; participants en avatars superposés et dépliage explicite.
+- **Panneau unique** : `panneau: PanneauId | null`, largeur persistée de
+  300 à 520 px (360 px par défaut), poignée accessible au clavier, Échap
+  et retour du focus. Sous 1100 px, il se superpose au chat. Sur téléphone,
+  il utilise la feuille existante.
+- **Conversation** : soundboard en deux colonnes, filtres et volume ; saisie
+  desktop sur deux lignes avec mention, lien, fichier, GIF et emoji ; actions
+  de message placées sous le texte. La saisie mobile conserve son organisation.
+- **Migration** : reprise du panneau actif à droite, des dimensions de la
+  sidebar, des fonds et du partage. Anciennes zones et cartes abandonnées ;
+  ancienne section disposition ignorée à l'import des profils.
+- **Vidéo** : surface native rectangulaire à l'intérieur des bulles ; les
+  panneaux superposés sont pris en compte dans les trous envoyés à Rust.
 
-**a. `useLayoutStore`** (zustand + `persist`, même pattern que `useSettingsStore`) :
-
-```ts
-interface LayoutState {
-  sidebarWidth: number;          // 260 défaut, bornes [72, 400]
-  sidebarMode: "full" | "rail" | "hidden";
-  rightPanelWidth: number;       // 360 défaut, bornes [260, 520]
-  rightPanelCollapsed: boolean;
-  shareDock: "inline" | "floating" | "hidden";  // chantier 2
-  shareFloating: { x: number; y: number; w: number; h: number } | null;
-  // setters + preset: "chat" | "voice" | "stream"
-}
-```
-
-Versionné (`version` + `migrate`) dès le départ, comme tout store persisté.
-
-**b. `<ResizeHandle />`** — composant unique réutilisé par sidebar, dock droite
-et carte PIP :
-
-- `setPointerCapture` sur `pointerdown`, deltas en `pointermove`, relâche en
-  `pointerup` (pas de listeners window orphelins).
-- `role="separator"` + `aria-orientation` + `aria-valuenow/min/max` (pattern APG).
-- Flèches ←/→ = ±8px, double-clic = reset défaut, Échap = annule le drag.
-- Pendant le drag : `user-select: none` global + `pointer-events: none` sur les
-  `<canvas>`/`<video>` (sinon WebKitGTK avale les moves au-dessus d'un canvas —
-  le partage d'écran est justement un canvas).
-- Zone de préhension invisible de 6-8px, highlight au survol.
-
-### 1.2 Sidebar
-
-| Mode | Largeur | Usage |
-|---|---|---|
-| `full` | 260 (drag 200→400) | défaut |
-| `rail` | 72px | icônes de salons seules, tooltips |
-| `hidden` | 0 | masquée, révélation au survol du bord (option) |
-
-- Snap : si le drag descend sous ~160px, la sidebar s'accroche en `rail` ;
-  re-drag vers la droite → `full` avec la dernière largeur mémorisée.
-- Raccourci **Ctrl+B** pour cycle full/rail (à ajouter dans `useKeyboardShortcuts.ts`).
-- Mobile : comportement inchangé (`isMobile` → 100%).
-
-### 1.3 Dock droite (Member / Soundboard / Transcript)
-
-- **Une largeur partagée** (`rightPanelWidth`) au lieu de 3 tailles en dur :
-  changer de panneau ne re-dimensionne pas la colonne.
-- Collapse par drag sous ~220px (ou bouton chevron) ; l'état se souvient du
-  dernier panneau ouvert.
-- `TranscriptPanel` lit déjà ses propres données : seul le conteneur bouge,
-  aucun changement de logique.
-- Conversation view (DM) : MemberPanel déjà masqué (`MemberPanel.tsx:80`), rien
-  à faire.
-
-### 1.4 Presets de layout (intégrés au futur `LayoutDoc`, cf. §1.6)
-
-Trois presets, appliqués en un clic (menu du header ou palette de commandes) :
-
-- **Chat** : sidebar full, dock à 360 sur Soundboard, partage inline.
-- **Voix** : sidebar rail, dock fermée, partage en grand.
-- **Streaming** : sidebar hidden, partage flottant, dock fermée.
-
-### 1.5 Découpage
-
-1. `ResizeHandle` + `useLayoutStore` + resize/collapse sidebar (+ Ctrl+B).
-2. Dock droite : largeur unique + resize + collapse des 3 panneaux.
-3. Snap, presets, double-clic reset, a11y complète.
-
-### 1.6 Vision — « Layout editor » : panneaux dockables et flottants
-
-L'évolution naturelle du chantier 1 : au lieu de zones figées, l'utilisateur
-place lui-même ses panneaux. **Décision de design qui borne tout le chantier :
-des zones (gauche / centre / droite / bas) avec panneaux dockables et
-flottants — pas du placement libre façon canvas.** Le placement libre
-multiplie par dix le travail d'adaptation des vues et casse la lisibilité ;
-les zones, non.
-
-**Inventaire réel des panneaux dockables** (vérifié dans le code) :
-
-| Panneau | Contenu | Zones autorisées | Notes |
-|---|---|---|---|
-| Channels | ServerHeader + ChannelList + UserControls | gauche, droite | déjà une rail verticale ; jamais en bas |
-| Chat | ChatHeader + MessageList + ChatInput + partage inline | **centre épinglé** | flexible par nature, jamais déplacé |
-| Members | `MemberPanel.tsx` | gauche, droite, bas | |
-| Soundboard | onglets Sons / Voix / Membres (`VoicePanel` inclus) | gauche, droite, bas | |
-| Transcript | `TranscriptPanel.tsx` | gauche, droite, bas | excellent candidat au dock bas (lecture pleine largeur) |
-| Flottants (phase 3) | n'importe lequel sauf Chat + la carte PIP | — | même primitive que §2.1 |
-
-Opportunité au passage : le Soundboard a déjà un onglet « membres » qui doublonne
-avec `MemberPanel`. L'éditeur est le bon moment pour consolider — une seule
-liste de membres, plaçable une fois.
-
-**Modèle de données** (remplace/complète `useLayoutStore`) :
-
-```ts
-type PanelId = "channels" | "members" | "soundboard" | "transcript";
-interface LayoutDoc {
-  version: 1;
-  zones: {
-    left:  { panels: PanelId[]; size: number; collapsed: boolean };
-    right: { panels: PanelId[]; size: number; collapsed: boolean };
-    bottom:{ panels: PanelId[]; size: number; collapsed: boolean };
-  };
-  floating: Record<string, FloatingPanelState>;      // même type que le PIP (§2.1)
-  presets?: Record<string, Omit<LayoutDoc, "presets">>;
-}
-```
-
-- Plusieurs panneaux dans une zone = **onglets** de zone (TabBar façon VS Code,
-  style M3, tokens).
-- Registry par panneau : `{ titleKey, icon, allowedZones, minWidth, minHeight,
-  canFloat }`. **`allowedZones` est LE garde-fou** qui limite le travail
-  d'adaptation (voir juste après).
-- Garde-fous : une seule instance par panneau, Chat toujours présent, bouton
-  « Réinitialiser le layout », menu « Panneaux » pour rouvrir un panneau masqué.
-
-**« Il faudra peut-être adapter les vues » — oui, et voici la vraie réponse** :
-
-1. `allowedZones` stricts : la Sidebar reste verticale, le Chat flexible.
-   Ça élimine la majorité des cas tordus avant même d'écrire du CSS.
-2. **Container queries Tailwind 4** — l'outil exact pour ce problème, et il est
-   déjà dans ton install (tailwindcss 4.3, `@container` dans le core) : chaque
-   zone devient un conteneur, un composant s'écrit relatif à la largeur **de sa
-   zone** (`@md:flex`, `@lg:grid-cols-2`) au lieu de celle de la fenêtre.
-   Zéro dépendance à ajouter.
-3. `useZoneSize` (ResizeObserver, ~20 lignes) pour les décisions JS (libellés,
-   disposition des rangées).
-4. Constat encourageant sur l'existant — le gros du travail est déjà fait :
-   - Soundboard : `repeat(auto-fill, minmax(150px, 1fr))`
-     (`SoundboardPanel.tsx:526`) → **s'adapte déjà seul** à n'importe quelle
-     largeur et hauteur.
-   - Members / Transcript : listes verticales → adaptation triviale. En bas,
-     Members passe en rangée d'avatars (~120px) et Transcript gagne un
-     `max-width` de lecture.
-   - ChatHeader : masquer les libellés sous un seuil (icônes + tooltips déjà
-     là).
-   - Estimation honnête des finitions : ~2-3 jours cumulés, étalables au fil
-     des panneaux — pas des semaines, à condition de tenir `allowedZones`.
-
-**Drag & drop** : pointer events uniquement (jamais HTML5 DnD, fragile sous
-WebKitGTK). Mode « Arrange » (Ctrl+Shift+L) : les zones se matérialisent en
-strips, on drag le header du panneau, le drop insère (position selon le
-curseur dans la zone), ✕ masque, Échap annule.
-
-**Deux primitives distinctes** : les panneaux et le PIP interne partagent la
-carte flottante React (drag, resize, snap, persistance). Le PIP système est une
-fenêtre Rust séparée ; il ne faut pas transformer les panneaux ordinaires en
-fenêtres OS ni coupler leur cycle de vie au moteur vidéo.
-
-**Libs vs maison** (compat React 19 vérifiée sur npm) :
-
-| Lib | Version | React 19 | Adéquation |
-|---|---|---|---|
-| flexlayout-react | 0.10.8 | ✅ peer `^18 \|\| ^19` | modèle JSON, tabs + floating ; impose son DOM/CSS (re-thémer sur les tokens M3, i18n via props) |
-| dockview-react | 8.3.1 | ✅ peer `16 → 19` | très VS Code, groupes/tabs/floating intégrés ; même dette d'intégration |
-| react-mosaic | 7.1.0 | ✅ peer `16 - 19` | tiling pur sans onglets → peu adapté au chat épinglé |
-
-Recommandation : **maison** d'abord — le modèle de zones tient en ~200 lignes,
-et `ResizeHandle` (§1.1) et la carte flottante (§2.1) sont déjà des briques du
-plan. Une lib apporte surtout ce qu'on a déjà et impose son DOM au milieu du
-Tailwind/M3 (thème + i18n à recâbler). Spike `flexlayout-react` uniquement si
-le dock bas multi-onglets devient central.
-
-**Découpage** :
-
-1. ✅ Zones resizable (§1.1-1.5) — le socle. Presets (§1.4) livrés avec.
-2. ✅ Éditeur de zones : zones droite/bas + onglets + déplacement par menu **et
-   par drag & drop** (pointer events, bande « Déposer ici ») + persistance +
-   reset.
-3. ✅ Flottants : détacher un panneau en carte (glisser, resize, rattacher,
-   position/taille persistées) — même primitive que la carte PIP, plafond de
-   2 cartes.
-4. ✅ Mode édition (Ctrl+Maj+L, ou menu « Dispositions ») et, depuis le
-   24/09, les **profils Sion** (`.sionprofil`, une archive zip) : disposition,
-   thème et accent, fonds de panneaux et sons d'événements, une case par
-   section à l'export (sons décochés par défaut) comme à l'import. Chaque
-   section passe par le contrôle de son import isolé (`layoutFile.ts`,
-   `parseThemeFile`, bornes des fonds et des sons) ; côté Rust, un nom
-   d'entrée ne sert jamais de chemin, tailles et nombre d'entrées sont
-   plafonnés. Les fichiers importés vont sous `profils/` du dossier de
-   données, et ceux que plus rien ne cite sont retirés à l'import suivant.
-5. Reste : finitions container queries au fil des panneaux — aucune n'est
-   encore posée (`@container` absent du code). Priorité : Members et
-   Transcript en **dock bas** (rangée d'avatars, largeur de lecture). À valider
-   à l'écran.
-
-Ce qu'on ne fait **pas** : placement libre (canvas), sidebar horizontale,
-multi-instances d'un même panneau, éditeur sur mobile (desktop-only).
+La validation réelle du partage reçu et du lecteur plein écran sur Linux
+et Windows reste à faire avant intégration. Le bilan précis de compilation,
+tests, aperçu et performance se trouve dans `interface-bulles.md`.
 
 ---
 
@@ -519,13 +359,14 @@ un thème », « réinitialiser ».
 
 1. 🚧 **Parité du partage natif** (§2.3) — mesurer la fluidité Linux,
    valider Windows côté spectateur, puis retirer le repli JPEG.
-2. ⏳ **Container queries du dock bas** (§1.6) — Members et Transcript.
+2. 🚧 **Interface en bulles** (§1) — valider partage / lecteur natifs et
+   le rendu sur téléphone réel avant intégration de `feat/interface-bulles`.
 3. ⏳ **Thèmes** (§3.4) — `outline` de Sion Light, et décision sur la
    synchronisation Matrix `com.sion.theme`.
 
 Android n'est plus une étape de la 2.0.0 : décision du 24/09, voir §6.
 
-Le socle layout, le mode édition, l'export/import de disposition, le PIP
+Le socle de l'interface en bulles, les profils sans disposition, le PIP
 système natif, le lecteur vidéo natif, la tokenisation, Dark / Light /
 AMOLED, l'import/export de thèmes, leur aperçu au survol et la garde de
 contraste sont livrés ; ils ne sont plus des étapes à planifier.
@@ -535,8 +376,8 @@ contraste sont livrés ; ils ne sont plus des étapes à planifier.
 - `bun run test` / `lint` / `build` à chaque étape (stores et `applyTheme` se
   testent en vitest sans DOM lourd).
 - Stores persistés : ajouter `version` + `migrate` (les utilisateurs alpha ont
-  déjà un `localStorage` rempli) — vaut aussi pour `LayoutDoc`, qui doit
-  survivre aux ajouts/retraits de panneaux sans perdre le layout.
+  déjà un `localStorage` rempli) ; préserver sidebar, fonds et partage lors
+  du passage au panneau unique.
 - Lecteur natif : tester les changements de géométrie pendant un drag/resize,
   le passage inline ↔ flottant ↔ plein écran ↔ PIP système, la mosaïque et les
   changements de moniteur/DPI sans flash noir ni surface orpheline.
@@ -546,11 +387,8 @@ contraste sont livrés ; ils ne sont plus des étapes à planifier.
 - PIP système : garder un test fenêtré opt-in en plus des tests purs de rendu ;
   vérifier always-on-top, restauration position/taille, son, pointeur, retour
   à Sion et fermeture automatique sur Linux et Windows.
-- Drag/drop de l'éditeur : pointer events uniquement, jamais HTML5 DnD sous
-  WebKitGTK.
-- Container queries : valider tôt le rendu de Members et Transcript en **dock
-  bas** (rangée d'avatars, max-width de lecture) — c'est le cas d'usage le plus
-  éloigné du design actuel.
+- Panneau superposé : vérifier le focus, Échap, la poignée de largeur et
+  la visibilité des contrôles devant une vidéo native sous 1100 px.
 - Mobile : tout ce qui précède est desktop-only (`isMobile`), ne pas régresser
   les vues tactiles.
 
