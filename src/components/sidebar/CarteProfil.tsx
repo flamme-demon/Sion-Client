@@ -55,7 +55,7 @@ export function CarteProfil({ compact = false }: { compact?: boolean }) {
     borderRadius: 10, padding: 8, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
   });
   const raccrocher = inVoice && <button type="button" aria-label={t("voice.disconnect")} title={t("voice.disconnect")}
-    onClick={() => leaveVoiceChannel(connectedVoice!)} style={{ ...audioBouton(false), color: 'var(--color-error)', marginLeft: compact ? 0 : 'auto' }}><PhoneHangupIcon /></button>;
+    onClick={() => leaveVoiceChannel(connectedVoice!)} style={{ ...audioBouton(false), color: 'color-mix(in srgb, var(--color-error) 35%, #ff0000)', background: 'color-mix(in srgb, var(--color-error) 22%, transparent)', marginLeft: compact ? 0 : 'auto' }}><PhoneHangupIcon /></button>;
   return (
     <div className="sion-carte-profil" style={{ padding: compact ? '14px 8px' : '14px 14px 12px', borderTop: '1px solid var(--color-border)', background: 'var(--color-surface-container)', flexShrink: 0, display: 'flex', flexDirection: 'column', gap: 10 }}>
       <button type="button" data-panel-toggle aria-label={t("settings.account")} onClick={toggleAccountPanel}

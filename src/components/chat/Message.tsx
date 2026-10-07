@@ -2,7 +2,7 @@ import { useIsMobile } from "../../hooks/useIsMobile";
 import React, { useState, useEffect, useRef, useMemo, lazy, Suspense } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
-import { CrownIcon, ShieldIcon, FileIcon, DownloadIcon, ReplyIcon, PencilIcon, PinIcon, TrashIcon, EmojiIcon, MessageBubbleIcon, FlagIcon } from "../icons";
+import { CrownIcon, ShieldIcon, FileIcon, DownloadIcon, ReplyIcon, PencilIcon, PinIcon, TrashIcon, EmojiIcon, MessageBubbleIcon, FlagIcon, CloseIcon } from "../icons";
 import { UserAvatar } from "../sidebar/UserAvatar";
 import { MarkdownRenderer } from "./MarkdownRenderer";
 import { PollMessage } from "./PollMessage";
@@ -32,6 +32,8 @@ import * as matrixService from "../../services/matrixService";
 import { EmojiGridPanel } from "./EmojiGridPanel";
 import { ImageDuFil } from "./ImageDuFil";
 import { MenuImage } from "./MenuImage";
+import { MenuMessage, type ActionMenuMessage } from "./MenuMessage";
+import { gestesMenuContextuel } from "../../utils/menuContextuel";
 import { allerAuMessage } from "../../services/allerAuMessage";
 import { ModaleSignalement } from "./ModaleSignalement";
 import { moteurRust } from "../../services/moteur";
@@ -664,6 +666,8 @@ export const Message = React.memo(function Message({ message, showHeader, isFirs
   const [isHovered, setIsHovered] = useState(false);
   const [showReactionPicker, setShowReactionPicker] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [menuMessage, setMenuMessage] = useState<{ x: number; y: number } | null>(null);
+  const messageBubbleRef = useRef<HTMLDivElement>(null);
   const reactionPickerRef = useRef<HTMLDivElement>(null);
   /** Anchor side chosen dynamically at open time based on available space
    *  between the reaction button and the viewport edges. "left" means the
@@ -776,16 +780,6 @@ export const Message = React.memo(function Message({ message, showHeader, isFirs
     setShowDeleteConfirm(false);
   };
 
-  // Auto-cancel the inline confirmation when the user moves the mouse away
-  // from the message — same hover-out behaviour as the rest of the action bar.
-  useEffect(() => {
-    if (!showDeleteConfirm) return;
-    if (!isHovered) {
-      const t = setTimeout(() => setShowDeleteConfirm(false), 400);
-      return () => clearTimeout(t);
-    }
-  }, [showDeleteConfirm, isHovered]);
-
   const handleReply = () => {
     setReplyingTo({
       eventId: message.eventId || String(message.id),
@@ -841,8 +835,45 @@ export const Message = React.memo(function Message({ message, showHeader, isFirs
   };
 
   const [showReport, setShowReport] = useState(false);
+  const fermerMenuMessage = (restoreFocus = false) => {
+    setMenuMessage(null);
+    setShowDeleteConfirm(false);
+    if (restoreFocus) messageBubbleRef.current?.focus({ preventScroll: true });
+  };
+  const actionsContextuelles: ActionMenuMessage[] = [];
+  if (isOwnMessage && message.text) {
+    actionsContextuelles.push({ label: t("chat.editMessage"), icon: <PencilIcon />, action: handleEdit });
+  }
+  if (canModerate) {
+    actionsContextuelles.push({
+      label: isPinned ? t("chat.unpinMessage", { defaultValue: "Désépingler" }) : t("chat.pinMessage"),
+      icon: <PinIcon filled={isPinned} />, action: () => void handlePin(),
+      pressed: isPinned, tone: isPinned ? "primary" : undefined,
+    });
+  }
+  if (!isOwnMessage && moteurRust() && message.eventId && activeChannel) {
+    actionsContextuelles.push({ label: t("report.action"), icon: <FlagIcon />, action: () => setShowReport(true) });
+  }
+  if (canDelete) {
+    if (showDeleteConfirm) {
+      actionsContextuelles.push(
+        { label: t("chat.deleteMessageConfirm"), icon: <TrashIcon />, action: confirmDelete, tone: "error" },
+        { label: t("auth.cancel"), icon: <CloseIcon />, action: cancelDelete, close: false },
+      );
+    } else {
+      actionsContextuelles.push({ label: t("chat.deleteMessage"), icon: <TrashIcon />, action: handleDelete, close: false, tone: "error" });
+    }
+  }
+  const ouvrirMenuMessage = (x: number, y: number) => {
+    if (!actionsContextuelles.length) return;
+    setShowReactionPicker(false);
+    setShowDeleteConfirm(false);
+    setMenuMessage({ x, y });
+  };
+  const gestesMessage = gestesMenuContextuel(ouvrirMenuMessage);
+  const cibleInteractive = (target: EventTarget | null) => target instanceof Element && !!target.closest("a, button, video, audio, input, textarea");
   const actionButtonStyle: React.CSSProperties = {
-    padding: 6,
+    padding: isMobile ? 6 : 3,
     border: 'none',
     borderRadius: 8,
     background: 'transparent',
@@ -860,11 +891,11 @@ export const Message = React.memo(function Message({ message, showHeader, isFirs
           background: isMobile ? 'var(--color-surface-container-high)' : 'transparent',
           borderRadius: 12,
           boxShadow: isMobile ? '0 2px 8px rgba(0,0,0,0.2)' : undefined,
-          padding: 2,
+          padding: isMobile ? 2 : 1,
           alignSelf: isMobile || isOwnMessage ? 'flex-end' : 'flex-start',
           flexShrink: 0,
           position: 'relative',
-          marginTop: isMobile ? 0 : 4,
+          marginTop: isMobile ? 0 : 2,
         }}>
           {/* Reaction emoji button + picker */}
           <div ref={reactionPickerRef} style={{ position: 'relative', display: 'flex' }}>
@@ -902,8 +933,9 @@ export const Message = React.memo(function Message({ message, showHeader, isFirs
               onMouseLeave={(e) => { if (!showReactionPicker) e.currentTarget.style.background = 'transparent'; }}
               style={{ ...actionButtonStyle, background: showReactionPicker ? 'var(--color-secondary-container)' : 'transparent' }}
               title={t("chat.react")}
+              aria-label={t("chat.react")}
             >
-              <EmojiIcon />
+              <EmojiIcon className={isMobile ? undefined : "size-3.5"} />
             </button>
             {showReactionPicker && (
               <div style={{
@@ -932,92 +964,10 @@ export const Message = React.memo(function Message({ message, showHeader, isFirs
             onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
             style={actionButtonStyle}
             title={t("chat.reply")}
+            aria-label={t("chat.reply")}
           >
-            <ReplyIcon />
+            <ReplyIcon className={isMobile ? undefined : "size-3.5"} />
           </button>
-          {isOwnMessage && message.text && (
-            <button
-              onClick={handleEdit}
-              onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--color-secondary-container)'; }}
-              onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
-              style={actionButtonStyle}
-              title={t("chat.editMessage")}
-            >
-              <PencilIcon />
-            </button>
-          )}
-          {canModerate && (
-            <button
-              onClick={handlePin}
-              onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--color-secondary-container)'; }}
-              onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
-              style={{
-                ...actionButtonStyle,
-                // Épinglé : couleur d'accent et icône pleine. L'action étant
-                // une bascule, l'état doit se lire avant le clic.
-                color: isPinned ? 'var(--color-primary)' : actionButtonStyle.color,
-              }}
-              title={isPinned
-                ? t("chat.unpinMessage", { defaultValue: "Désépingler" })
-                : t("chat.pinMessage")}
-              aria-pressed={isPinned}
-            >
-              <PinIcon filled={isPinned} />
-            </button>
-          )}
-          {!isOwnMessage && moteurRust() && message.eventId && activeChannel && (
-            <button
-              onClick={() => setShowReport(true)}
-              onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--color-secondary-container)'; }}
-              onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
-              style={actionButtonStyle}
-              title={t("report.action")}
-            >
-              <FlagIcon />
-            </button>
-          )}
-          {canDelete && !showDeleteConfirm && (
-            <button
-              onClick={handleDelete}
-              onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--color-error-container)'; }}
-              onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
-              style={{ ...actionButtonStyle, color: 'var(--color-error)' }}
-              title={t("chat.deleteMessage")}
-            >
-              <TrashIcon />
-            </button>
-          )}
-          {canDelete && showDeleteConfirm && (
-            <>
-              <button
-                onClick={confirmDelete}
-                title={t("chat.deleteMessageConfirm")}
-                style={{
-                  ...actionButtonStyle,
-                  background: 'var(--color-error)',
-                  color: 'var(--color-on-error)',
-                  fontWeight: 700,
-                  fontSize: 13,
-                  padding: '6px 10px',
-                }}
-              >
-                ✓
-              </button>
-              <button
-                onClick={cancelDelete}
-                title={t("auth.cancel")}
-                style={{
-                  ...actionButtonStyle,
-                  color: 'var(--color-on-surface-variant)',
-                  fontWeight: 700,
-                  fontSize: 13,
-                  padding: '6px 10px',
-                }}
-              >
-                ✗
-              </button>
-            </>
-          )}
         </div>
       );
 
@@ -1163,7 +1113,20 @@ export const Message = React.memo(function Message({ message, showHeader, isFirs
         )}
 
         {/* M3 Bubble — surface-container-high pour les autres, primary-container pour soi */}
-        <div style={{
+        <div ref={messageBubbleRef} className="sion-message-bulle" tabIndex={actionsContextuelles.length ? 0 : undefined}
+          onContextMenu={(event) => {
+            if (!event.defaultPrevented && !cibleInteractive(event.target) && actionsContextuelles.length) gestesMessage.onContextMenu(event);
+          }}
+          onKeyDown={(event) => {
+            if (!cibleInteractive(event.target) && (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10"))) {
+              event.preventDefault();
+              const rect = event.currentTarget.getBoundingClientRect();
+              ouvrirMenuMessage(rect.left + 12, rect.top + 12);
+            }
+          }}
+          onTouchStart={(event) => { if (!cibleInteractive(event.target) && actionsContextuelles.length) gestesMessage.onTouchStart(event); }}
+          onTouchMove={gestesMessage.onTouchMove} onTouchEnd={gestesMessage.onTouchEnd} onTouchCancel={gestesMessage.onTouchCancel}
+          style={{
           background: isOwnMessage ? 'var(--color-primary-container)' : 'var(--color-surface-container-high)',
           color: isOwnMessage ? 'var(--color-on-primary-container)' : 'var(--color-on-surface)',
           borderRadius: isOwnMessage
@@ -1345,6 +1308,10 @@ export const Message = React.memo(function Message({ message, showHeader, isFirs
       {!isMobile && actionsMessage}
       </div>
       {isMobile && actionsMessage}
+
+      {menuMessage && actionsContextuelles.length > 0 && (
+        <MenuMessage {...menuMessage} actions={actionsContextuelles} onClose={fermerMenuMessage} />
+      )}
 
       {showReport && message.eventId && activeChannel && (
         <ModaleSignalement salon={activeChannel} eventId={message.eventId} auteur={message.user} onClose={() => setShowReport(false)} />

@@ -156,6 +156,29 @@ Aperçu Chromium à 280 px : aucun débordement ; commandes contenues dans la
 carte ; bascule Voile / Flou, changement d’opacité, position et retrait du
 fond vérifiés. Compilation de production réussie.
 
-Le bouton de partage d’écran possède une bordure dans la couleur d’accent
-et un fond teinté pour mieux ressortir. Pendant un partage, le cadre et le
-fond passent au rouge pour distinguer l’action d’arrêt.
+Le bouton de partage d’écran possède un fond teinté dans la couleur d’accent,
+sans bordure, pour mieux ressortir. Pendant un partage, le fond passe au rouge
+pour distinguer l’action d’arrêt.
+
+D’après `Capture d'écran_20261007_220315.png` : les cartouches de la soundboard
+et de la memeboard ont un fond uni sans contour. Les emojis se fondent dans
+la cartouche, sans pastille de fond distincte, y compris au survol.
+
+Les commandes micro, sourdine, transcription, soundboard, memeboard,
+paramètres, membres, partage, raccrochage, vidéo et sondage utilisent des formes pleines.
+Memeboard affiche un visage qui pleure de rire ; l’import vidéo par lien
+reprend son ancien pictogramme avec un triangle de lecture. Les icônes suivent
+la couleur du bouton, avec le rouge et la barre pour les états audio coupés.
+Le combiné de raccrochage est plein, d’un rouge plus vif sur un fond rouge clair.
+
+En menu réduit, la carte de survol des utilisateurs est rendue hors de la
+bulle du menu pour passer au-dessus du chat. Le bouton d’envoi conserve
+uniquement son icône et son libellé accessible.
+
+Sous les messages, seuls Réagir et Répondre restent visibles. Épingler /
+Désépingler, Signaler, Supprimer et Modifier passent dans le menu au clic
+droit, avec les mêmes autorisations et la confirmation de suppression.
+Un appui long ouvre ce menu sur téléphone ; Maj+F10 l’ouvre au clavier.
+Les bulles de message sont conservées.
+Sur ordinateur, Réagir et Répondre sont réduits à 14 px avec moins d’espace
+autour pour rester discrets sous les bulles.

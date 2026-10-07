@@ -1,7 +1,7 @@
 import { OngletsPanneaux } from "./OngletsPanneaux";
 import { useRef, useState, useEffect, lazy, Suspense } from "react";
 import { useTranslation } from "react-i18next";
-import { ScreenIcon, PencilIcon, HashIcon, ArrowLeftIcon, UserAddIcon, UsersIcon, PinIcon } from "../icons";
+import { ScreenIcon, PencilIcon, HashIcon, ArrowLeftIcon, UserAddIcon, UsersIcon, PinIcon, MicIcon, SoundboardIcon, MemeboardIcon } from "../icons";
 import { ChannelIcon } from "../sidebar/ChannelIcon";
 import { useAppStore } from "../../stores/useAppStore";
 import { useMatrixStore } from "../../stores/useMatrixStore";
@@ -327,11 +327,7 @@ export function ChatHeader() {
               onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
               title={t("soundboard.title")}
             >
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
-                <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />
-                <path d="M19.07 4.93a10 10 0 0 1 0 14.14" />
-              </svg>
+              <SoundboardIcon />
             </button>
           )}
           {channels.some((c) => c.isSoundboard) && (
@@ -352,10 +348,7 @@ export function ChatHeader() {
               onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
               title={t("memeboard.title")}
             >
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <rect x="2" y="4" width="20" height="16" rx="3" />
-                <polygon points="10 9 15 12 10 15 10 9" fill="currentColor" />
-              </svg>
+              <MemeboardIcon />
             </button>
           )}
           {!isMobile && (
@@ -366,11 +359,7 @@ export function ChatHeader() {
                 background: 'var(--color-secondary-container)', color: 'var(--color-on-secondary-container)',
                 fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap',
               }}>
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
-                  <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
-                  <line x1="12" y1="19" x2="12" y2="23" /><line x1="8" y1="23" x2="16" y2="23" />
-                </svg>
+                <MicIcon className="size-3" />
                 {t("channels.voiceBadge")} · {channel.voiceUsers.length}
               </span>
             ) : (channel?.topic ? (
@@ -449,7 +438,7 @@ export function ChatHeader() {
           <div className="sion-chat-salon"><ChannelIcon channel={channel} /><span title={channelName}>{channelName}</span></div>
           <OngletsPanneaux salonVocal={!!channel?.hasVoice || !!connectedVoice} />
           <div className="sion-chat-actions">
-            <button type="button" aria-label={t("chat.pinnedList")} title={t("chat.pinnedList")} aria-pressed={panelOpen("pinned")} onClick={() => useLayoutStore.getState().basculerPanneau("pinned")}><PinIcon /></button>
+            <button type="button" aria-label={t("chat.pinnedList")} title={t("chat.pinnedList")} aria-pressed={panelOpen("pinned")} onClick={() => useLayoutStore.getState().basculerPanneau("pinned")}><PinIcon filled /></button>
             {!channel?.isDM && <button type="button" aria-label={t("members.title")} title={t("members.title")} aria-pressed={panelOpen("members")} onClick={() => useLayoutStore.getState().basculerPanneau("members")}><UsersIcon /></button>}
             {connectedVoice && <button type="button" className="sion-chat-partage" aria-label={isScreenSharing ? t("chat.stopShare") : t("chat.shareScreen")} title={isScreenSharing ? t("chat.stopShare") : t("chat.shareScreen")} aria-pressed={isScreenSharing}
               onClick={() => isScreenSharing ? toggleScreenShare() : setShowScreenShareOptions(true)}><ScreenIcon /></button>}

@@ -536,6 +536,8 @@ select option {
 
 .sion-chat-header { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 14px 18px; min-height: 58px; flex-shrink: 0; border-bottom: 1px solid var(--color-border); }
 .sion-conversation .sion-messages { padding: 20px 24px; }
+.sion-message-bulle:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; }
+.sion-menu-message button:focus-visible { outline: 2px solid var(--color-primary); outline-offset: -2px; }
 .sion-chat-salon { display: flex; align-items: center; gap: 8px; min-width: 0; font-weight: 700; font-size: 13px; }
 .sion-chat-salon > span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 180px; }
 .sion-onglets-panneaux { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; flex-shrink: 0; min-width: 0; max-width: 100%; }
@@ -545,9 +547,9 @@ select option {
 .sion-chat-actions > button { padding: 8px; }
 .sion-chat-actions button[aria-pressed="true"] { color: var(--color-primary); background: var(--color-primary-container); }
 .sion-chat-actions button:hover, .sion-onglets-panneaux button:hover { background: var(--color-surface-container-high); }
-.sion-chat-actions > .sion-chat-partage { border: 1px solid var(--color-primary); color: var(--color-on-primary-container); background: var(--color-primary-container); }
+.sion-chat-actions > .sion-chat-partage { color: var(--color-on-primary-container); background: var(--color-primary-container); }
 .sion-chat-actions > .sion-chat-partage:hover { background: color-mix(in srgb, var(--color-primary) 12%, var(--color-primary-container)); }
-.sion-chat-actions > .sion-chat-partage[aria-pressed="true"] { border-color: var(--color-error); color: var(--color-on-error-container); background: var(--color-error-container); }
+.sion-chat-actions > .sion-chat-partage[aria-pressed="true"] { color: var(--color-on-error-container); background: var(--color-error-container); }
 .sion-chat-actions > .sion-chat-partage[aria-pressed="true"]:hover { background: color-mix(in srgb, var(--color-error) 12%, var(--color-error-container)); }
 .sion-chat-plus { position: absolute; right: 0; top: calc(100% + 8px); z-index: 100; display: flex; flex-direction: column; min-width: 190px; padding: 6px; border-radius: 14px; background: var(--color-surface-container-high); border: 1px solid var(--color-outline-variant); }
 .sion-chat-plus button { justify-content: flex-start; padding: 10px; }

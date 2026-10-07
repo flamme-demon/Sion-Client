@@ -9,22 +9,19 @@ interface MuteableIconProps extends IconProps {
 
 export function MicIcon({ muted, className }: MuteableIconProps) {
   return (
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={muted ? "var(--color-red)" : "currentColor"} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+    <svg width="18" height="18" viewBox="0 0 24 24" fill={muted ? "var(--color-red)" : "currentColor"} className={className}>
       <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
-      <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
-      <line x1="12" y1="19" x2="12" y2="23" />
-      <line x1="8" y1="23" x2="16" y2="23" />
-      {muted && <line x1="1" y1="1" x2="23" y2="23" stroke="var(--color-red)" strokeWidth="2.5" />}
+      <path d="M5 10v2a7 7 0 0 0 6 6.93V21H8v2h8v-2h-3v-2.07A7 7 0 0 0 19 12v-2h-2v2a5 5 0 0 1-10 0v-2H5Z" />
+      {muted && <line x1="1" y1="1" x2="23" y2="23" stroke="var(--color-red)" strokeWidth="2.5" strokeLinecap="round" />}
     </svg>
   );
 }
 
 export function HeadphoneIcon({ muted, className }: MuteableIconProps) {
   return (
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={muted ? "var(--color-red)" : "currentColor"} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
-      <path d="M3 18v-6a9 9 0 0 1 18 0v6" />
-      <path d="M21 19a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3zM3 19a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3z" />
-      {muted && <line x1="1" y1="1" x2="23" y2="23" stroke="var(--color-red)" strokeWidth="2.5" />}
+    <svg width="18" height="18" viewBox="0 0 24 24" fill={muted ? "var(--color-red)" : "currentColor"} className={className}>
+      <path d="M12 2A10 10 0 0 0 2 12v7a3 3 0 0 0 3 3h1a3 3 0 0 0 3-3v-3a3 3 0 0 0-3-3H4v-1a8 8 0 0 1 16 0v1h-2a3 3 0 0 0-3 3v3a3 3 0 0 0 3 3h1a3 3 0 0 0 3-3v-7A10 10 0 0 0 12 2Z" />
+      {muted && <line x1="1" y1="1" x2="23" y2="23" stroke="var(--color-red)" strokeWidth="2.5" strokeLinecap="round" />}
     </svg>
   );
 }
@@ -41,19 +38,36 @@ export function PhoneIcon({ className, size = 12 }: IconProps & { size?: number 
 
 export function ScreenIcon({ className }: IconProps) {
   return (
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
-      <rect x="2" y="3" width="20" height="14" rx="2" ry="2" />
-      <line x1="8" y1="21" x2="16" y2="21" />
-      <line x1="12" y1="17" x2="12" y2="21" />
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" className={className}>
+      <path fillRule="evenodd" d="M4 2a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h7v2H7v2h10v-2h-4v-2h7a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2H4Zm0 2h16v12H4V4Z" />
+    </svg>
+  );
+}
+
+export function SoundboardIcon({ className }: IconProps) {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" className={className} aria-hidden="true">
+      <path d="m9 5 12-3v15h-2V8l-8 2v10H9Z" />
+      <ellipse cx="7" cy="19" rx="4" ry="3" />
+      <ellipse cx="17" cy="16" rx="4" ry="3" />
+    </svg>
+  );
+}
+
+/** Visage qui pleure de rire : les traits sont évidés dans la forme pleine. */
+export function MemeboardIcon({ className }: IconProps) {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" className={className} aria-hidden="true">
+      <path fillRule="evenodd" d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20ZM5.5 8.5 9 6l1 1.5L8 9l2 1.5L9 12l-3.5-2.5v-1Zm13 0L15 6l-1 1.5L16 9l-2 1.5L15 12l3.5-2.5v-1ZM7 14h10a5 5 0 0 1-10 0Z" />
+      <path d="M3 11S0 14 0 16a2 2 0 0 0 4 0c0-2-1-5-1-5Zm18 0s3 3 3 5a2 2 0 0 1-4 0c0-2 1-5 1-5Z" />
     </svg>
   );
 }
 
 export function SettingsIcon({ className }: IconProps) {
   return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
-      <circle cx="12" cy="12" r="3" />
-      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" className={className}>
+      <path fillRule="evenodd" d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1ZM15 12a3 3 0 1 0-6 0 3 3 0 0 0 6 0Z" />
     </svg>
   );
 }
@@ -73,7 +87,7 @@ export function HashIcon({ className, style }: IconProps) {
 export function SpeakerOffIcon({ className, style }: IconProps) {
   return (
     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className={className} style={style}>
-      <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
+      <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" fill="currentColor" stroke="none" />
       <line x1="23" y1="9" x2="17" y2="15" />
       <line x1="17" y1="9" x2="23" y2="15" />
     </svg>
@@ -93,7 +107,7 @@ export function AdminRoomIcon({ className, style }: IconProps) {
 export function SpeakerIcon({ className }: IconProps) {
   return (
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className={className}>
-      <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
+      <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" fill="currentColor" stroke="none" />
       <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />
     </svg>
   );
@@ -133,7 +147,7 @@ export function DisconnectIcon({ className }: IconProps) {
 
 export function PhoneHangupIcon({ className }: IconProps) {
   return (
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className} aria-hidden="true">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" className={className} aria-hidden="true">
       <path d="M4 16a2 2 0 0 1-2-2v-1a2 2 0 0 1 .8-1.6 16 16 0 0 1 18.4 0A2 2 0 0 1 22 13v1a2 2 0 0 1-2 2h-3a1 1 0 0 1-1-1v-2a12 12 0 0 0-8 0v2a1 1 0 0 1-1 1Z" />
     </svg>
   );
@@ -160,9 +174,8 @@ export function HistoryIcon({ className, style }: IconProps) {
 
 export function VideoIcon({ className }: IconProps) {
   return (
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className} aria-hidden="true">
-      <polygon points="23 7 16 12 23 17 23 7" />
-      <rect x="1" y="5" width="15" height="14" rx="2" />
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" className={className} aria-hidden="true">
+      <path fillRule="evenodd" d="M5 4a3 3 0 0 0-3 3v10a3 3 0 0 0 3 3h14a3 3 0 0 0 3-3V7a3 3 0 0 0-3-3H5Zm5 5v6l5-3-5-3Z" />
     </svg>
   );
 }
@@ -177,19 +190,18 @@ export function PaperclipIcon({ className }: IconProps) {
 
 export function FileIcon({ className }: IconProps) {
   return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
-      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-      <polyline points="14 2 14 8 20 8" />
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" className={className}>
+      <path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9h-7V2Zm2 0v5h5l-5-5Z" />
     </svg>
   );
 }
 
 export function PollIcon({ className }: IconProps) {
   return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
-      <line x1="6" y1="20" x2="6" y2="10" />
-      <line x1="12" y1="20" x2="12" y2="4" />
-      <line x1="18" y1="20" x2="18" y2="14" />
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" className={className}>
+      <rect x="3" y="9" width="4" height="12" rx="1" />
+      <rect x="10" y="3" width="4" height="18" rx="1" />
+      <rect x="17" y="13" width="4" height="8" rx="1" />
     </svg>
   );
 }
@@ -321,11 +333,8 @@ export function ReplyIcon({ className }: IconProps) {
 
 export function EmojiIcon({ className }: IconProps) {
   return (
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
-      <circle cx="12" cy="12" r="10" />
-      <path d="M8 14s1.5 2 4 2 4-2 4-2" />
-      <line x1="9" y1="9" x2="9.01" y2="9" />
-      <line x1="15" y1="9" x2="15.01" y2="9" />
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" className={className}>
+      <path fillRule="evenodd" d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20ZM8.5 7a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3Zm7 0a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3ZM7 13h10a5 5 0 0 1-10 0Z" />
     </svg>
   );
 }
@@ -343,11 +352,10 @@ export function UserAddIcon({ className }: IconProps) {
 
 export function UsersIcon({ className }: IconProps) {
   return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
-      <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" className={className}>
+      <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2Z" />
       <circle cx="9" cy="7" r="4" />
-      <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
-      <path d="M16 3.13a4 4 0 0 1 0 7.75" />
+      <path d="M16 15h3a4 4 0 0 1 4 4v2h-4v-2a6 6 0 0 0-3-4ZM16 3.13a4 4 0 0 1 0 7.75 6 6 0 0 0 0-7.75Z" />
     </svg>
   );
 }

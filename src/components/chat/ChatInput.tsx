@@ -486,7 +486,7 @@ export function ChatInput() {
   const boutonEnvoi = <button type="button" className={isMobile ? undefined : "sion-envoyer"} onClick={handleSend}
     aria-label={t("chat.send")} disabled={!canSend || (!isMobile && !hasContent)}
     style={isMobile ? { border: 'none', cursor: canSend ? 'pointer' : 'not-allowed', padding: 10, display: 'flex', flexShrink: 0, borderRadius: '50%', background: hasContent && canSend ? 'var(--color-primary)' : 'transparent', color: hasContent && canSend ? 'var(--color-on-primary)' : 'var(--color-outline)', opacity: hasContent && canSend ? 1 : 0.4 } : undefined}>
-    {!isMobile && t("chat.send")}<SendIcon />
+    <SendIcon />
   </button>;
 
   return (

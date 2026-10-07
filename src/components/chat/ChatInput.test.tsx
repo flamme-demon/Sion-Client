@@ -41,7 +41,9 @@ it("la saisie précède la rangée d'actions sur deux lignes", async () => {
   const textarea = vue.container.querySelector("textarea")!;
   const actions = vue.container.querySelector(".sion-saisie-actions")!;
   expect(textarea.compareDocumentPosition(actions) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-  expect(actions.querySelector('[aria-label="chat.send"]')?.textContent).toBe("chat.send");
+  const envoyer = actions.querySelector('[aria-label="chat.send"]')!;
+  expect(envoyer.textContent).toBe("");
+  expect(envoyer.querySelector("svg")).not.toBeNull();
   expect(vue.container.querySelector('.sion-saisie-ligne [aria-label="chat.attachFile"]')).toBeNull();
   expect(actions.querySelector('[aria-label="extVideo.menuItem"]')).not.toBeNull();
   expect(actions.querySelector('[aria-label="poll.menuItem"]')).not.toBeNull();

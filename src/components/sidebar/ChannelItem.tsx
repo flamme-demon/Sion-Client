@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { SpeakerIcon, SpeakerOffIcon, MicIcon, HeadphoneIcon, CrownIcon, ShieldIcon, MessageBubbleIcon, SignalBarsIcon, PhoneIcon } from "../icons";
 import { ChannelIcon } from "./ChannelIcon";
 import { UserAvatar } from "./UserAvatar";
@@ -549,9 +550,10 @@ export function ChannelItem({ channel, compact = false }: { channel: Channel; co
 
       {/* Carte de survol du rail (voir `openHoverCard`) : lecture confortable
           des occupants — avatars 36px avec leurs états, pseudos, badges.
-          `position: fixed` échappe à l'`overflow` de la liste. */}
-      {hoverCard && showHoverCard && (
+          Le portail échappe à l'isolation de la bulle et au défilement de la liste. */}
+      {hoverCard && showHoverCard && createPortal(
         <div
+          className="sion-survol-salon"
           onMouseEnter={openHoverCard}
           onMouseLeave={closeHoverCard}
           style={{
@@ -627,7 +629,8 @@ export function ChannelItem({ channel, compact = false }: { channel: Channel; co
               </span>
             </div>
           ))}
-        </div>
+        </div>,
+        document.body,
       )}
 
       {/* Voice users — full detail only for your connected channel, or when you

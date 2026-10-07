@@ -503,21 +503,20 @@ export function MemeboardPanel() {
                 style={{
                   position: 'relative', display: 'flex', flexDirection: 'column', gap: 6,
                   padding: 6, borderRadius: 12, cursor: actif ? 'pointer' : 'not-allowed',
-                  border: '1px solid var(--color-border)', background: 'var(--color-surface-container)',
-                  opacity: actif ? 1 : 0.45, transition: 'border-color 120ms',
+                  border: 'none', background: 'var(--color-surface-container)',
+                  opacity: actif ? 1 : 0.45, transition: 'background 120ms',
                 }}
                 onMouseEnter={(e) => {
-                  e.currentTarget.style.borderColor = 'var(--color-primary)';
+                  e.currentTarget.style.background = 'var(--color-surface-container-high)';
                   setSurvolee(m.eventId);
                 }}
                 onMouseLeave={(e) => {
-                  e.currentTarget.style.borderColor = 'var(--color-border)';
+                  e.currentTarget.style.background = 'var(--color-surface-container)';
                   setSurvolee((id) => (id === m.eventId ? null : id));
                 }}
               >
                 <div style={{
                   aspectRatio: '1 / 1', borderRadius: 8, overflow: 'hidden',
-                  background: 'var(--color-surface-container-highest)',
                   display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 28,
                 }}>
                   {apercu

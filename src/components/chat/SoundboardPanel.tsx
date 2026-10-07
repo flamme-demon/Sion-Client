@@ -587,16 +587,16 @@ export function SoundboardPanel() {
                       style={{
                         position: 'relative', display: 'flex', flexDirection: 'column', gap: 8,
                         padding: 12, borderRadius: 'var(--sion-carte-rayon)',
-                        border: '1px solid var(--color-border)',
+                        border: 'none',
                         background: 'var(--color-surface-container)',
                         cursor: 'pointer', opacity: enabled ? 1 : 0.4, pointerEvents: enabled ? 'auto' : 'none',
-                        transition: 'background 120ms, border-color 120ms',
+                        transition: 'background 120ms',
                       }}
-                      onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--color-surface-container-high)'; e.currentTarget.style.borderColor = 'var(--color-primary)'; }}
-                      onMouseLeave={(e) => { e.currentTarget.style.background = 'var(--color-surface-container)'; e.currentTarget.style.borderColor = 'var(--color-border)'; }}
+                      onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--color-surface-container-high)'; }}
+                      onMouseLeave={(e) => { e.currentTarget.style.background = 'var(--color-surface-container)'; }}
                     >
                       <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between' }}>
-                        <div style={{ width: 38, height: 38, borderRadius: 11, background: 'var(--color-surface-container-highest)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 20 }}>
+                        <div style={{ width: 38, height: 38, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 20 }}>
                           {s.emoji || '🔊'}
                         </div>
                         {/* Un son de synthèse ne se distingue autrement en rien
