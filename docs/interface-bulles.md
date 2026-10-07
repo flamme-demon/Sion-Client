@@ -36,7 +36,7 @@ se superpose au chat. Cette adaptation ne modifie pas la préférence du menu.
 
 Le soundboard affiche deux colonnes, conserve Favoris / Top / Toutes et les
 catégories, et place le volume en pied. La saisie desktop utilise deux lignes :
-menu +, texte, GIF, emoji ; puis mention, lien Markdown, fichier et Envoyer.
+texte, GIF, emoji ; puis mention, import vidéo par lien, fichier, sondage et Envoyer.
 Le bouton Envoyer reste désactivé à vide. Les actions des messages passent
 sous leur contenu. Sur téléphone, la coque, la saisie et la feuille de
 panneau existantes restent utilisées.
@@ -66,7 +66,7 @@ Ctrl+Maj+L et les presets de disposition sont retirés.
 
 - TypeScript et compilation de production : réussis.
 - ESLint : 0 erreur, 37 avertissements déjà présents dans le projet.
-- Vitest : **437 tests réussis**, 5 ignorés, 66 fichiers réussis.
+- Vitest : **440 tests réussis**, 5 ignorés, 66 fichiers réussis.
 - Tests Rust : **172 réussis**, 5 ignorés ; sources Rust identiques à `main`,
   exécution dans le dépôt principal pour réutiliser les dépendances compilées.
 - Chromium, composants réels avec données fictives : vues à 1600, 1000,
@@ -127,3 +127,15 @@ D’après `Capture d'écran_20261007_162434.png` :
 Compilation de production réussie, commandes audio réduites testées avec
 et sans appel, insertion Markdown toujours vérifiée. Rendu contrôlé dans
 l’application WebKitGTK ouverte à 1280 px avec le soundboard affiché.
+
+D’après `Capture d'écran_20261007_170710.png` : le + quitte le champ de
+message sur ordinateur. L’import vidéo par lien remplace le raccourci
+Markdown ; un bouton Sondage ouvre directement la création dans le salon
+courant. Le trombone ouvre directement le sélecteur de fichiers. L’import
+vidéo conserve son chargement différé et ajoute le fichier au brouillon.
+Les actions respectent les autorisations d’envoi ; yt-dlp reste absent sur
+Android et le téléphone conserve son menu trombone.
+
+D’après `Capture d'écran_20261007_171041.png` : raccrocher utilise un combiné
+téléphonique aux traits rouges sur fond transparent dans la carte de profil,
+en mode réduit comme déployé.

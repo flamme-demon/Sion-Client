@@ -1,6 +1,6 @@
 import { useState, useRef, useCallback, useEffect, type KeyboardEvent, type ClipboardEvent } from "react";
 import { useTranslation } from "react-i18next";
-import { SendIcon, CloseIcon, EmojiIcon, DisconnectIcon, LinkIcon } from "../icons";
+import { SendIcon, CloseIcon, EmojiIcon, DisconnectIcon } from "../icons";
 import { AttachButton } from "./AttachButton";
 import { FilePreview } from "./FilePreview";
 import { UserAvatar } from "../sidebar/UserAvatar";
@@ -469,7 +469,7 @@ export function ChatInput() {
     });
   };
 
-  const inserer = (texte: string, selection?: [number, number]) => {
+  const inserer = (texte: string) => {
     const textarea = textareaRef.current;
     if (!textarea) return;
     const start = textarea.selectionStart;
@@ -477,19 +477,10 @@ export function ChatInput() {
     handleChange(inputText.slice(0, start) + texte + inputText.slice(end), start + texte.length);
     requestAnimationFrame(() => {
       textarea.focus();
-      textarea.setSelectionRange(start + (selection?.[0] ?? texte.length), start + (selection?.[1] ?? texte.length));
+      textarea.setSelectionRange(start + texte.length, start + texte.length);
       autoGrow();
     });
   };
-  const insererLien = () => {
-    const textarea = textareaRef.current;
-    if (!textarea) return;
-    const libelle = inputText.slice(textarea.selectionStart, textarea.selectionEnd) || t("chat.linkText");
-    const lien = `[${libelle}](https://)`;
-    const debut = lien.indexOf("https://");
-    inserer(lien, [debut, debut + 8]);
-  };
-
   const hasContent = inputText.trim().length > 0 || pendingFiles.length > 0;
 
   const boutonEnvoi = <button type="button" className={isMobile ? undefined : "sion-envoyer"} onClick={handleSend}
@@ -737,7 +728,7 @@ export function ChatInput() {
 
         <FilePreview />
         <div className={isMobile ? undefined : 'sion-saisie-ligne'} style={{ display: 'flex', alignItems: 'flex-end', gap: 4, padding: '6px 8px 6px 4px' }}>
-          {!editingMessage && <AttachButton plus={!isMobile} disabled={!canSend} />}
+          {isMobile && !editingMessage && <AttachButton disabled={!canSend} />}
           {!editingMessage && (
             <div ref={emojiPickerRef} className={isMobile ? undefined : "sion-saisie-picker"} style={{ position: 'relative', display: 'flex', flexShrink: 0 }}>
               {!isMobile && <button type="button" aria-label={t("chat.gifTab")} disabled={!canSend} onMouseDown={(e) => { e.preventDefault(); setPickerTab("gif"); setShowEmojiPicker(true); }} style={{ border: 0, padding: 10, background: 'transparent', color: 'var(--color-on-surface-variant)', cursor: 'pointer', fontFamily: 'inherit', fontSize: 10, fontWeight: 700 }}>GIF</button>}
@@ -921,8 +912,9 @@ export function ChatInput() {
         {!isMobile && <div className="sion-saisie-actions">
           {!editingMessage && <>
             <button type="button" aria-label={t("chat.mention")} title={t("chat.mention")} disabled={!canSend} onMouseDown={(e) => e.preventDefault()} onClick={() => inserer("@")}>@</button>
-            <button type="button" aria-label={t("chat.insertLink")} title={t("chat.insertLink")} disabled={!canSend} onMouseDown={(e) => e.preventDefault()} onClick={insererLien}><LinkIcon /></button>
-            <AttachButton direct disabled={!canSend} />
+            <AttachButton action="video" disabled={!canSend} />
+            <AttachButton action="file" disabled={!canSend} />
+            <AttachButton action="poll" disabled={!canSend} />
           </>}
           {boutonEnvoi}
         </div>}

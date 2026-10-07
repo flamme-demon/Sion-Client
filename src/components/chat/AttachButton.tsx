@@ -1,17 +1,17 @@
 import { useRef, useState, lazy, Suspense } from "react";
 import { useTranslation } from "react-i18next";
-import { PaperclipIcon, FileIcon, PollIcon, PlusIcon } from "../icons";
+import { PaperclipIcon, FileIcon, PollIcon, VideoIcon } from "../icons";
 import { useAppStore } from "../../stores/useAppStore";
 import { PollCreateModal } from "./PollCreateModal";
 import { SUR_ANDROID } from "../../utils/plateforme";
 
 // Import de vidéo externe (yt-dlp & co) hors du chunk de démarrage (perf
-// mémoire, 2026-09-12) : il n'est ouvert que par le menu trombone.
+// mémoire, 2026-09-12) : chargé à l'ouverture de l'importeur seulement.
 const ExternalVideoImport = lazy(() =>
   import("./ExternalVideoImport").then((m) => ({ default: m.ExternalVideoImport })),
 );
 
-export function AttachButton({ direct = false, plus = false, disabled = false }: { direct?: boolean; plus?: boolean; disabled?: boolean }) {
+export function AttachButton({ action = "menu", disabled = false }: { action?: "menu" | "file" | "video" | "poll"; disabled?: boolean }) {
   const { t } = useTranslation();
   const inputRef = useRef<HTMLInputElement>(null);
   const addPendingFile = useAppStore((s) => s.addPendingFile);
@@ -19,6 +19,16 @@ export function AttachButton({ direct = false, plus = false, disabled = false }:
   const [menuOpen, setMenuOpen] = useState(false);
   const [showPoll, setShowPoll] = useState(false);
   const [showVideoImport, setShowVideoImport] = useState(false);
+  const menu = action === "menu";
+  const label = t(action === "video" ? "extVideo.menuItem" : action === "poll" ? "poll.menuItem" : "chat.attachFile");
+  const buttonDisabled = disabled || (action === "poll" && !activeChannel);
+
+  const ouvrir = () => {
+    if (action === "file") inputRef.current?.click();
+    else if (action === "video") setShowVideoImport(true);
+    else if (action === "poll") setShowPoll(true);
+    else setMenuOpen((o) => !o);
+  };
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
@@ -33,25 +43,27 @@ export function AttachButton({ direct = false, plus = false, disabled = false }:
     padding: '8px 12px', fontSize: 13, fontFamily: 'inherit', color: 'var(--color-on-surface)',
   };
 
+  if (action === "video" && SUR_ANDROID) return null;
+
   return (
     <>
       <div
         style={{ position: 'relative', display: 'flex' }}
-        onMouseEnter={() => { if (!direct && !disabled) setMenuOpen(true); }}
+        onMouseEnter={() => { if (menu && !disabled) setMenuOpen(true); }}
         onMouseLeave={() => setMenuOpen(false)}
       >
         <button
           type="button"
-          disabled={disabled}
-          aria-label={t("chat.attachFile")}
-          aria-expanded={direct ? undefined : menuOpen}
-          onClick={() => direct ? inputRef.current?.click() : setMenuOpen((o) => !o)}
-          style={{ background: 'transparent', border: 'none', cursor: 'pointer', padding: 10, display: 'flex', borderRadius: '50%', color: 'var(--color-on-surface-variant)', transition: 'background 200ms' }}
-          title={t("chat.attachFile")}
+          disabled={buttonDisabled}
+          aria-label={label}
+          aria-expanded={menu ? menuOpen : undefined}
+          onClick={ouvrir}
+          style={{ background: 'transparent', border: 'none', cursor: buttonDisabled ? 'default' : 'pointer', opacity: buttonDisabled ? 0.4 : 1, padding: menu ? 10 : 7, display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: menu ? '50%' : 8, color: 'var(--color-on-surface-variant)', transition: 'background 200ms' }}
+          title={label}
         >
-          {plus ? <PlusIcon /> : <PaperclipIcon />}
+          {action === "video" ? <VideoIcon /> : action === "poll" ? <PollIcon /> : <PaperclipIcon />}
         </button>
-        <input ref={inputRef} type="file" multiple style={{ display: 'none' }} onChange={handleChange} />
+        {(menu || action === "file") && <input ref={inputRef} type="file" multiple style={{ display: 'none' }} onChange={handleChange} />}
 
         {menuOpen && (
           // paddingBottom acts as an invisible bridge so the cursor can travel from
@@ -69,10 +81,7 @@ export function AttachButton({ direct = false, plus = false, disabled = false }:
                 onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--color-surface-container-highest)'; }}
                 onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
                 onClick={() => { setMenuOpen(false); setShowVideoImport(true); }}>
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <polygon points="23 7 16 12 23 17 23 7" />
-                  <rect x="1" y="5" width="15" height="14" rx="2" ry="2" />
-                </svg> {t("extVideo.menuItem")}
+                <VideoIcon /> {t("extVideo.menuItem")}
               </button>}
               <button type="button" style={itemStyle} disabled={!activeChannel}
                 onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--color-surface-container-highest)'; }}
