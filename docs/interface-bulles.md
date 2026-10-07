@@ -100,8 +100,14 @@ D’après la capture annotée `Capture d'écran_20261007_133803.png` :
   bouton + vert intégré au champ, affiché selon les mêmes autorisations.
 - Fonds `surface-container` du profil et du pied de volume du soundboard.
 - Icône de note de musique dans l’onglet Soundboard, comme la référence.
+- Couleur d’accent sur les onglets sélectionnés (texte et icône), la croix
+  de fermeture des panneaux sur ordinateur et téléphone, et les contours
+  de focus clavier des commandes de panneau.
 
 Vérifications : compilation TypeScript, tests concernés, aperçus sombre et
 clair ; recherche et filtres, ajout intégré, accès Paramètres unique à
 1600 / 1000 / 768 px, feuille téléphone à 390 px. Aperçu WebKitGTK actualisé.
 La mesure CPU de 60 secondes ci-dessus est celle de l’implémentation initiale.
+L’accent des onglets et de la fermeture a été vérifié dans Chromium avec
+violet, vert et orange, en thème clair et sombre ; le focus a également été
+contrôlé dans WebKitGTK.

@@ -540,7 +540,7 @@ select option {
 .sion-chat-salon > span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 180px; }
 .sion-onglets-panneaux { display: flex; align-items: center; gap: 4px; min-width: 0; }
 .sion-onglets-panneaux button, .sion-chat-actions button { display: flex; align-items: center; justify-content: center; gap: 6px; border: none; border-radius: 10px; padding: 7px 10px; background: transparent; color: var(--color-on-surface-variant); cursor: pointer; font-family: inherit; font-size: 11px; white-space: nowrap; }
-.sion-onglets-panneaux button[aria-pressed="true"] { background: var(--color-surface-container-high); color: var(--color-on-surface); }
+.sion-onglets-panneaux button[aria-pressed="true"] { background: var(--color-surface-container-high); color: var(--color-primary); }
 .sion-chat-actions { display: flex; align-items: center; gap: 2px; margin-left: auto; }
 .sion-chat-actions > button { padding: 8px; }
 .sion-chat-actions button[aria-pressed="true"] { color: var(--color-primary); background: var(--color-primary-container); }
@@ -552,8 +552,10 @@ select option {
 .sion-panneau { position: relative; flex-shrink: 0; min-width: 0; min-height: 0; }
 .sion-panneau > .panel-resize-handle { position: absolute; left: -10px; top: 0; height: 100%; width: 8px; z-index: 1; }
 .sion-panneau-entete { display: flex; align-items: center; gap: 8px; padding: 12px 16px 8px; flex-shrink: 0; }
-.sion-panneau-entete > button { display: flex; align-items: center; justify-content: center; margin-left: auto; width: 28px; height: 28px; border: 0; border-radius: 8px; cursor: pointer; background: transparent; color: var(--color-on-surface-variant); }
-.sion-panneau-entete > button:hover { background: var(--color-surface-container-high); }
+.sion-panneau-entete > button { display: flex; align-items: center; justify-content: center; margin-left: auto; width: 28px; height: 28px; border: 0; border-radius: 8px; }
+button[data-fermer-panneau] { cursor: pointer; background: transparent; color: var(--color-primary); }
+button[data-fermer-panneau]:hover { background: var(--color-surface-container-high); }
+.sion-onglets-panneaux button:focus-visible, .sion-chat-actions button:focus-visible, button[data-fermer-panneau]:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; }
 @media (min-width: 768px) and (max-width: 1099px) {
   .sion-panneau { position: absolute; right: 0; top: 0; bottom: 0; max-width: calc(100% - 16px); z-index: 50; }
   .sion-panneau > .sion-bulle { box-shadow: 0 8px 32px color-mix(in srgb, var(--color-on-surface) 20%, transparent); }

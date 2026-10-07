@@ -56,11 +56,13 @@ export function MobilePanelSheet() {
             {t(PANNEAU_TITRES[courant])}
           </span>
           <button
+            type="button"
+            data-fermer-panneau
             onClick={fermer}
             aria-label={t("chat.close", { defaultValue: "Fermer" })}
             style={{
-              width: 44, height: 44, borderRadius: 22, border: "none", background: "transparent",
-              color: "var(--color-on-surface-variant)", display: "flex", alignItems: "center", justifyContent: "center",
+              width: 44, height: 44, borderRadius: 22, border: "none",
+              display: "flex", alignItems: "center", justifyContent: "center",
             }}
           >
             <CloseIcon />
