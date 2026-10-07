@@ -27,9 +27,23 @@ it("micro et casque reflètent et basculent l'état", async () => {
   await vue.click('[aria-label="controls.deafen"]');
   expect(useAppStore.getState().isDeafened).toBe(true);
 });
-it("en rail, seuls l'avatar et raccrocher restent", async () => {
+it("en rail, micro et casque restent utilisables avec l'avatar et raccrocher", async () => {
   useAppStore.setState({ connectedVoiceChannel: "!salon" });
   await vue.render(<CarteProfil compact />);
-  expect(vue.container.querySelectorAll("button")).toHaveLength(2);
-  expect(vue.container.querySelector('[aria-label="voice.disconnect"]')).not.toBeNull();
+  expect(vue.container.querySelector('[aria-label="settings.account"]')).not.toBeNull();
+  expect(vue.container.querySelector('[aria-label="settings.title"]')).toBeNull();
+  await vue.click('[aria-label="controls.mute"]');
+  expect(useAppStore.getState().isMuted).toBe(true);
+  expect(vue.container.querySelector('[aria-label="controls.unmute"]')?.getAttribute("aria-pressed")).toBe("true");
+  await vue.click('[aria-label="controls.deafen"]');
+  expect(useAppStore.getState().isDeafened).toBe(true);
+  expect(vue.container.querySelector('[aria-label="controls.undeafen"]')?.getAttribute("aria-pressed")).toBe("true");
+  await vue.click('[aria-label="voice.disconnect"]');
+  expect(quitter).toHaveBeenCalledWith("!salon");
+});
+it("en rail hors appel, micro et casque restent accessibles sans raccrocher", async () => {
+  await vue.render(<CarteProfil compact />);
+  expect(vue.container.querySelector('[aria-label="controls.mute"]')).not.toBeNull();
+  expect(vue.container.querySelector('[aria-label="controls.deafen"]')).not.toBeNull();
+  expect(vue.container.querySelector('[aria-label="voice.disconnect"]')).toBeNull();
 });

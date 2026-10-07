@@ -1,6 +1,6 @@
 import { useState, useRef, useCallback, useEffect, type KeyboardEvent, type ClipboardEvent } from "react";
 import { useTranslation } from "react-i18next";
-import { SendIcon, CloseIcon, EmojiIcon, DisconnectIcon } from "../icons";
+import { SendIcon, CloseIcon, EmojiIcon, DisconnectIcon, LinkIcon } from "../icons";
 import { AttachButton } from "./AttachButton";
 import { FilePreview } from "./FilePreview";
 import { UserAvatar } from "../sidebar/UserAvatar";
@@ -921,7 +921,7 @@ export function ChatInput() {
         {!isMobile && <div className="sion-saisie-actions">
           {!editingMessage && <>
             <button type="button" aria-label={t("chat.mention")} title={t("chat.mention")} disabled={!canSend} onMouseDown={(e) => e.preventDefault()} onClick={() => inserer("@")}>@</button>
-            <button type="button" aria-label={t("chat.insertLink")} title={t("chat.insertLink")} disabled={!canSend} onMouseDown={(e) => e.preventDefault()} onClick={insererLien}>🔗</button>
+            <button type="button" aria-label={t("chat.insertLink")} title={t("chat.insertLink")} disabled={!canSend} onMouseDown={(e) => e.preventDefault()} onClick={insererLien}><LinkIcon /></button>
             <AttachButton direct disabled={!canSend} />
           </>}
           {boutonEnvoi}

@@ -25,6 +25,8 @@ ou memeboard. Épinglés et membres utilisent le même panneau ; un nouveau
 choix remplace le précédent. Le menu ⋯ réunit les actions de salon autorisées
 et les options du partage. Le nom du serveur et son indicateur en ligne
 restent visibles ; aucun nombre de présences n'est inventé sans données.
+Les libellés des onglets restent visibles sur ordinateur ; l’en-tête passe
+sur plusieurs lignes lorsque la largeur disponible ne suffit plus.
 
 La largeur du panneau est comprise entre 300 et 520 px, 360 px par défaut.
 La poignée accepte le pointeur, les flèches, Origine / Fin et le double-clic
@@ -64,7 +66,7 @@ Ctrl+Maj+L et les presets de disposition sont retirés.
 
 - TypeScript et compilation de production : réussis.
 - ESLint : 0 erreur, 37 avertissements déjà présents dans le projet.
-- Vitest : **436 tests réussis**, 5 ignorés, 66 fichiers réussis.
+- Vitest : **437 tests réussis**, 5 ignorés, 66 fichiers réussis.
 - Tests Rust : **172 réussis**, 5 ignorés ; sources Rust identiques à `main`,
   exécution dans le dépôt principal pour réutiliser les dépendances compilées.
 - Chromium, composants réels avec données fictives : vues à 1600, 1000,
@@ -111,3 +113,17 @@ La mesure CPU de 60 secondes ci-dessus est celle de l’implémentation initiale
 L’accent des onglets et de la fermeture a été vérifié dans Chromium avec
 violet, vert et orange, en thème clair et sombre ; le focus a également été
 contrôlé dans WebKitGTK.
+
+D’après `Capture d'écran_20261007_162434.png` :
+
+- Micro et casque accessibles dans le profil réduit, avec leur état muet /
+  sourdine et le raccrochage pendant un appel. Paramètres conserve son accès
+  unique dans le rail.
+- Bouton d’insertion de lien avec une icône SVG monochrome, au lieu de
+  l’emoji coloré qui donnait l’impression d’un bouton sélectionné.
+- Libellés Transcription, Soundboard et Memeboard conservés sous 1350 px,
+  avec retour à la ligne de l’en-tête si nécessaire.
+
+Compilation de production réussie, commandes audio réduites testées avec
+et sans appel, insertion Markdown toujours vérifiée. Rendu contrôlé dans
+l’application WebKitGTK ouverte à 1280 px avec le soundboard affiché.

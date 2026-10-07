@@ -534,11 +534,11 @@ select option {
   border-right: 1px solid var(--color-outline);
 }
 
-.sion-chat-header { display: flex; align-items: center; gap: 12px; padding: 14px 18px; min-height: 58px; flex-shrink: 0; border-bottom: 1px solid var(--color-border); }
+.sion-chat-header { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 14px 18px; min-height: 58px; flex-shrink: 0; border-bottom: 1px solid var(--color-border); }
 .sion-conversation .sion-messages { padding: 20px 24px; }
 .sion-chat-salon { display: flex; align-items: center; gap: 8px; min-width: 0; font-weight: 700; font-size: 13px; }
 .sion-chat-salon > span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 180px; }
-.sion-onglets-panneaux { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.sion-onglets-panneaux { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; flex-shrink: 0; min-width: 0; max-width: 100%; }
 .sion-onglets-panneaux button, .sion-chat-actions button { display: flex; align-items: center; justify-content: center; gap: 6px; border: none; border-radius: 10px; padding: 7px 10px; background: transparent; color: var(--color-on-surface-variant); cursor: pointer; font-family: inherit; font-size: 11px; white-space: nowrap; }
 .sion-onglets-panneaux button[aria-pressed="true"] { background: var(--color-surface-container-high); color: var(--color-primary); }
 .sion-chat-actions { display: flex; align-items: center; gap: 2px; margin-left: auto; }
@@ -547,7 +547,6 @@ select option {
 .sion-chat-actions button:hover, .sion-onglets-panneaux button:hover { background: var(--color-surface-container-high); }
 .sion-chat-plus { position: absolute; right: 0; top: calc(100% + 8px); z-index: 100; display: flex; flex-direction: column; min-width: 190px; padding: 6px; border-radius: 14px; background: var(--color-surface-container-high); border: 1px solid var(--color-outline-variant); }
 .sion-chat-plus button { justify-content: flex-start; padding: 10px; }
-@media (min-width: 768px) and (max-width: 1350px) { .sion-onglets-panneaux button span { display: none; } .sion-chat-salon > span { max-width: 140px; } }
 
 .sion-panneau { position: relative; flex-shrink: 0; min-width: 0; min-height: 0; }
 .sion-panneau > .panel-resize-handle { position: absolute; left: -10px; top: 0; height: 100%; width: 8px; z-index: 1; }
