@@ -139,3 +139,7 @@ Android et le téléphone conserve son menu trombone.
 D’après `Capture d'écran_20261007_171041.png` : raccrocher utilise un combiné
 téléphonique aux traits rouges sur fond transparent dans la carte de profil,
 en mode réduit comme déployé.
+
+D’après `Capture d'écran_20261007_171442.png` : le raccourci CC est retiré de
+la carte de profil. L’onglet Transcription de l’en-tête reste disponible
+pendant un appel, y compris lorsqu’on consulte un autre salon.

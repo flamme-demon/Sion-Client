@@ -447,7 +447,7 @@ export function ChatHeader() {
       </>) : (
         <div className="sion-chat-header">
           <div className="sion-chat-salon"><ChannelIcon channel={channel} /><span title={channelName}>{channelName}</span></div>
-          <OngletsPanneaux salonVocal={!!channel?.hasVoice} />
+          <OngletsPanneaux salonVocal={!!channel?.hasVoice || !!connectedVoice} />
           <div className="sion-chat-actions">
             <button type="button" aria-label={t("chat.pinnedList")} title={t("chat.pinnedList")} aria-pressed={panelOpen("pinned")} onClick={() => useLayoutStore.getState().basculerPanneau("pinned")}><PinIcon /></button>
             {!channel?.isDM && <button type="button" aria-label={t("members.title")} title={t("members.title")} aria-pressed={panelOpen("members")} onClick={() => useLayoutStore.getState().basculerPanneau("members")}><UsersIcon /></button>}

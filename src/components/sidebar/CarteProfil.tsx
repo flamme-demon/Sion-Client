@@ -10,21 +10,7 @@ import { useAppStore } from "../../stores/useAppStore";
 import { useMatrixStore } from "../../stores/useMatrixStore";
 import { useAuthStore } from "../../stores/useAuthStore";
 import { useVoiceChannel, republishVoicePresence } from "../../hooks/useVoiceChannel";
-import { useTranscriptStore } from "../../stores/useTranscriptStore";
-import { useLayoutStore } from "../../stores/useLayoutStore";
 import { preloadHeavyScreens } from "../../services/lazyScreens";
-
-/** "CC" captions glyph for the transcript toggle — drawn inline (the icons
- *  module has no captions icon) and tinted green while OUR engine runs. */
-function TranscriptIcon({ active }: { active: boolean }) {
-  return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={active ? { color: 'var(--color-green)' } : undefined}>
-      <rect x="2" y="4" width="20" height="16" rx="3" />
-      <path d="M10.5 10.2a2.4 2.4 0 0 0-3.4 0 2.7 2.7 0 0 0 0 3.6 2.4 2.4 0 0 0 3.4 0" />
-      <path d="M17 10.2a2.4 2.4 0 0 0-3.4 0 2.7 2.7 0 0 0 0 3.6 2.4 2.4 0 0 0 3.4 0" />
-    </svg>
-  );
-}
 
 export function CarteProfil({ compact = false }: { compact?: boolean }) {
   const { t } = useTranslation();
@@ -47,9 +33,6 @@ export function CarteProfil({ compact = false }: { compact?: boolean }) {
   const clockSkewMin = useAppStore((s) => s.clockSkewMin);
   const setE2EEUnhealthy = useAppStore((s) => s.setE2EEUnhealthy);
   const { leaveVoiceChannel } = useVoiceChannel();
-  const transcriptPanelOpen = useLayoutStore((s) => s.panneau === "transcript");
-  const transcriptState = useTranscriptStore((s) => s.state);
-  const transcriptInvites = useTranscriptStore((s) => s.armedPeers.length);
   // Brief "done" feedback after the user hits the republish-presence recovery.
   const [republished, setRepublished] = useState(false);
 
@@ -99,11 +82,6 @@ export function CarteProfil({ compact = false }: { compact?: boolean }) {
           {qualiteLocale && qualiteLocale !== 'unknown' && <SignalBarsIcon quality={qualiteLocale} size={13} />}
           {latence != null && <span>{latence} ms</span>}
           {(e2eeUnhealthy || republished) && <button type="button" onClick={handleRepublish} aria-label={t("voice.republishPresence")} title={t("voice.republishPresence")} style={audioBouton(e2eeUnhealthy)}><RefreshIcon /></button>}
-          <button type="button" onClick={() => useLayoutStore.getState().basculerPanneau("transcript")} aria-label={t("transcript.togglePanel")} title={t("transcript.togglePanel")} aria-pressed={transcriptPanelOpen}
-            style={{ ...audioBouton(false), marginLeft: 'auto', color: transcriptPanelOpen ? 'var(--color-primary)' : 'var(--color-on-surface-variant)' }}>
-            <TranscriptIcon active={transcriptState === 'on'} />
-            {transcriptInvites > 0 && <span style={{ fontSize: 10, marginLeft: 4 }}>{transcriptInvites}</span>}
-          </button>
         </div>}
       </>}
     </div>
