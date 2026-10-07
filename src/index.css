@@ -112,6 +112,24 @@ body {
   background: var(--color-surface);
 }
 
+:root {
+  --sion-bulle-rayon: 20px;
+  --sion-bulle-ecart: 12px;
+  --sion-carte-rayon: 14px;
+}
+
+.sion-bulle {
+  border-radius: var(--sion-bulle-rayon);
+  overflow: hidden;
+  background: var(--color-surface-container-low);
+  border: 1px solid var(--color-outline-variant);
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+}
+
 .app-loading {
   display: flex;
   height: 100%;
