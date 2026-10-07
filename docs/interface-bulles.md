@@ -156,6 +156,6 @@ Aperçu Chromium à 280 px : aucun débordement ; commandes contenues dans la
 carte ; bascule Voile / Flou, changement d’opacité, position et retrait du
 fond vérifiés. Compilation de production réussie.
 
-Le bouton de partage d’écran utilise la couleur d’accent lorsqu’il est
-disponible. Pendant un partage, l’icône devient rouge avec un fond légèrement
-teinté, pour distinguer l’action d’arrêt.
+Le bouton de partage d’écran possède une bordure dans la couleur d’accent
+et un fond teinté pour mieux ressortir. Pendant un partage, le cadre et le
+fond passent au rouge pour distinguer l’action d’arrêt.
