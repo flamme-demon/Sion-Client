@@ -93,28 +93,8 @@ export async function getMatrixRTCToken(
     }
   }
 
-  // 1c. Si toujours rien, chercher le service_url dans les autres rooms du serveur
-  //     On ne récupère QUE le service_url, pas le livekit_alias (qui est propre à chaque room)
-  let fallbackServiceUrl: string | null = null;
-  if (!livekitFocus) {
-    const allRooms = client.getRooms();
-    for (const otherRoom of allRooms) {
-      if (otherRoom.roomId === roomId) continue;
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const otherEvents = (otherRoom.currentState as any)?.getStateEvents?.("org.matrix.msc3401.call.member");
-      const otherList: unknown[] = Array.isArray(otherEvents) ? otherEvents : otherEvents ? [otherEvents] : [];
-      for (const evt of otherList) {
-        const focus = extractFocus(evt);
-        if (focus?.livekit_service_url) {
-          fallbackServiceUrl = focus.livekit_service_url;
-          break;
-        }
-      }
-      if (fallbackServiceUrl) break;
-    }
-  }
-
-  let rawServiceUrl = livekitFocus?.livekit_service_url || fallbackServiceUrl;
+  // Le service d'un autre salon peut appartenir à une autre équipe.
+  let rawServiceUrl = livekitFocus?.livekit_service_url;
 
   // 1d. Fallback : lire le livekit_service_url depuis /.well-known/matrix/client
   if (!rawServiceUrl) {
@@ -188,9 +168,8 @@ export async function getMatrixRTCToken(
         continue;
       }
 
-      // Construire l'URL WSS publique depuis le serviceUrl (well-known)
-      // au lieu d'utiliser data.url qui peut être une URL interne (ws://127.0.0.1:7880)
-      const publicWssUrl = serviceUrl.replace(/^https?:\/\//, "wss://");
+      // JWT et SFU peuvent être séparés ; une boucle locale utilise le proxy public.
+      const publicWssUrl = adresseServeurMedia(serviceUrl, data.url);
 
       return { url: publicWssUrl, token: data.jwt, serviceUrl, livekitAlias: livekitRoomAlias };
     } catch (err) {
@@ -200,4 +179,17 @@ export async function getMatrixRTCToken(
 
   console.error("[Sion] Tous les endpoints LiveKit ont échoué");
   return null;
+}
+
+/** JWT et serveur média peuvent utiliser des adresses distinctes. */
+export function adresseServeurMedia(service: string, reponse?: string): string {
+  if (reponse) {
+    try {
+      const url = new URL(reponse);
+      const host = url.hostname.toLowerCase();
+      if (["ws:", "wss:"].includes(url.protocol) && !url.username && !url.password
+        && !["localhost", "[::1]", "[::]", "0.0.0.0"].includes(host) && !host.startsWith("127.")) return reponse;
+    } catch { /* Ancien service : adresse dérivée du proxy */ }
+  }
+  return service.replace(/^https:\/\//, "wss://").replace(/^http:\/\//, "ws://");
 }

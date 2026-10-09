@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@import "./fonts.css";
 
 @theme {
   /* M3 Dark — Surface tones (primary-tinted) */
@@ -43,6 +44,7 @@
   /* Semantic shortcuts */
   --color-green: #7ddc87;
   --color-red: #f2b8b5;
+  --color-hangup: #ff0000;
   --color-yellow: #e2c76a;
   --color-orange: #f0a869;
   --color-accent: #a8c7fa;
@@ -70,7 +72,7 @@
   --color-text-muted: #8d9199;
 
   /* Typography */
-  --font-family-sans: "Google Sans", "Roboto", ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-family-sans: "Roboto", ui-sans-serif, system-ui, -apple-system, sans-serif;
   --font-family-mono: "JetBrains Mono", "Roboto Mono", "Fira Code", ui-monospace, monospace;
 }
 
@@ -103,6 +105,11 @@ body {
   height: 100%;
 }
 
+.sion-titre, h1, h2, h3, h4, h5, h6,
+.sion-chat-salon, .sion-panneau-titre, .sion-carte-board-nom {
+  font-family: var(--font-family-heading);
+}
+
 /* App layout classes */
 .app-root {
   display: flex;
@@ -113,6 +120,7 @@ body {
 }
 
 :root {
+  --font-family-heading: "Outfit", var(--font-family-sans);
   --sion-bulle-rayon: 20px;
   --sion-bulle-ecart: 12px;
   --sion-carte-rayon: 14px;
@@ -177,6 +185,19 @@ body {
   background: var(--color-error);
   color: var(--color-on-error);
 }
+
+.sion-navigation-espaces { display: flex; gap: 8px; }
+.sion-navigation-espaces--rail { flex-direction: column; align-items: center; }
+.sion-serveur-monogramme { font-family: "Outfit", var(--font-family-sans); font-size: 21px; font-weight: 700; }
+.sion-navigation-espaces--rail .sion-rail-bouton { background: var(--color-surface-container-high); }
+.sion-navigation-espaces--rail .sion-rail-bouton[aria-pressed="true"] { color: var(--color-primary); background: color-mix(in srgb, var(--color-primary) 12%, var(--color-surface-container-high)); }
+.sion-navigation-espaces--rail .sion-rail-bouton[aria-pressed="true"]::before { content: ""; position: absolute; left: -7px; top: 13px; width: 3px; height: 22px; border-radius: 3px; background: var(--color-primary); }
+.sion-navigation-espaces--rail .sion-rail-bouton:hover { background: var(--color-surface-container-highest); }
+.sion-rail-bouton:focus-visible, .sion-espace-onglet:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 3px; }
+.sion-rail-separation { width: 32px; border: 0; border-top: 1px solid var(--color-border); }
+.sion-navigation-espaces--onglets { flex: 1; }
+.sion-espace-onglet { position: relative; flex: 1; display: flex; align-items: center; justify-content: center; gap: 6px; padding: 7px 8px; border: 0; border-radius: 10px; background: transparent; color: var(--color-on-surface-variant); font-family: inherit; font-size: 12px; font-weight: 600; cursor: pointer; }
+.sion-espace-onglet[aria-pressed="true"] { background: var(--color-secondary-container); color: var(--color-on-secondary-container); }
 
 .app-loading {
   display: flex;
@@ -554,19 +575,68 @@ select option {
 .sion-chat-plus { position: absolute; right: 0; top: calc(100% + 8px); z-index: 100; display: flex; flex-direction: column; min-width: 190px; padding: 6px; border-radius: 14px; background: var(--color-surface-container-high); border: 1px solid var(--color-outline-variant); }
 .sion-chat-plus button { justify-content: flex-start; padding: 10px; }
 
+.sion-conversation-et-panneaux { display: flex; gap: var(--sion-bulle-ecart); flex: 1; min-width: 0; min-height: 0; position: relative; }
+/* La taille du viewport est donnée par le flex, pas par les messages.
+   Isoler son contenu évite de recalculer tout le fil quand un champ change. */
+.sion-messages { contain: strict; }
 .sion-panneau { position: relative; flex-shrink: 0; min-width: 0; min-height: 0; }
 .sion-panneau > .panel-resize-handle { position: absolute; left: -10px; top: 0; height: 100%; width: 8px; z-index: 1; }
-.sion-panneau-entete { display: flex; align-items: center; gap: 8px; padding: 12px 16px 8px; flex-shrink: 0; }
-.sion-panneau-entete > button { display: flex; align-items: center; justify-content: center; margin-left: auto; width: 28px; height: 28px; border: 0; border-radius: 8px; }
+.sion-panneau--left > .panel-resize-handle { left: auto; right: -10px; }
+.sion-panneau--top, .sion-panneau--bottom { max-height: 45vh; }
+.sion-panneau--bottom > .panel-resize-handle { left: 0; right: 0; top: -10px; height: 8px; width: 100%; }
+.sion-panneau--top > .panel-resize-handle { left: 0; right: 0; top: auto; bottom: -10px; height: 8px; width: 100%; }
+/* Garder une conversation visible quand les deux rangées sont occupées.
+   Le miroir de placement applique exactement la même limite. */
+:is(.sion-main-area, .sion-apercu-implantation):has(> .sion-panneau--top):has(> .sion-panneau--bottom) > :is(.sion-panneau--top, .sion-panneau--bottom) { max-height: 35%; }
+.sion-zone-panneaux { display: grid; grid-auto-rows: minmax(180px, 1fr); gap: var(--sion-bulle-ecart); height: 100%; overflow-y: auto; min-height: 0; scrollbar-width: thin; }
+.sion-panneau--top .sion-zone-panneaux, .sion-panneau--bottom .sion-zone-panneaux { grid-auto-flow: column; grid-auto-columns: minmax(300px, 1fr); grid-template-rows: minmax(0, 1fr); overflow-x: auto; overflow-y: hidden; }
+.sion-carte-panneau { min-width: 0; min-height: 0; contain: strict; }
+.sion-panneau-entete { display: flex; align-items: center; gap: 6px; padding: 10px 12px 8px; flex-shrink: 0; }
+.sion-panneau-titre { display: flex; align-items: center; gap: 5px; flex: 0 1 auto; min-width: 0; font-size: 13px; font-weight: 700; cursor: grab; }
+.sion-panneau-titre:active { cursor: grabbing; }
+.sion-panneau-titre { touch-action: none; user-select: none; -webkit-user-select: none; }
+.sion-panneau-titre > span:last-child { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.sion-poignee-module { color: var(--color-outline); font-size: 16px; flex-shrink: 0; }
+.sion-position-module { margin-left: auto; max-width: 92px; min-width: 0; padding: 4px 2px; font-size: 10px; border: 0; border-radius: 6px; background: var(--color-surface-container-low); color: var(--color-on-surface-variant); cursor: pointer; }
+.sion-position-module:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; }
+.sion-panneau-entete > button { display: flex; align-items: center; justify-content: center; flex-shrink: 0; width: 26px; height: 26px; border: 0; border-radius: 8px; }
+.sion-apercu-deplacement { position: absolute; inset: 0; z-index: 70; padding: inherit; pointer-events: none; overflow: hidden; }
+.sion-apercu-implantation { position: absolute; inset: 0; display: flex; flex-direction: column; gap: var(--sion-bulle-ecart); padding: inherit; visibility: hidden; }
+.sion-apercu-module { overflow: hidden; border: 1px solid var(--color-primary); border-radius: var(--sion-bulle-rayon); background: color-mix(in srgb, var(--color-primary) 12%, var(--color-surface-container)); color: var(--color-primary); opacity: .9; box-shadow: 0 8px 24px rgb(0 0 0 / 18%); pointer-events: auto; }
+.sion-apercu-module .sion-poignee-module { color: inherit; }
+.sion-apercu-destination { position: absolute; inset: 42px 12px 12px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; font-size: 12px; }
+.sion-apercu-destination strong { font-size: 16px; }
+.sion-module-saisi { opacity: .45; }
+.sion-module-saisi > .sion-bulle { outline: 1px solid var(--color-primary); outline-offset: -1px; }
+.sion-module-en-main { z-index: 10000; display: flex; flex-direction: column; gap: 5px; padding: 12px 14px; border: 1px solid var(--color-primary); border-radius: 14px; background: var(--color-surface-container-high); color: var(--color-primary); box-shadow: 0 8px 28px rgb(0 0 0 / 25%); pointer-events: auto; font-size: 12px; }
+.sion-module-en-main-titre { display: flex; align-items: center; gap: 7px; font-weight: 700; font-size: 13px; }
+.sion-module-en-main .sion-poignee-module { color: inherit; }
+.sion-module-en-main small { color: var(--color-on-surface-variant); font-size: 11px; }
+body.layout-deplacement-module, body.layout-deplacement-module * { cursor: grabbing !important; user-select: none; -webkit-user-select: none; }
+body.layout-deplacement-module canvas, body.layout-deplacement-module video { pointer-events: none; }
 button[data-fermer-panneau] { cursor: pointer; background: transparent; color: var(--color-primary); }
 button[data-fermer-panneau]:hover { background: var(--color-surface-container-high); }
 .sion-onglets-panneaux button:focus-visible, .sion-chat-actions button:focus-visible, button[data-fermer-panneau]:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; }
 @media (min-width: 768px) and (max-width: 1099px) {
-  .sion-panneau { position: absolute; right: 0; top: 0; bottom: 0; max-width: calc(100% - 16px); z-index: 50; }
-  .sion-panneau > .sion-bulle { box-shadow: 0 8px 32px color-mix(in srgb, var(--color-on-surface) 20%, transparent); }
+  .sion-panneau--right, .sion-panneau--left { position: absolute; top: 0; bottom: 0; max-width: calc(100% - 16px); z-index: 50; }
+  .sion-panneau--right { right: 0; }
+  .sion-panneau--left { left: 0; }
+  .sion-panneaux-deux-cotes > .sion-panneau { max-width: calc(50% - 6px); }
+  .sion-panneau .sion-bulle { box-shadow: 0 8px 32px color-mix(in srgb, var(--color-on-surface) 20%, transparent); }
+}
+@media (min-width: 1100px) {
+  .sion-panneaux-deux-cotes > .sion-panneau {
+    max-width: calc((100% - 280px - 2 * var(--sion-bulle-ecart)) / 2);
+  }
 }
 
-.sion-saisie-ligne > textarea { order: 1; min-width: 0; }
+.sion-saisie-ligne > .sion-saisie-champ { order: 1; }
+/* Le miroir hors du flux conserve les métriques du textarea. ResizeObserver
+   ajuste sa hauteur seulement quand le nombre de lignes change. */
+.sion-saisie-champ { position: relative; flex: 1; min-width: 0; height: var(--sion-saisie-hauteur, 37px); max-height: 120px; contain: layout style inline-size; }
+.sion-saisie-champ > textarea, .sion-saisie-mesure { position: absolute; top: 0; left: 0; width: 100%; min-width: 0; min-height: 0; max-height: 120px; box-sizing: border-box; font-family: inherit; font-size: 14px; line-height: 1.5; letter-spacing: 0.01em; padding: 8px 4px; }
+.sion-saisie-champ > textarea { width: 100%; height: 100%; contain: strict; }
+.sion-saisie-mesure { visibility: hidden; white-space: pre-wrap; overflow-wrap: anywhere; overflow: hidden; }
 .sion-saisie-picker { order: 2; }
 .sion-saisie-actions { display: flex; align-items: center; gap: 4px; padding: 6px 10px; border-top: 1px solid var(--color-border); }
 .sion-saisie-actions > button { display: flex; align-items: center; justify-content: center; border: none; background: transparent; color: var(--color-on-surface-variant); padding: 7px; border-radius: 8px; cursor: pointer; font-family: inherit; font-size: 16px; }
@@ -580,6 +650,37 @@ button[data-fermer-panneau]:hover { background: var(--color-surface-container-hi
 .sion-recherche-panneau > button { display: flex; align-items: center; justify-content: center; flex-shrink: 0; width: 26px; height: 26px; padding: 0; border: 0; border-radius: 8px; background: color-mix(in srgb, var(--color-green) 14%, transparent); color: var(--color-green); cursor: pointer; font-family: inherit; font-size: 20px; line-height: 1; }
 .sion-recherche-panneau > button:hover { background: color-mix(in srgb, var(--color-green) 24%, transparent); }
 .sion-pied-panneau { background: var(--color-surface-container); border-top: 1px solid var(--color-border); }
+
+.sion-carte-board {
+  --sion-fond-carte-board: color-mix(in srgb, var(--color-on-surface) 2%, var(--color-surface-container));
+  font-family: var(--font-family-sans);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-on-surface) 4%, transparent);
+}
+.sion-carte-board-nom { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; overflow-wrap: anywhere; font-size: 12px; font-weight: 600; line-height: 1.3; color: var(--color-on-surface); }
+.sion-carte-board-categorie { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; font-weight: 400; line-height: 1.3; text-transform: uppercase; letter-spacing: 0.04em; color: var(--color-outline); }
+.sion-actions-carte-board { position: absolute; top: 8px; right: 8px; z-index: 1; display: flex; gap: 4px; opacity: 0; pointer-events: none; transition: opacity 120ms; }
+.sion-carte-board:hover > .sion-actions-carte-board,
+.sion-carte-board:focus-within > .sion-actions-carte-board { opacity: 1; pointer-events: auto; }
+.sion-actions-carte-board > button { display: flex; align-items: center; justify-content: center; width: 24px; height: 24px; padding: 0; border: 0; border-radius: 12px; cursor: pointer; }
+.sion-action-carte-modifier { background: var(--color-secondary-container); color: var(--color-on-secondary-container); }
+.sion-action-carte-supprimer { background: var(--color-error-container); color: var(--color-error); }
+.sion-actions-carte-board > button:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; }
+@media (hover: none) {
+  .sion-actions-carte-board { opacity: 1; pointer-events: auto; }
+}
+
+.sion-confirmation-suppression-fond { position: fixed; inset: 0; z-index: 10000; display: flex; align-items: center; justify-content: center; padding: 16px; background: var(--color-scrim, rgba(0, 0, 0, 0.5)); }
+.sion-confirmation-suppression { width: 420px; max-width: 100%; max-height: 100%; overflow: auto; display: flex; flex-direction: column; gap: 16px; padding: 24px; border-radius: var(--sion-bulle-rayon, 20px); background: var(--color-surface-container); color: var(--color-on-surface); box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35); }
+.sion-confirmation-suppression-entete { display: flex; align-items: center; gap: 12px; }
+.sion-confirmation-suppression-icone { display: flex; align-items: center; justify-content: center; flex-shrink: 0; width: 40px; height: 40px; border-radius: 12px; background: var(--color-error-container); color: var(--color-error); }
+.sion-confirmation-suppression h2 { font-size: 16px; font-weight: 700; }
+.sion-confirmation-suppression p { font-size: 13px; line-height: 1.6; color: var(--color-on-surface-variant); overflow-wrap: anywhere; }
+.sion-confirmation-suppression .sion-confirmation-suppression-erreur { color: var(--color-error); }
+.sion-confirmation-suppression-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
+.sion-confirmation-suppression-actions > button { padding: 9px 16px; border: 0; border-radius: 12px; font: inherit; font-size: 13px; font-weight: 600; cursor: pointer; background: var(--color-surface-container-high); color: var(--color-on-surface); }
+.sion-confirmation-suppression-actions > [data-action="confirmer-suppression"] { background: var(--color-error-container); color: var(--color-error); }
+.sion-confirmation-suppression-actions > button:disabled { opacity: 0.5; cursor: wait; }
+.sion-confirmation-suppression-actions > button:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; }
 
 .sion-reglage-fond { min-width: 0; padding: 5px 0; }
 .sion-reglage-fond--actif { margin: 4px 0 8px; padding: 10px; border: 1px solid var(--color-border); border-radius: 12px; background: var(--color-surface-container-high); }

@@ -1,3 +1,4 @@
+import { useEspacesStore } from "./useEspacesStore";
 import { create } from "zustand";
 import { getMatrixClient } from "../services/matrixService";
 import { checkUserSuspended } from "../services/adminService";
@@ -88,11 +89,20 @@ function discoverLocalUsers(): Set<string> {
  *  integrated iff they're joined to at least one room that the approve
  *  flow would actually force-join them into. */
 export function getPublicRoomIds(): string[] {
+  const espace = useEspacesStore.getState().espaceActif;
+  const channels = useMatrixStore.getState().channels;
+  if (espace) {
+    const ch = channels.find((c) => c.isSpace && c.id === espace);
+    if (!ch || ch.membership === "invite") return [];
+    const enfants = new Set(ch.spaceChildren ?? []);
+    return [espace, ...new Set([...(ch.commonRoomIds ?? []), ...(ch.boardRoomId ? [ch.boardRoomId] : [])].filter((id) => enfants.has(id)))];
+  }
+  if (channels.some((c) => c.isSpace)) return [];
   if (moteurRust()) {
     const admin = findAdminRoom();
     return cacheRust
       .salonsConnus()
-      .filter((c) => c.id !== admin && !c.isDM && cacheRust.detailsSalon(c.id)?.regleAcces === "public")
+      .filter((c) => c.id !== admin && !c.isSpace && !c.isDM && cacheRust.detailsSalon(c.id)?.regleAcces === "public")
       .map((c) => c.id);
   }
   const client = getMatrixClient();

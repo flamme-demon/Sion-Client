@@ -111,7 +111,9 @@ describe("matrixCore", () => {
   it("édition d'un meme : nom et emoji, null retire l'emoji", async () => {
     invoke.mockResolvedValue(undefined);
     await modifierMeme("$m", "Matou", null);
-    expect(invoke).toHaveBeenLastCalledWith("matrix_modifier_meme", { eventId: "$m", label: "Matou", emoji: null });
+    expect(invoke).toHaveBeenLastCalledWith("matrix_modifier_meme", { eventId: "$m", label: "Matou", emoji: null, categorie: null });
+    await modifierMeme("$m", "Matou", null, "Animaux/Chats");
+    expect(invoke).toHaveBeenLastCalledWith("matrix_modifier_meme", { eventId: "$m", label: "Matou", emoji: null, categorie: "Animaux/Chats" });
   });
 
   it("rend les appareils sous la forme de getDevices", async () => {

@@ -1,0 +1,61 @@
+.sion-carte-panneau:is([data-panneau="pinned"], [data-panneau="transcript"]) { container: carte-texte / size; }
+.sion-epingles { display: flex; flex-direction: column; flex: 1; min-height: 0; overflow: hidden; }
+.sion-epingles-liste { flex: 1; min-height: 0; overflow: auto; padding: 0 6px 6px; }
+.sion-epingle { display: flex; align-items: flex-start; gap: 8px; width: 100%; text-align: left; border: none; background: transparent; cursor: pointer; padding: 8px; border-radius: 8px; font-family: inherit; }
+.sion-epingle:is(:hover, :focus-visible) { background: var(--color-surface-container-highest); }
+.sion-epingle-media { width: 56px; height: 56px; flex: 0 0 auto; object-fit: cover; border-radius: 6px; background: var(--color-surface-container); }
+.sion-epingle-auteur { display: flex; align-items: baseline; gap: 8px; }
+.sion-epingle-auteur > :first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sion-epingle-auteur > :last-child { flex-shrink: 0; }
+.sion-epingle-texte { font-size: 12px; color: var(--color-on-surface-variant); margin-top: 2px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+
+.sion-transcript { display: flex; flex-direction: column; flex: 1; min-height: 0; overflow: hidden; }
+.sion-transcript-outils { display: contents; }
+.sion-transcript-entete { order: 0; padding: 10px 12px 8px; border-bottom: 1px solid var(--color-outline-variant); }
+.sion-transcript-onglets { display: flex; gap: 4px; background: var(--color-surface-container); border-radius: 10px; padding: 3px; }
+.sion-transcript-onglets > button { flex: 1; padding: 6px 0; border-radius: 8px; border: none; background: transparent; color: var(--color-on-surface-variant); font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; }
+.sion-transcript-onglets > button[aria-pressed="true"] { background: var(--color-surface-container-highest); color: var(--color-on-surface); }
+.sion-transcript-etat { order: 1; padding: 10px 12px; border-bottom: 1px solid var(--color-outline-variant); display: flex; flex-direction: column; gap: 8px; }
+.sion-transcript-liste, .sion-transcript-historique { order: 2; overflow-y: auto; flex: 1; min-height: 0; padding: 8px 12px 12px; font-size: 13px; color: var(--color-on-surface); }
+.sion-transcript-artefacts { order: 3; display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border-top: 1px solid var(--color-outline-variant); }
+.sion-transcript-segment { margin-bottom: 8px; line-height: 1.4; }
+.sion-transcript-texte { overflow-wrap: anywhere; white-space: pre-wrap; }
+.sion-transcript-resume { margin-bottom: 10px; padding: 8px 10px; border-radius: 10px; background: var(--color-surface-container-high); font-size: 12px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
+.sion-transcript-session { display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%; text-align: left; margin-bottom: 6px; padding: 8px 10px; border-radius: 10px; border: none; cursor: pointer; background: var(--color-surface-container-high); color: var(--color-on-surface); font-family: inherit; }
+
+/* Les épinglés suivent la bande ; leur clic ouvre toujours le message entier.
+   La transcription garde une lecture verticale, avec les commandes à côté. */
+:is(.sion-panneau--top, .sion-panneau--bottom) .sion-epingles-liste { display: grid; grid-auto-flow: column; grid-auto-columns: 250px; grid-template-rows: repeat(auto-fill, 78px); gap: 6px; padding: 0 10px 8px; overflow-y: hidden; scrollbar-width: thin; }
+:is(.sion-panneau--top, .sion-panneau--bottom) .sion-epingle { align-items: center; min-height: 0; background: var(--color-surface-container-high); }
+:is(.sion-panneau--top, .sion-panneau--bottom) .sion-epingle:is(:hover, :focus-visible) { background: var(--color-surface-container-highest); }
+:is(.sion-panneau--top, .sion-panneau--bottom) .sion-transcript { display: grid; grid-template-columns: minmax(140px, 30%) minmax(0, 1fr); gap: 8px; padding: 0 10px 8px; }
+:is(.sion-panneau--top, .sion-panneau--bottom) .sion-transcript-outils { display: flex; flex-direction: column; min-height: 0; min-width: 0; overflow-y: auto; scrollbar-width: thin; }
+:is(.sion-panneau--top, .sion-panneau--bottom) .sion-transcript-entete { padding: 0 0 4px; flex-shrink: 0; }
+:is(.sion-panneau--top, .sion-panneau--bottom) .sion-transcript-etat { padding: 6px 0; gap: 4px; flex-shrink: 0; }
+:is(.sion-panneau--top, .sion-panneau--bottom) .sion-transcript-artefacts { padding: 6px 0; gap: 4px; flex-shrink: 0; }
+:is(.sion-panneau--top, .sion-panneau--bottom) :is(.sion-transcript-liste, .sion-transcript-historique) { min-width: 0; padding: 0 4px 4px; }
+:is(.sion-panneau--top, .sion-panneau--bottom) .sion-transcript-historique { display: grid; grid-auto-flow: column; grid-auto-columns: 230px; grid-template-rows: repeat(auto-fill, 64px); gap: 6px; overflow-x: auto; overflow-y: hidden; align-content: start; }
+:is(.sion-panneau--top, .sion-panneau--bottom) .sion-transcript-session { margin: 0; min-height: 0; }
+
+@container carte-texte (max-height: 180px) {
+  :is(.sion-panneau--top, .sion-panneau--bottom) .sion-panneau-entete { padding: 4px 10px; }
+  :is(.sion-panneau--top, .sion-panneau--bottom) .sion-epingles-liste { grid-template-rows: minmax(0, 1fr); grid-auto-columns: 210px; padding-bottom: 4px; scrollbar-width: none; }
+  :is(.sion-panneau--top, .sion-panneau--bottom) .sion-epingles-liste::-webkit-scrollbar { display: none; }
+  :is(.sion-panneau--top, .sion-panneau--bottom) .sion-epingle { padding: 4px 6px; gap: 6px; }
+  :is(.sion-panneau--top, .sion-panneau--bottom) .sion-epingle-media { width: clamp(24px, calc(100cqh - 62px), 40px); height: clamp(24px, calc(100cqh - 62px), 40px); }
+  :is(.sion-panneau--top, .sion-panneau--bottom) .sion-epingle-texte { font-size: 11px; line-height: 1.3; }
+  :is(.sion-panneau--top, .sion-panneau--bottom) .sion-epingle-auteur { gap: 4px; }
+  :is(.sion-panneau--top, .sion-panneau--bottom) .sion-epingle-auteur > :last-child { font-size: 9px !important; }
+  :is(.sion-panneau--top, .sion-panneau--bottom) .sion-transcript { gap: 6px; padding-bottom: 4px; }
+  :is(.sion-panneau--top, .sion-panneau--bottom) .sion-transcript-entete { padding-bottom: 2px; }
+  :is(.sion-panneau--top, .sion-panneau--bottom) .sion-transcript-etat { padding: 3px 0; gap: 3px; }
+  :is(.sion-panneau--top, .sion-panneau--bottom) .sion-transcript button:not([aria-haspopup]) { font-size: 11px !important; padding: 4px 6px !important; }
+  :is(.sion-panneau--top, .sion-panneau--bottom) .sion-transcript-onglets { padding: 2px; }
+  :is(.sion-panneau--top, .sion-panneau--bottom) .sion-transcript-onglets > button { padding: 3px 6px !important; line-height: 1.2; }
+  :is(.sion-panneau--top, .sion-panneau--bottom) .sion-transcript-session-active > span:nth-child(2) { font-size: 11px !important; line-height: 1.2; }
+  :is(.sion-panneau--top, .sion-panneau--bottom) .sion-transcript-session-active > span:nth-child(2) > span { line-height: 1.2; }
+  :is(.sion-panneau--top, .sion-panneau--bottom) .sion-transcript-liste { font-size: 11px; line-height: 1.3; }
+  :is(.sion-panneau--top, .sion-panneau--bottom) .sion-transcript-segment { margin-bottom: 4px; }
+  :is(.sion-panneau--top, .sion-panneau--bottom) .sion-transcript-segment > :first-child > :first-child { font-size: 11px !important; }
+  :is(.sion-panneau--top, .sion-panneau--bottom) .sion-transcript-historique { grid-template-rows: minmax(0, 1fr); grid-auto-columns: 210px; }
+}

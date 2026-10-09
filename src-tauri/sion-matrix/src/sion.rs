@@ -55,6 +55,7 @@ pub struct Meme {
     pub mxc_url: String,
     pub apercu_mxc: Option<String>,
     pub label: String,
+    pub category: String,
     pub emoji: Option<String>,
     pub gain: f64,
     pub duration_ms: Option<i64>,
@@ -325,6 +326,7 @@ fn lire_meme(ev: &EvenementBrut) -> Option<Meme> {
         mxc_url: url.to_owned(),
         apercu_mxc: c.pointer("/info/thumbnail_url").and_then(Value::as_str).map(str::to_owned),
         label: texte(meta.get("label")).or_else(|| texte(c.get("body"))).unwrap_or_else(|| "meme".to_owned()),
+        category: categorie(meta.get("category").and_then(Value::as_str)),
         emoji: texte(meta.get("emoji")),
         gain: nombre(meta.get("gain_pct")).map_or(1.0, |p| (p / 100.0).clamp(0.0, GAIN_MAX_ENVOI)),
         duration_ms: c.pointer("/info/duration").and_then(Value::as_i64),
@@ -342,6 +344,9 @@ pub(crate) fn memes(evenements: &[EvenementBrut]) -> Vec<Meme> {
     let editions = dernieres_editions(evenements, ESPACE_MEME);
     for meme in &mut memes {
         let Some((_, Some(meta))) = editions.get(meme.event_id.as_str()) else { continue };
+        if meta.get("category").is_some() {
+            meme.category = categorie(meta.get("category").and_then(Value::as_str));
+        }
         if let Some(l) = texte(meta.get("label")) {
             meme.label = l;
         }
@@ -360,7 +365,7 @@ pub(crate) fn memes(evenements: &[EvenementBrut]) -> Vec<Meme> {
 /// Contenu d'une édition de meme : le message d'origine repris tel quel
 /// (vidéo, aperçu, dimensions), seules ses métadonnées changent. Le volume en
 /// vigueur est reconduit : une édition remplace toutes les métadonnées.
-pub(crate) fn contenu_edition_meme(original: &EvenementBrut, actuel: &Meme, label: &str, emoji: Option<&str>) -> Value {
+pub(crate) fn contenu_edition_meme(original: &EvenementBrut, actuel: &Meme, label: &str, emoji: Option<&str>, cat: Option<&str>) -> Value {
     let mut base = original.contenu.clone();
     if let Some(objet) = base.as_object_mut() {
         objet.remove("m.relates_to");
@@ -369,6 +374,7 @@ pub(crate) fn contenu_edition_meme(original: &EvenementBrut, actuel: &Meme, labe
     let label = etiquette(label);
     base[ESPACE_MEME] = json!({
         "label": if label.is_empty() { actuel.label.clone() } else { label },
+        "category": cat.map_or_else(|| actuel.category.clone(), |c| categorie(Some(c))),
         "emoji": emoji.filter(|e| !e.is_empty()),
         "gain_pct": (actuel.gain * 100.0).round() as i64,
     });
@@ -398,7 +404,7 @@ pub(crate) fn nom_fichier_meme(label: &str, gif: bool) -> String {
 }
 
 /// Contenu d'un meme (`envoyerMeme`).
-pub(crate) fn contenu_meme(m: &MemeTeleverse, nom_fichier: &str, label: &str, emoji: Option<&str>) -> Value {
+pub(crate) fn contenu_meme(m: &MemeTeleverse, nom_fichier: &str, label: &str, emoji: Option<&str>, cat: Option<&str>) -> Value {
     let mut info = json!({ "mimetype": m.mime, "size": m.taille, "w": m.largeur, "h": m.hauteur, "duration": m.duree_ms });
     if let Some((mxc, mime)) = m.apercu {
         info["thumbnail_url"] = mxc.into();
@@ -410,7 +416,7 @@ pub(crate) fn contenu_meme(m: &MemeTeleverse, nom_fichier: &str, label: &str, em
         "body": nom_fichier,
         "url": m.mxc,
         "info": info,
-        ESPACE_MEME: { "label": if label.is_empty() { "meme" } else { label }, "emoji": emoji.filter(|e| !e.is_empty()), "gain_pct": 100 },
+        ESPACE_MEME: { "label": if label.is_empty() { "meme" } else { label }, "category": categorie(cat), "emoji": emoji.filter(|e| !e.is_empty()), "gain_pct": 100 },
     })
 }
 
@@ -543,11 +549,29 @@ mod tests {
         let liste = memes(&[m, son]);
         assert_eq!(liste.len(), 1);
         let x = &liste[0];
+        assert_eq!(x.category, "Autre");
         assert_eq!((x.label.as_str(), x.gain, x.apercu_mxc.as_deref(), x.largeur), ("chat.mp4", 3.0, Some("mxc://hs/a"), Some(640)));
         assert_eq!(nom_fichier_meme("Chat !! trop/drôle", false), "Chat  tropdrôle.mp4");
         let t = MemeTeleverse { mxc: "mxc://hs/g", mime: "image/gif", taille: 9, largeur: 1, hauteur: 1, duree_ms: 800, apercu: None };
-        let c = contenu_meme(&t, "x.gif", " ", None);
+        let c = contenu_meme(&t, "x.gif", " ", None, None);
         assert_eq!((c["msgtype"].as_str(), c[ESPACE_MEME]["label"].as_str()), (Some("m.image"), Some("meme")));
+    }
+
+    #[test]
+    fn categories_des_memes_partagees_et_reconduites_a_ledition() {
+        let original = meme_brut("$m", 1, json!({ "label": "Chat", "category": " Animaux / Chats " }));
+        let actuel = memes(std::slice::from_ref(&original)).remove(0);
+        assert_eq!(actuel.category, "Animaux/Chats");
+        let conserve = contenu_edition_meme(&original, &actuel, "Matou", None, None);
+        assert_eq!(conserve["m.new_content"][ESPACE_MEME]["category"], "Animaux/Chats");
+        let change = contenu_edition_meme(&original, &actuel, "Chat", None, Some(" Films // Comédie "));
+        assert_eq!(change["m.new_content"][ESPACE_MEME]["category"], "Films/Comédie");
+        assert_eq!(change["m.new_content"]["url"], original.contenu["url"]);
+        let relu = memes(&[original, ev("$e", 2, change)]);
+        assert_eq!((relu[0].event_id.as_str(), relu[0].category.as_str()), ("$m", "Films/Comédie"));
+        let t = MemeTeleverse { mxc: "mxc://hs/m", mime: "video/mp4", taille: 9, largeur: 1, hauteur: 1, duree_ms: 800, apercu: None };
+        let c = contenu_meme(&t, "m.mp4", "Chat", None, Some(" Animaux / Chats "));
+        assert_eq!(memes(&[ev("$nouveau", 1, c)])[0].category, "Animaux/Chats");
     }
 
     fn meme_brut(id: &str, ts: i64, meta: Value) -> EvenementBrut {
@@ -585,16 +609,16 @@ mod tests {
     fn edition_d_un_meme_garde_la_video_et_le_volume() {
         let orig = meme_brut("$m", 1, json!({ "label": "Chat", "emoji": "🐱", "gain_pct": 150 }));
         let actuel = memes(std::slice::from_ref(&orig)).remove(0);
-        let c = contenu_edition_meme(&orig, &actuel, "  Matou  ", Some("😼"));
+        let c = contenu_edition_meme(&orig, &actuel, "  Matou  ", Some("😼"), None);
         assert_eq!(c["m.relates_to"], json!({ "rel_type": "m.replace", "event_id": "$m" }));
         let nouveau = &c["m.new_content"];
-        assert_eq!(nouveau[ESPACE_MEME], json!({ "label": "Matou", "emoji": "😼", "gain_pct": 150 }));
+        assert_eq!(nouveau[ESPACE_MEME], json!({ "label": "Matou", "category": "Autre", "emoji": "😼", "gain_pct": 150 }));
         assert_eq!((nouveau["url"].as_str(), nouveau["msgtype"].as_str()), (Some("mxc://hs/v"), Some("m.video")));
         assert_eq!(nouveau["info"]["thumbnail_url"], "mxc://hs/a");
         assert!(nouveau.get("m.relates_to").is_none());
         // Nom vide : l'actuel est gardé ; emoji vide : retiré.
-        let c = contenu_edition_meme(&orig, &actuel, " ", Some(""));
-        assert_eq!(c["m.new_content"][ESPACE_MEME], json!({ "label": "Chat", "emoji": null, "gain_pct": 150 }));
+        let c = contenu_edition_meme(&orig, &actuel, " ", Some(""), None);
+        assert_eq!(c["m.new_content"][ESPACE_MEME], json!({ "label": "Chat", "category": "Autre", "emoji": null, "gain_pct": 150 }));
         // L'édition relue donne bien le meme modifié.
         let relu = memes(&[orig, ev("$e", 2, c)]);
         assert_eq!((relu.len(), relu[0].label.as_str(), relu[0].emoji.as_deref()), (1, "Chat", None));

@@ -1,7 +1,7 @@
-import { Suspense, useEffect, useRef, useState } from "react";
+import { Suspense } from "react";
 import { useTranslation } from "react-i18next";
-import { useLayoutStore, type PanneauId } from "../../stores/useLayoutStore";
-import { PANNEAU_CORPS, PANNEAU_TITRES, panneauxOuverts } from "../layout/panneaux";
+import { useLayoutStore } from "../../stores/useLayoutStore";
+import { PANNEAU_CORPS, PANNEAU_TITRES } from "../layout/panneaux";
 import { CloseIcon } from "../icons";
 
 /**
@@ -10,19 +10,7 @@ import { CloseIcon } from "../icons";
  */
 export function MobilePanelSheet() {
   const { t } = useTranslation();
-  const [courant, setCourant] = useState<PanneauId | null>(null);
-  const connusRef = useRef<Set<PanneauId>>(new Set());
-
-  useEffect(() => {
-    const suivre = () => {
-      const ouverts = panneauxOuverts();
-      const nouveau = ouverts.find((p) => !connusRef.current.has(p));
-      connusRef.current = new Set(ouverts);
-      setCourant((c) => nouveau ?? (c && ouverts.includes(c) ? c : ouverts[ouverts.length - 1] ?? null));
-    };
-    suivre();
-    return useLayoutStore.subscribe(suivre);
-  }, []);
+  const courant = useLayoutStore((s) => s.panneau);
 
   if (!courant) return null;
   const Corps = PANNEAU_CORPS[courant];
@@ -52,7 +40,7 @@ export function MobilePanelSheet() {
           <span style={{ width: 36, height: 4, borderRadius: 2, background: "var(--color-outline-variant)" }} />
         </div>
         <div style={{ display: "flex", alignItems: "center", padding: "4px 8px 8px 16px", gap: 8 }}>
-          <span style={{ flex: 1, fontSize: 16, fontWeight: 600, color: "var(--color-on-surface)" }}>
+          <span className="sion-titre" style={{ flex: 1, fontSize: 16, fontWeight: 600, color: "var(--color-on-surface)" }}>
             {t(PANNEAU_TITRES[courant])}
           </span>
           <button

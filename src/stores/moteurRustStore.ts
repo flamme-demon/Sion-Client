@@ -156,11 +156,14 @@ export function conserverInchanges<T extends { id: number | string }>(avant: T[]
 /** Choisit le salon d'ouverture, une fois (même règle que le moteur JS). */
 function selectionnerSalonParDefaut(channels: Channel[]): void {
   if (channels.length === 0) return;
-  void Promise.all([import("./useAppStore"), import("./useSettingsStore")]).then(([{ useAppStore }, { useSettingsStore }]) => {
+  void Promise.all([import("./useAppStore"), import("./useSettingsStore")]).then(async ([{ useAppStore }, { useSettingsStore }]) => {
     const app = useAppStore.getState();
     if (app.activeChannel) return;
     const { defaultChannel, autoJoinVoice } = useSettingsStore.getState();
-    const choisi = channels.find((c) => c.id === defaultChannel) || channels.find((c) => !c.hasVoice) || channels[0];
+    const [{ salonsDansEspace }, { useEspacesStore }] = await Promise.all([import("../utils/espaces"), import("./useEspacesStore")]);
+    const visibles = salonsDansEspace(channels, useEspacesStore.getState().espaceActif);
+    const choisi = visibles.find((c) => c.id === defaultChannel) || visibles.find((c) => !c.hasVoice) || visibles[0];
+    if (!choisi) return;
     const vue = app.mobileView;
     app.setActiveChannel(choisi.id, choisi.hasVoice);
     app.setMobileView(vue);

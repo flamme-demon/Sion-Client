@@ -40,18 +40,23 @@ const EMPTY_VOICE_SOUNDS: Record<VoiceCue, VoiceSoundCfg | null> = {
   undeafen: null,
 };
 
-/** Migration du snapshot Zustand historique (version implicite 0).
+/** Migration des snapshots Zustand historiques (versions 0 et 1).
  *
  * `persist` fusionne l'état seulement au premier niveau : lorsqu'un nouveau
  * son est ajouté, un ancien objet `voiceSounds` écraserait donc entièrement
  * les valeurs par défaut. La migration conserve toutes les préférences
  * connues et complète les cues absents, sans toucher aux chemins personnalisés
- * encore valides sur disque. */
+ * encore valides sur disque. La version 2 retire les favoris de la soundboard
+ * et ramène leur ancienne vue sur TOP, en conservant les compteurs. */
 export function migrateSettingsState(persistedState: unknown): Partial<SettingsState> {
   if (!persistedState || typeof persistedState !== "object" || Array.isArray(persistedState)) {
     return {};
   }
-  const state = persistedState as Partial<SettingsState>;
+  const state = { ...persistedState } as Partial<SettingsState> & { soundboardFavorites?: unknown };
+  delete state.soundboardFavorites;
+  if ((state.soundboardView as { mode?: unknown } | undefined)?.mode === "favorites") {
+    state.soundboardView = { mode: "top", category: null };
+  }
   const voiceSounds = state.voiceSounds && typeof state.voiceSounds === "object"
     ? state.voiceSounds
     : {};
@@ -134,6 +139,11 @@ interface SettingsState {
   memeboardEnabled: boolean;
   /** Volume de la bande-son des memes, de 0 à 1. */
   memeboardVolume: number;
+  /** Nombre de lancements par mème pour le classement personnel TOP. */
+  memeboardPlayCounts: Record<string, number>;
+  /** Filtre mémorisé à la fermeture du panneau. */
+  memeboardView: "all" | "top";
+  memeboardCategory: string | null;
   /** Téléphone en données mobiles : afficher la vidéo des partages d'écran
    *  reçus. Faux par défaut — masquée (le son continue), un bouton l'affiche. */
   partagesVideoReseauMobile: boolean;
@@ -158,12 +168,10 @@ interface SettingsState {
    *  / cosmetic — doesn't affect other users or the server. Store paths
    *  like "Films/Kamelott", so hiding a parent also hides its children. */
   hiddenCategories: string[];
-  /** Favorited soundboard sounds, by Matrix eventId. */
-  soundboardFavorites: string[];
   /** Play count per soundboard sound (eventId → times played), for the "Top". */
   soundboardPlayCounts: Record<string, number>;
   /** Last active soundboard view (filter + category), restored on reopen. */
-  soundboardView: { mode: "all" | "favorites" | "top"; category: string | null };
+  soundboardView: { mode: "all" | "top"; category: string | null };
   screenShareAudio: boolean;
   /** Transparent click-through overlay on the sharer's real screen that
    *  shows viewers' cursors. Off by default — it creates an extra Tauri
@@ -231,9 +239,11 @@ interface SettingsState {
   setSoundboardOpenAtLaunch: (v: boolean) => void;
   toggleCategoryHidden: (categoryPath: string) => void;
   clearHiddenCategories: () => void;
-  toggleSoundboardFavorite: (eventId: string) => void;
   incrementSoundboardPlay: (eventId: string) => void;
-  setSoundboardView: (v: { mode: "all" | "favorites" | "top"; category: string | null }) => void;
+  setSoundboardView: (v: { mode: "all" | "top"; category: string | null }) => void;
+  incrementMemeboardPlay: (eventId: string) => void;
+  setMemeboardView: (v: "all" | "top") => void;
+  setMemeboardCategory: (v: string | null) => void;
   setScreenShareAudio: (v: boolean) => void;
   setScreenShareCursorOverlay: (v: boolean) => void;
   setScreenShareQualityMode: (v: "auto" | "custom") => void;
@@ -285,13 +295,15 @@ export const useSettingsStore = create<SettingsState>()(
       soundboardVolume: 0.2,
       memeboardEnabled: true,
       memeboardVolume: 0.5,
+      memeboardPlayCounts: {},
+      memeboardView: "all",
+      memeboardCategory: null,
       partagesVideoReseauMobile: false,
       voiceChannelSounds: true,
       muteSoundsWhenDeafened: false,
       voiceSounds: { ...EMPTY_VOICE_SOUNDS },
       soundboardOpenAtLaunch: false,
       hiddenCategories: [],
-      soundboardFavorites: [],
       soundboardPlayCounts: {},
       soundboardView: { mode: "all", category: null },
       screenShareAudio: true,
@@ -359,15 +371,15 @@ export const useSettingsStore = create<SettingsState>()(
         return { hiddenCategories: next };
       }),
       clearHiddenCategories: () => set({ hiddenCategories: [] }),
-      toggleSoundboardFavorite: (eventId) => set((s) => ({
-        soundboardFavorites: s.soundboardFavorites.includes(eventId)
-          ? s.soundboardFavorites.filter((id) => id !== eventId)
-          : [...s.soundboardFavorites, eventId],
-      })),
       incrementSoundboardPlay: (eventId) => set((s) => ({
         soundboardPlayCounts: { ...s.soundboardPlayCounts, [eventId]: (s.soundboardPlayCounts[eventId] || 0) + 1 },
       })),
       setSoundboardView: (v) => set({ soundboardView: v }),
+      incrementMemeboardPlay: (eventId) => set((s) => ({
+        memeboardPlayCounts: { ...s.memeboardPlayCounts, [eventId]: (s.memeboardPlayCounts[eventId] || 0) + 1 },
+      })),
+      setMemeboardView: (v) => set({ memeboardView: v }),
+      setMemeboardCategory: (v) => set({ memeboardCategory: v }),
       setScreenShareAudio: (v) => set({ screenShareAudio: v }),
       setScreenShareCursorOverlay: (v) => {
         set({ screenShareCursorOverlay: v });
@@ -413,7 +425,7 @@ export const useSettingsStore = create<SettingsState>()(
     }),
     {
       name: "sion-settings",
-      version: 1,
+      version: 2,
       migrate: (persistedState) => migrateSettingsState(persistedState),
     },
   ),

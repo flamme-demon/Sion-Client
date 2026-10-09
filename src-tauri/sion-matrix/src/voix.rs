@@ -95,7 +95,7 @@ impl Voix {
 }
 
 /// Le service LiveKit du salon (`getMatrixRTCToken`) : celui qu'annoncent
-/// les participants du salon, sinon ceux d'autres salons, sinon celui du
+/// les participants du salon, sinon celui du
 /// serveur (`.well-known`, `org.matrix.msc4143.rtc_foci`). La salle porte
 /// le nom annoncé dans le salon, sinon l'identifiant du salon.
 async fn trouver_foyer(client: &Client, salon: &Room) -> Resultat<Foyer> {
@@ -103,16 +103,6 @@ async fn trouver_foyer(client: &Client, salon: &Room) -> Resultat<Foyer> {
     for ev in evenements_appel(salon).await? {
         if let Some((service, alias)) = rtc::foyer_annonce(&ev.contenu) {
             return Ok(Foyer { service: rtc::service_nu(&service).to_owned(), alias: alias.unwrap_or(id) });
-        }
-    }
-    for autre in client.joined_rooms() {
-        if autre.room_id() == salon.room_id() {
-            continue;
-        }
-        for ev in evenements_appel(&autre).await.unwrap_or_default() {
-            if let Some((service, _)) = rtc::foyer_annonce(&ev.contenu) {
-                return Ok(Foyer { service: rtc::service_nu(&service).to_owned(), alias: id });
-            }
         }
     }
     let serveur = client.homeserver().to_string();
@@ -150,7 +140,7 @@ async fn jeton_media(client: &Client, foyer: &Foyer) -> Resultat<(String, String
             match http("POST", &format!("{service}{chemin}"), None, Some(&corps)).await {
                 Ok(r) if (200..300).contains(&r.status) => {
                     if let Some(jwt) = r.corps.get("jwt").and_then(Value::as_str) {
-                        return Ok((rtc::adresse_media(service), jwt.to_owned()));
+                        return Ok((rtc::adresse_media_reponse(service, r.corps["url"].as_str()), jwt.to_owned()));
                     }
                     log::warn!("[Sion][voix] {service}{chemin} : réponse sans jeton");
                     break;

@@ -181,8 +181,8 @@ impl CoeurMatrix {
         Ok(id)
     }
 
-    async fn salon_soundboard_requis(&self) -> Resultat<Room> {
-        let id = self.salon_soundboard().await?.ok_or_else(|| Erreur::Autre("Soundboard room not created yet".into()))?;
+    async fn salon_soundboard_requis(&self, cible: Option<&str>) -> Resultat<Room> {
+        let id = match cible { Some(id) => Some(id.to_owned()), None => self.salon_soundboard().await? }.ok_or_else(|| Erreur::Autre("Soundboard room not created yet".into()))?;
         self.salon(&id).await
     }
 
@@ -247,23 +247,19 @@ impl CoeurMatrix {
     }
 
     /// Sons de la soundboard (`listSounds`).
-    pub async fn sons(&self) -> Resultat<Vec<Son>> {
-        Box::pin(self.sons_()).await
-    }
+    pub async fn sons(&self) -> Resultat<Vec<Son>> { self.sons_dans(None).await }
 
-    async fn sons_(&self) -> Resultat<Vec<Son>> {
-        let Some(id) = self.salon_soundboard().await? else { return Ok(Vec::new()) };
+    pub async fn sons_dans(&self, cible: Option<&str>) -> Resultat<Vec<Son>> {
+        let Some(id) = (match cible { Some(id) => Some(id.to_owned()), None => self.salon_soundboard().await? }) else { return Ok(Vec::new()) };
         let salon = self.salon(&id).await?;
         Ok(sion::sons(&messages_filtres(&salon, &["m.room.message"]).await?))
     }
 
     /// Memes (`listMemes`), rangés dans le salon de la soundboard.
-    pub async fn memes(&self) -> Resultat<Vec<Meme>> {
-        Box::pin(self.memes_()).await
-    }
+    pub async fn memes(&self) -> Resultat<Vec<Meme>> { self.memes_dans(None).await }
 
-    async fn memes_(&self) -> Resultat<Vec<Meme>> {
-        let Some(id) = self.salon_soundboard().await? else { return Ok(Vec::new()) };
+    pub async fn memes_dans(&self, cible: Option<&str>) -> Resultat<Vec<Meme>> {
+        let Some(id) = (match cible { Some(id) => Some(id.to_owned()), None => self.salon_soundboard().await? }) else { return Ok(Vec::new()) };
         let salon = self.salon(&id).await?;
         Ok(sion::memes(&messages_filtres(&salon, &["m.room.message"]).await?))
     }
@@ -284,12 +280,13 @@ impl CoeurMatrix {
         voix: Option<Voix>,
         modele: Option<&str>,
     ) -> Resultat<SonAjoute> {
-        Box::pin(self.ajouter_son_(octets, nom_fichier, mime, duree, label, categorie, emoji, gain, voix, modele)).await
+        Box::pin(self.ajouter_son_dans(None, octets, nom_fichier, mime, duree, label, categorie, emoji, gain, voix, modele)).await
     }
 
     #[allow(clippy::too_many_arguments)]
-    async fn ajouter_son_(
+    pub async fn ajouter_son_dans(
         &self,
+        cible: Option<&str>,
         octets: Vec<u8>,
         nom_fichier: &str,
         mime: &str,
@@ -301,7 +298,7 @@ impl CoeurMatrix {
         voix: Option<Voix>,
         modele: Option<&str>,
     ) -> Resultat<SonAjoute> {
-        let salon = self.salon_soundboard_requis().await?;
+        let salon = self.salon_soundboard_requis(cible).await?;
         let taille = octets.len() as u64;
         if taille > sion::TAILLE_MAX_SON {
             return Err(Erreur::Autre(format!("Fichier trop lourd (max {} KB)", sion::TAILLE_MAX_SON / 1024)));
@@ -330,12 +327,13 @@ impl CoeurMatrix {
         ref_text: ChampVoix,
         avatar: ChampVoix,
     ) -> Resultat<()> {
-        Box::pin(self.modifier_son_(event_id, label, categorie, emoji, gain, ref_text, avatar)).await
+        Box::pin(self.modifier_son_dans(None, event_id, label, categorie, emoji, gain, ref_text, avatar)).await
     }
 
     #[allow(clippy::too_many_arguments)]
-    async fn modifier_son_(
+    pub async fn modifier_son_dans(
         &self,
+        cible: Option<&str>,
         event_id: &str,
         label: &str,
         categorie: &str,
@@ -344,7 +342,7 @@ impl CoeurMatrix {
         ref_text: ChampVoix,
         avatar: ChampVoix,
     ) -> Resultat<()> {
-        let salon = self.salon_soundboard_requis().await?;
+        let salon = self.salon_soundboard_requis(cible).await?;
         let original = sion::sons(&messages_filtres(&salon, &["m.room.message"]).await?)
             .into_iter()
             .find(|s| s.event_id == event_id)
@@ -356,25 +354,29 @@ impl CoeurMatrix {
 
     /// Édition du nom et de l'emoji d'un meme : un `m.replace`, comme pour un
     /// son, qui garde son identifiant (et la vidéo déjà en cache chez tous).
-    pub async fn modifier_meme(&self, event_id: &str, label: &str, emoji: Option<&str>) -> Resultat<()> {
-        Box::pin(self.modifier_meme_(event_id, label, emoji)).await
+    pub async fn modifier_meme(&self, event_id: &str, label: &str, emoji: Option<&str>, categorie: Option<&str>) -> Resultat<()> {
+        Box::pin(self.modifier_meme_dans(None, event_id, label, emoji, categorie)).await
     }
 
-    async fn modifier_meme_(&self, event_id: &str, label: &str, emoji: Option<&str>) -> Resultat<()> {
-        let salon = self.salon_soundboard_requis().await?;
+    pub async fn modifier_meme_dans(&self, cible: Option<&str>, event_id: &str, label: &str, emoji: Option<&str>, categorie: Option<&str>) -> Resultat<()> {
+        let salon = self.salon_soundboard_requis(cible).await?;
         let evenements = messages_filtres(&salon, &["m.room.message"]).await?;
         let inconnu = || Erreur::Autre(format!("meme inconnu : {event_id}"));
         let actuel = sion::memes(&evenements).into_iter().find(|m| m.event_id == event_id).ok_or_else(inconnu)?;
         let original = evenements.iter().find(|e| e.id == event_id).ok_or_else(inconnu)?;
-        let contenu = sion::contenu_edition_meme(original, &actuel, label, emoji);
+        let contenu = sion::contenu_edition_meme(original, &actuel, label, emoji, categorie);
         Box::pin(salon.send_raw("m.room.message", contenu).into_future()).await?;
         Ok(())
     }
 
     /// Suppression d'un son ou d'un meme (`deleteSound`, `supprimerMeme`).
     pub async fn supprimer_du_soundboard(&self, event_id: &str) -> Resultat<()> {
-        let id = self.salon_soundboard().await?.ok_or_else(|| Erreur::Autre("Soundboard room not created".into()))?;
-        self.supprimer(&id, event_id).await
+        self.supprimer_du_soundboard_dans(None, event_id).await
+    }
+
+    pub async fn supprimer_du_soundboard_dans(&self, cible: Option<&str>, event_id: &str) -> Resultat<()> {
+        let salon = self.salon_soundboard_requis(cible).await?;
+        self.supprimer(salon.room_id().as_str(), event_id).await
     }
 
     /// Envoi d'un meme préparé (`envoyerMeme`) : vidéo (ou GIF) et aperçu
@@ -390,13 +392,15 @@ impl CoeurMatrix {
         apercu: Option<(Vec<u8>, String)>,
         label: &str,
         emoji: Option<&str>,
+        categorie: Option<&str>,
     ) -> Resultat<String> {
-        Box::pin(self.envoyer_meme_(video, mime, largeur, hauteur, duree_ms, apercu, label, emoji)).await
+        Box::pin(self.envoyer_meme_dans(None, video, mime, largeur, hauteur, duree_ms, apercu, label, emoji, categorie)).await
     }
 
     #[allow(clippy::too_many_arguments)]
-    async fn envoyer_meme_(
+    pub async fn envoyer_meme_dans(
         &self,
+        cible: Option<&str>,
         video: Vec<u8>,
         mime: &str,
         largeur: i64,
@@ -405,8 +409,9 @@ impl CoeurMatrix {
         apercu: Option<(Vec<u8>, String)>,
         label: &str,
         emoji: Option<&str>,
+        categorie: Option<&str>,
     ) -> Resultat<String> {
-        let salon = self.salon_soundboard_requis().await?;
+        let salon = self.salon_soundboard_requis(cible).await?;
         let client = salon.client();
         let nom = sion::nom_fichier_meme(label, mime == "image/gif");
         let taille = video.len() as u64;
@@ -424,7 +429,7 @@ impl CoeurMatrix {
             duree_ms,
             apercu: apercu_mxc.as_ref().map(|(m, t)| (m.as_str(), t.as_str())),
         };
-        let contenu = sion::contenu_meme(&t, &nom, label, emoji);
+        let contenu = sion::contenu_meme(&t, &nom, label, emoji, categorie);
         let envoi = Box::pin(salon.send_raw("m.room.message", contenu).into_future()).await?;
         Ok(envoi.response.event_id.to_string())
     }
@@ -608,7 +613,7 @@ impl CoeurMatrix {
 
 /// Un segment d'adresse : tout sauf les caractères non réservés est encodé
 /// (`!salon:serveur` → `%21salon%3Aserveur`).
-fn segment_encode(s: &str) -> String {
+pub(crate) fn segment_encode(s: &str) -> String {
     s.bytes()
         .map(|b| if b.is_ascii_alphanumeric() || b"-._~".contains(&b) { (b as char).to_string() } else { format!("%{b:02X}") })
         .collect()

@@ -1,5 +1,6 @@
 import "../test/interface";
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
+import { useSettingsStore } from "./useSettingsStore";
 import { useLayoutStore, SIDEBAR_DEFAULT_WIDTH, SIDEBAR_MIN_WIDTH, SIDEBAR_MAX_WIDTH, SIDEBAR_RAIL_SNAP_IN, SIDEBAR_RAIL_SNAP_OUT, SHARE_VIEW_DEFAULT_VH, SHARE_VIEW_MIN_VH, SHARE_VIEW_MAX_VH, SHARE_FLOATING_MIN_W, SHARE_FLOATING_MIN_H } from "./useLayoutStore";
 const K = {
   DEFAULT: SIDEBAR_DEFAULT_WIDTH, MIN: SIDEBAR_MIN_WIDTH, MAX: SIDEBAR_MAX_WIDTH,
@@ -10,7 +11,8 @@ const K = {
 const store = new Proxy({} as Record<string, string>, { get: (_, key) => localStorage.getItem(String(key)) });
 const reset = () => useLayoutStore.setState({
   sidebarWidth: K.DEFAULT, sidebarMode: "full", sidebarSide: "left",
-  panneau: null, largeurPanneau: 360, panelBackgrounds: {},
+  panneau: null, panneaux: [], positionsPanneaux: {}, panneauEnDeplacement: null,
+  largeurPanneau: 360, largeurPanneauGauche: 360, hauteurPanneauxBas: 280, hauteurPanneauxHaut: 280, panelBackgrounds: {},
   shareViewMaxVh: K.SV_DEFAULT, shareDock: "inline", shareFloating: { x: -1, y: -1, w: 440, h: 300 },
 });
 describe("useLayoutStore — sidebar modulable", () => {
@@ -102,12 +104,25 @@ describe("useLayoutStore — sidebar modulable", () => {
   });
 
 });
-describe("useLayoutStore — panneau unique", () => {
+describe("useLayoutStore — modules indépendants", () => {
   beforeEach(reset);
-  it("un seul panneau ouvert à la fois", () => {
+  it("ouvrir et fermer un autre module ne désactive pas la soundboard au prochain lancement", async () => {
+    useLayoutStore.getState().ouvrirPanneau("soundboard");
+    useLayoutStore.getState().ouvrirPanneau("memeboard");
+    useLayoutStore.getState().fermerPanneau("memeboard");
+    await vi.waitFor(() => expect(useSettingsStore.getState().soundboardOpenAtLaunch).toBe(true));
+    useLayoutStore.getState().fermerPanneau("soundboard");
+    await vi.waitFor(() => expect(useSettingsStore.getState().soundboardOpenAtLaunch).toBe(false));
+  });
+  it("plusieurs panneaux restent ouverts ensemble, sans doublons", () => {
     useLayoutStore.getState().ouvrirPanneau("soundboard");
     useLayoutStore.getState().ouvrirPanneau("members");
     expect(useLayoutStore.getState().panneau).toBe("members");
+    expect(useLayoutStore.getState().panneaux).toEqual(["soundboard", "members"]);
+    useLayoutStore.getState().ouvrirPanneau("soundboard");
+    expect(useLayoutStore.getState().panneaux).toEqual(["soundboard", "members"]);
+    useLayoutStore.getState().fermerPanneau("members");
+    expect(useLayoutStore.getState().panneaux).toEqual(["soundboard"]);
   });
   it("basculer referme le panneau actif", () => {
     useLayoutStore.getState().basculerPanneau("soundboard");
@@ -131,9 +146,37 @@ describe("useLayoutStore — panneau unique", () => {
     useLayoutStore.getState().setLargeurPanneau(410);
     useLayoutStore.getState().setPanelBackground("chat", { path: "/fond.webp", opacity: 0.4 });
     const raw = JSON.parse(localStorage.getItem("sion-layout")!);
-    expect(raw.version).toBe(6);
+    expect(raw.version).toBe(7);
     expect(raw.state).toMatchObject({ panneau: "pinned", largeurPanneau: 410, panelBackgrounds: { chat: { path: "/fond.webp", opacity: 0.4 } } });
-    expect(Object.keys(raw.state).sort()).toEqual(["sidebarWidth", "sidebarMode", "sidebarSide", "panneau", "largeurPanneau", "panelBackgrounds", "shareViewMaxVh", "shareDock", "shareFloating"].sort());
+    expect(Object.keys(raw.state).sort()).toEqual(["sidebarWidth", "sidebarMode", "sidebarSide", "panneau", "panneaux", "positionsPanneaux", "largeurPanneau", "largeurPanneauGauche", "hauteurPanneauxBas", "hauteurPanneauxHaut", "panelBackgrounds", "shareViewMaxVh", "shareDock", "shareFloating"].sort());
+  });
+  it("mémorise les positions et l'ordre, y compris après fermeture", () => {
+    const s = () => useLayoutStore.getState();
+    s().ouvrirPanneau("soundboard"); s().ouvrirPanneau("memeboard"); s().ouvrirPanneau("members");
+    s().ordonnerPanneau("memeboard", -1);
+    expect(s().panneaux).toEqual(["memeboard", "soundboard", "members"]);
+    s().deplacerPanneau("soundboard", "bottom");
+    s().deplacerPanneau("members", "left");
+    s().fermerPanneau("soundboard"); s().ouvrirPanneau("soundboard");
+    expect(s().positionsPanneaux).toEqual({ soundboard: "bottom", members: "left" });
+    s().commencerDeplacement("members");
+    s().deplacerPanneau("members", "right", "memeboard");
+    expect(s().panneaux).toEqual(["members", "memeboard", "soundboard"]);
+    expect(s().panneauEnDeplacement).toBeNull();
+    const raw = JSON.parse(localStorage.getItem("sion-layout")!).state;
+    expect(raw.positionsPanneaux).toEqual({ soundboard: "bottom", members: "right" });
+    expect(raw).not.toHaveProperty("panneauEnDeplacement");
+  });
+  it("redimensionne les quatre zones indépendamment", () => {
+    const s = () => useLayoutStore.getState();
+    s().setLargeurPanneau(400); s().setLargeurPanneau(420, "left"); s().setLargeurPanneau(320, "bottom");
+    s().setLargeurPanneau(240, "top");
+    expect(s()).toMatchObject({ largeurPanneau: 400, largeurPanneauGauche: 420, hauteurPanneauxBas: 320, hauteurPanneauxHaut: 240 });
+    s().setLargeurPanneau(9999, "top"); expect(s().hauteurPanneauxHaut).toBe(520);
+    s().setLargeurPanneau(NaN, "top"); expect(s().hauteurPanneauxHaut).toBe(280);
+    s().setLargeurPanneau(150, "top"); expect(s().hauteurPanneauxHaut).toBe(150);
+    s().setLargeurPanneau(0, "top"); expect(s().hauteurPanneauxHaut).toBe(100);
+    s().setLargeurPanneau(0, "bottom"); expect(s().hauteurPanneauxBas).toBe(100);
   });
 });
 describe("useLayoutStore — zone de partage", () => {
@@ -177,4 +220,3 @@ describe("useLayoutStore — zone de partage", () => {
     expect(s().shareDock).toBe("inline");
   });
 });
-

@@ -1,5 +1,25 @@
 # Interface « bulles » — plan d'implémentation
 
+**Amendement du 08/10/2026 :** à la demande de l'utilisateur, les modules
+redeviennent indépendants et affichables simultanément. Chaque bulle se place
+à gauche, à droite ou en bas, par glissement du titre ou menu de position ;
+ordre et dimensions sont mémorisés (`sion-layout` version 7). Cet amendement
+remplace les passages ci-dessous prévoyant un panneau unique et fixe.
+Le téléphone conserve une seule feuille à la fois. Voir
+[l'utilisation actuelle](../../interface-bulles.md).
+
+**Amendement du 09/10/2026 :** pendant le glissement, une seule bulle indique
+la taille et la position du module après dépôt, à la place des trois cadres
+gauche / droite / bas. La position est enregistrée uniquement au relâchement.
+
+**Complément du 09/10/2026 :** le placement en haut est rétabli. Dès l'appui
+sur les six points, une carte suit le pointeur et le module d'origine
+s'atténue ; l'aperçu nomme la destination. Les rangées du haut et du bas se
+redimensionnent indépendamment jusqu'à 100 px. Les membres y présentent
+leurs quatre groupes en colonnes, avec défilement indépendant. À 160 px de
+hauteur ou moins, les utilisateurs se rangent côte à côte dans leur groupe,
+avec avatars de 24 px et moins de place réservée aux groupes vides.
+
 > **Pour les agents :** sous-compétence requise : `superpowers:subagent-driven-development`
 > (recommandé) ou `superpowers:executing-plans`, tâche par tâche. Les étapes
 > utilisent des cases `- [ ]` pour le suivi.
@@ -253,15 +273,15 @@ téléphone), renommé `panneaux.ts` à la tâche 2.
 - Modifier : `src/components/chat/SoundboardPanel.tsx` (+ test à créer `SoundboardPanel.test.tsx`)
 
 **Interfaces :**
-- Consomme : `soundboardView` / `setSoundboardView` (`useSettingsStore`, inchangés : `mode: "all" | "favorites" | "top"`, `category: string | null`), le volume existant (`setPlaybackVolume`).
+- Consomme : `soundboardView` / `setSoundboardView` (`useSettingsStore` : `mode: "all" | "top"`, `category: string | null`), le volume existant (`setPlaybackVolume`). Le 08/10, les favoris sont retirés ; `sion-settings` v2 supprime leur liste locale et réoriente leur ancienne vue vers Top sans perdre les compteurs.
 
 - [ ] **Étape 1 : tests qui échouent** :
-  - `it("les puces Favoris, Top, Tous puis les catégories filtrent la grille")` : clic sur « Favoris » → `soundboardView.mode === "favorites"` ; clic sur une catégorie → `mode === "all"` et `category` posée.
+  - `it("les puces Top, Tous puis les catégories filtrent la grille")` : clic sur « Top » → `soundboardView.mode === "top"` ; clic sur une catégorie → `mode === "all"` et `category` posée.
   - `it("la grille est sur deux colonnes")` : `gridTemplateColumns` vaut `repeat(2, minmax(0, 1fr))`.
   - `it("le volume est en pied de panneau")` : le curseur de volume est le dernier élément de la bulle.
 - [ ] **Étape 2 :** lancer → ÉCHEC.
-- [x] **Étape 3 :** onglets Sons / Voix / Membres en tête (déjà présents, restylés en soulignement accent) ; champ de recherche + bouton ＋ (ajout) sur une ligne ; puces de filtre en pilules (puce active `var(--color-primary)`) ; cartes de son 2 colonnes, rayon `--sion-carte-rayon`, emoji en haut à gauche, étoile favori en haut à droite, titre en gras, catégorie en petites capitales ; volume + pourcentage en pied.
-- [ ] **Étape 4 :** tests → SUCCÈS ; `run-native.sh` en appel : jouer un son, le mettre en favori, filtrer.
+- [x] **Étape 3 :** onglets Sons / Voix / Membres en tête (déjà présents, restylés en soulignement accent) ; champ de recherche + bouton ＋ (ajout) sur une ligne ; puces de filtre en pilules (puce active `var(--color-primary)`) ; cartes de son 2 colonnes, rayon `--sion-carte-rayon`, emoji en haut à gauche, titre en gras, catégorie en petites capitales ; volume + pourcentage en pied. L'étoile favori a été retirée le 08/10.
+- [ ] **Étape 4 :** tests → SUCCÈS ; `run-native.sh` en appel : jouer un son et filtrer dans Top / Toutes / catégories.
 - [x] **Étape 5 :** commit `feat(interface): soundboard en cartes`.
 
 ### Tâche 8 : Saisie sur deux lignes et messages
@@ -293,3 +313,18 @@ téléphone), renommé `panneaux.ts` à la tâche 2.
 - [ ] **Étape 3 :** construire l'APK (`build-scripts/build-android.sh debug`) : l'affichage téléphone est inchangé.
 - [ ] **Étape 4 :** sous Windows (flammemob, `C:\sion-client\build-rust.ps1`), vérifier que la surface vidéo HWND se place dans la bulle et que le plein écran du lecteur marche toujours.
 - [x] **Étape 5 :** écrire `docs/interface-bulles.md`, commit `docs: interface en bulles`, pousser la branche (`git push -u origin feat/interface-bulles`). Ne pas fusionner dans `main` avant la 2.0.0.
+
+### Complément du 09/10 : modules dans les bandes haute et basse
+
+- [x] Adapter soundboard et memeboard : outils sur une ligne, filtres compacts
+  avec catégories imbriquées, volume accessible, cartes et visuels réduits
+  à 100 px, défilement horizontal à la molette.
+- [x] Adapter les épinglés : aperçus horizontaux avec vignettes et compteur
+  dans le titre ; accès au message complet conservé.
+- [x] Adapter la transcription : commandes à côté du texte complet,
+  historique horizontal, résumé et export accessibles, menu de session
+  dans un portail ; suivi du direct pendant le redimensionnement sans
+  interrompre la relecture.
+- [x] Vérifier les filtres et actions, les bandes haute et basse à 100,
+  150 et 280 px, une fenêtre étroite et le retour aux colonnes latérales.
+  Tests ciblés, TypeScript et lint sans erreur ; aucun rebuild natif.

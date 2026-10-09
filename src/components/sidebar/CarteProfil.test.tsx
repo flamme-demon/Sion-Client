@@ -10,6 +10,9 @@ vi.mock("../../hooks/useVoiceChannel", () => ({ useVoiceChannel: () => ({ leaveV
 vi.mock("../../hooks/useLatence", () => ({ useLatence: () => null }));
 vi.mock("./CarteReconnexion", () => ({ CarteReconnexion: () => null }));
 vi.mock("../../services/lazyScreens", () => ({ preloadHeavyScreens: vi.fn() }));
+vi.mock("../../services/voiceNativeService", () => ({ setVoiceNativeMuted: vi.fn(), setVoiceNativeDeafened: vi.fn() }));
+vi.mock("../../services/voiceChannelSounds", () => ({ playMuteCue: vi.fn(), playUnmuteCue: vi.fn(), playDeafenCue: vi.fn(), playUndeafenCue: vi.fn() }));
+vi.mock("../../services/matrixService", () => ({ publishLocalVoiceState: vi.fn() }));
 const vue = montage();
 beforeEach(() => { useAppStore.setState({ connectedVoiceChannel: null, isMuted: false, isDeafened: false, clockSkewMin: 0, e2eeUnhealthy: false }); quitter.mockClear(); });
 it("raccrocher n'apparaît qu'en appel et quitte le bon salon", async () => {

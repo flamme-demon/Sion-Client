@@ -1,4 +1,4 @@
-import { useRef } from "react";
+import { useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { SettingsIcon, ArrowLeftIcon } from "../icons";
 import { AdminStats } from "../admin/AdminStats";
@@ -14,8 +14,9 @@ export function AdminPanel() {
   const isMobile = useIsMobile();
   const toggleAdmin = useAppStore((s) => s.toggleAdmin);
   const panelRef = useRef<HTMLDivElement>(null);
+  const [dialogueOuvert, setDialogueOuvert] = useState(false);
   // Click-outside-to-close — disabled on mobile (full-screen overlay, has its own back button)
-  useClickOutside(panelRef, toggleAdmin, !isMobile);
+  useClickOutside(panelRef, toggleAdmin, !isMobile && !dialogueOuvert);
 
   if (isMobile) {
     return (
@@ -53,7 +54,7 @@ export function AdminPanel() {
           <span style={{ fontWeight: 600, fontSize: 16, color: 'var(--color-on-surface)' }}>{t("admin.title")}</span>
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', padding: '0 12px', gap: 8 }}>
-          <AdminActions />
+          <AdminActions onDialogueChange={setDialogueOuvert} />
           <PendingUsers />
           <RegistrationTokens />
           <AdminStats />
@@ -82,7 +83,7 @@ export function AdminPanel() {
       </div>
 
       <div style={{ display: 'flex', flexDirection: 'column', padding: '0 12px', gap: 8 }}>
-        <AdminActions />
+        <AdminActions onDialogueChange={setDialogueOuvert} />
         <PendingUsers />
         <AdminStats />
       </div>

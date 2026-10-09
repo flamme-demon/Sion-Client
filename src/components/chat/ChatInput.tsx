@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useEffect, type KeyboardEvent, type ClipboardEvent } from "react";
+import { useState, useRef, useEffect, type KeyboardEvent, type ClipboardEvent } from "react";
 import { useTranslation } from "react-i18next";
 import { SendIcon, CloseIcon, EmojiIcon, DisconnectIcon } from "../icons";
 import { AttachButton } from "./AttachButton";
@@ -45,6 +45,7 @@ export function ChatInput() {
   // livré avec l'application, il n'y a plus d'absence à réparer.
   const [convertPct, setConvertPct] = useState<number | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const mesureRef = useRef<HTMLDivElement>(null);
   const activeChannel = useAppStore((s) => s.activeChannel);
   const sendMessage = useMatrixStore((s) => s.sendMessage);
   const sendReply = useMatrixStore((s) => s.sendReply);
@@ -96,6 +97,26 @@ export function ChatInput() {
   // the UI here avoids M_FORBIDDEN errors on read-only rooms (e.g. soundboard
   // room where only moderators can upload).
   const canSend = activeChannel ? matrixService.canSendMessage(activeChannel) : false;
+
+  // Le miroir est hors du flux : une lettre ne redimensionne pas toute la
+  // conversation. On ajuste la hauteur uniquement lorsqu'une ligne change,
+  // après le calcul du navigateur, sans lecture synchrone de scrollHeight.
+  useEffect(() => {
+    const mesure = mesureRef.current;
+    const champ = mesure?.parentElement;
+    if (!mesure || !champ || typeof ResizeObserver === "undefined") return;
+    let hauteur = 37;
+    const observer = new ResizeObserver(([entree]) => {
+      if (!entree) return;
+      const taille = entree.borderBoxSize?.[0]?.blockSize ?? entree.contentRect.height + 16;
+      const suivante = Math.min(120, Math.max(37, Math.ceil(taille)));
+      if (suivante === hauteur) return;
+      hauteur = suivante;
+      champ.style.setProperty("--sion-saisie-hauteur", `${hauteur}px`);
+    });
+    observer.observe(mesure);
+    return () => observer.disconnect();
+  }, []);
 
   // Close emoji picker on outside click/touch
   // Fetch GIFs from Klipy (only when enabled and tab is active)
@@ -170,13 +191,6 @@ export function ChatInput() {
     };
   }, [showEmojiPicker]);
 
-  const autoGrow = useCallback(() => {
-    const el = textareaRef.current;
-    if (!el) return;
-    el.style.height = "auto";
-    el.style.height = `${Math.min(el.scrollHeight, 120)}px`;
-  }, []);
-
   // « En train d'écrire » : terminé en changeant de salon ou en quittant.
   useEffect(() => () => jArrete(), [activeChannel]);
 
@@ -186,9 +200,8 @@ export function ChatInput() {
       setInputText(editingMessage.text);
       setHistoryIndex(-1);
       textareaRef.current?.focus();
-      requestAnimationFrame(() => autoGrow());
     }
-  }, [editingMessage, autoGrow]);
+  }, [editingMessage]);
 
   // Focus textarea when replying to a message
   useEffect(() => {
@@ -207,7 +220,6 @@ export function ChatInput() {
       }
       clearEditingMessage();
       setInputText("");
-      if (textareaRef.current) textareaRef.current.style.height = "auto";
       return;
     }
 
@@ -275,17 +287,12 @@ export function ChatInput() {
     setInputText("");
     jArrete();
     setHistoryIndex(-1);
-    if (textareaRef.current) {
-      textareaRef.current.style.height = "auto";
-    }
   };
 
-  // Cancel editing — clears the draft AND resets the auto-grown textarea height
-  // (setInputText("") alone doesn't shrink it back, so a long edit stayed tall).
+  // Le miroir CSS reprend une seule ligne quand le brouillon est vidé.
   const cancelEdit = () => {
     clearEditingMessage();
     setInputText("");
-    if (textareaRef.current) textareaRef.current.style.height = "auto";
   };
 
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -377,7 +384,6 @@ export function ChatInput() {
 
   const handleChange = (value: string, position?: number) => {
     setInputText(value);
-    autoGrow();
     // Une modification de message n'est pas « écrire » pour les autres.
     if (value.trim() && !editingMessage) jEcris(activeChannel);
     else jArrete();
@@ -478,7 +484,6 @@ export function ChatInput() {
     requestAnimationFrame(() => {
       textarea.focus();
       textarea.setSelectionRange(start + texte.length, start + texte.length);
-      autoGrow();
     });
   };
   const hasContent = inputText.trim().length > 0 || pendingFiles.length > 0;
@@ -731,7 +736,6 @@ export function ChatInput() {
           {isMobile && !editingMessage && <AttachButton disabled={!canSend} />}
           {!editingMessage && (
             <div ref={emojiPickerRef} className={isMobile ? undefined : "sion-saisie-picker"} style={{ position: 'relative', display: 'flex', flexShrink: 0 }}>
-              {!isMobile && <button type="button" aria-label={t("chat.gifTab")} disabled={!canSend} onMouseDown={(e) => { e.preventDefault(); setPickerTab("gif"); setShowEmojiPicker(true); }} style={{ border: 0, padding: 10, background: 'transparent', color: 'var(--color-on-surface-variant)', cursor: 'pointer', fontFamily: 'inherit', fontSize: 10, fontWeight: 700 }}>GIF</button>}
               <button
                 type="button"
                 disabled={!canSend}
@@ -879,34 +883,37 @@ export function ChatInput() {
               )}
             </div>
           )}
-          <textarea
-            ref={textareaRef}
-            value={inputText}
-            onChange={(e) => handleChange(e.target.value)}
-            onKeyDown={handleKeyDown}
-            onPaste={handlePaste}
-            onFocus={() => setFocused(true)}
-            onBlur={() => setFocused(false)}
-            placeholder={canSend ? t("chat.placeholder", { channel: channelName }) : t("chat.readOnly")}
-            rows={1}
-            disabled={!canSend}
-            style={{
-              flex: 1,
-              background: 'transparent',
-              border: 'none',
-              outline: 'none',
-              color: 'var(--color-on-surface)',
-              fontSize: 14,
-              fontFamily: 'inherit',
-              resize: 'none' as const,
-              lineHeight: 1.5,
-              maxHeight: 120,
-              padding: '8px 4px',
-              letterSpacing: '0.01em',
-              cursor: canSend ? 'text' : 'not-allowed',
-              opacity: canSend ? 1 : 0.5,
-            }}
-          />
+          <div className="sion-saisie-champ">
+            <div ref={mesureRef} className="sion-saisie-mesure" aria-hidden="true">{inputText}{" "}</div>
+            <textarea
+              ref={textareaRef}
+              value={inputText}
+              onChange={(e) => handleChange(e.target.value)}
+              onKeyDown={handleKeyDown}
+              onPaste={handlePaste}
+              onFocus={() => setFocused(true)}
+              onBlur={() => setFocused(false)}
+              placeholder={canSend ? t("chat.placeholder", { channel: channelName }) : t("chat.readOnly")}
+              rows={1}
+              disabled={!canSend}
+              style={{
+                flex: 1,
+                background: 'transparent',
+                border: 'none',
+                outline: 'none',
+                color: 'var(--color-on-surface)',
+                fontSize: 14,
+                fontFamily: 'inherit',
+                resize: 'none' as const,
+                lineHeight: 1.5,
+                maxHeight: 120,
+                padding: '8px 4px',
+                letterSpacing: '0.01em',
+                cursor: canSend ? 'text' : 'not-allowed',
+                opacity: canSend ? 1 : 0.5,
+              }}
+            />
+          </div>
           {isMobile && boutonEnvoi}
         </div>
         {!isMobile && <div className="sion-saisie-actions">

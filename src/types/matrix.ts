@@ -1,11 +1,12 @@
 export type UserRole = "admin" | "mod" | "user";
+export type MatrixPresence = "online" | "offline" | "unavailable";
 
 export interface MatrixUser {
   id: string;
   name: string;
   role: UserRole;
   avatarUrl?: string;
-  presence?: "online" | "offline" | "unavailable";
+  presence?: MatrixPresence;
 }
 
 /** Un appareil en appel (`call.member`). */
@@ -47,6 +48,14 @@ export interface Channel {
   isDM?: boolean;
   dmUserId?: string;
   isSoundboard?: boolean;
+  /** Espace Matrix (m.room.create.type = m.space), masqué du chat. */
+  isSpace?: boolean;
+  /** Relations m.space.child valides : IDs des salons de cet Espace. */
+  spaceChildren?: string[];
+  commonRoomIds?: string[];
+  /** Bibliothèque sons/memes désignée par l'Espace. */
+  boardRoomId?: string;
+  membership?: "join" | "invite";
 }
 
 export interface FileAttachment {

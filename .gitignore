@@ -5,6 +5,8 @@ node_modules
 dist/
 dist-appimage/
 build-apps/
+# Cache partagé utilisé aussi par les worktrees (peut être un lien symbolique).
+/src-tauri/target
 *.apk
 *.apk.idsig
 *.exe

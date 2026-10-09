@@ -202,6 +202,18 @@ async fn lire(salon: &Room, moi: &str, medias: &Medias, activite: i64, horloge: 
         sujet: salon.topic(),
         icone: salon.avatar_url().and_then(|m| medias.url_avatar(m.as_str())),
         type_creation: chaine(creation.as_ref().and_then(|v| v.pointer("/content/type"))),
+        enfants_espace: salon.get_state_events(StateEventType::from("m.space.child")).await.unwrap_or_default()
+            .iter().filter_map(json_etat)
+            .filter(|v| v.pointer("/content/via").and_then(Value::as_array).is_some_and(|a| !a.is_empty()))
+            .filter_map(|v| v.get("state_key").and_then(Value::as_str).map(str::to_owned)).collect(),
+        adhesion: if salon.state() == matrix_sdk::RoomState::Invited { "invite" } else { "join" }.to_owned(),
+        salons_communs: salon.get_state_events(StateEventType::from("m.space.child")).await.unwrap_or_default()
+            .iter().filter_map(json_etat)
+            .filter(|v| v.pointer("/content/suggested").and_then(Value::as_bool) == Some(true)
+                && v.pointer("/content/via").and_then(Value::as_array).is_some_and(|a| !a.is_empty()))
+            .filter_map(|v| v.get("state_key").and_then(Value::as_str).map(str::to_owned)).collect(),
+        bibliotheque_espace: etat_unique(salon, StateEventType::from("com.sion.space")).await
+            .and_then(|v| v.pointer("/content/board_room_id").and_then(Value::as_str).map(str::to_owned)),
         type_personnalise: chaine(type_personnalise.as_ref().and_then(|v| v.pointer("/content/type"))),
         a_evenement_appel: etat_unique(salon, StateEventType::from("org.matrix.msc3401.call")).await.is_some(),
         membres_appel,
@@ -241,6 +253,15 @@ async fn tous_les_salons(client: &Client, fantomes: &HashSet<OwnedRoomId>, activ
             Err(e) => log::error!("[Sion][matrix] salon ignoré ({}) : {e}", salon.room_id()),
         }
     }
+    for salon in client.invited_rooms() {
+        if etat_unique(&salon, StateEventType::RoomCreate).await
+            .is_some_and(|v| v.pointer("/content/type").and_then(Value::as_str) == Some("m.space")) {
+            match lire(&salon, &moi, medias, 0, horloge).await {
+                Ok(e) => liste.push(salons::classer(&e, maintenant)),
+                Err(e) => log::warn!("[Sion][matrix] invitation Espace illisible : {e}"),
+            }
+        }
+    }
     liste.sort_by(|a, b| a.id.cmp(&b.id));
     liste
 }
@@ -254,6 +275,9 @@ async fn tous_les_salons(client: &Client, fantomes: &HashSet<OwnedRoomId>, activ
 /// retenter à chaque synchro martelait le serveur (vu le 26/09).
 async fn accepter_invitations(client: &Client, tentees: &mut HashSet<OwnedRoomId>) {
     for salon in client.invited_rooms() {
+        // Une équipe invitée se rejoint explicitement depuis le rail.
+        if etat_unique(&salon, StateEventType::RoomCreate).await
+            .is_some_and(|v| v.pointer("/content/type").and_then(Value::as_str) == Some("m.space")) { continue; }
         if !tentees.insert(salon.room_id().to_owned()) {
             continue;
         }

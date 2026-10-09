@@ -804,8 +804,28 @@ pub mod commandes {
     }
 
     #[tauri::command]
-    pub async fn matrix_creer_salon(nom: String, vocal: bool, publique: bool, chiffre: bool) -> Result<String, String> {
-        coeur()?.creer_salon(&nom, vocal, publique, chiffre).await.map_err(erreur)
+    pub async fn matrix_creer_espace(nom: String, sujet: String, publique: bool) -> Result<String, String> {
+        coeur()?.creer_espace(&nom, &sujet, publique).await.map_err(erreur)
+    }
+
+    #[tauri::command]
+    pub async fn matrix_rejoindre_espace(adresse: String, via: Vec<String>) -> Result<String, String> {
+        coeur()?.rejoindre_espace(&adresse, via).await.map_err(erreur)
+    }
+
+    #[tauri::command]
+    pub async fn matrix_rejoindre_avec_via(adresse: String, via: Vec<String>) -> Result<String, String> {
+        coeur()?.rejoindre_avec_via(&adresse, via).await.map_err(erreur)
+    }
+
+    #[tauri::command]
+    pub async fn matrix_hierarchie_espace(espace: String, suivant: Option<String>) -> Result<serde_json::Value, String> {
+        coeur()?.hierarchie_espace(&espace, suivant.as_deref()).await.map_err(erreur)
+    }
+
+    #[tauri::command]
+    pub async fn matrix_creer_salon(nom: String, vocal: bool, publique: bool, chiffre: bool, espace: Option<String>, bibliotheque: Option<bool>) -> Result<String, String> {
+        coeur()?.creer_salon_dans(&nom, vocal, publique, chiffre, espace.as_deref(), bibliotheque.unwrap_or(false)).await.map_err(erreur)
     }
 
     #[tauri::command]
@@ -1061,46 +1081,46 @@ pub mod commandes {
     }
 
     #[tauri::command]
-    pub async fn matrix_sons() -> Result<serde_json::Value, String> {
-        json(coeur()?.sons().await)
+    pub async fn matrix_sons(salon: Option<String>) -> Result<serde_json::Value, String> {
+        json(coeur()?.sons_dans(salon.as_deref()).await)
     }
 
     #[tauri::command]
-    pub async fn matrix_memes() -> Result<serde_json::Value, String> {
-        json(coeur()?.memes().await)
+    pub async fn matrix_memes(salon: Option<String>) -> Result<serde_json::Value, String> {
+        json(coeur()?.memes_dans(salon.as_deref()).await)
     }
 
     #[tauri::command]
     #[allow(clippy::too_many_arguments)]
-    pub async fn matrix_ajouter_son(chemin: String, nom_fichier: String, mime: String, duree: Option<i64>, label: String, categorie: String, emoji: Option<String>, gain: f64, voix: Option<VoixJs>, modele: Option<String>) -> Result<serde_json::Value, String> {
+    pub async fn matrix_ajouter_son(salon: Option<String>, chemin: String, nom_fichier: String, mime: String, duree: Option<i64>, label: String, categorie: String, emoji: Option<String>, gain: f64, voix: Option<VoixJs>, modele: Option<String>) -> Result<serde_json::Value, String> {
         let voix = voix.map(|v| sion_matrix::Voix { ref_text: v.ref_text, avatar: v.avatar });
-        json(coeur()?.ajouter_son(lire_depot(&chemin)?, &nom_fichier, &mime, duree, &label, &categorie, emoji.as_deref(), gain, voix, modele.as_deref()).await)
+        json(coeur()?.ajouter_son_dans(salon.as_deref(), lire_depot(&chemin)?, &nom_fichier, &mime, duree, &label, &categorie, emoji.as_deref(), gain, voix, modele.as_deref()).await)
     }
 
     #[tauri::command]
-    pub async fn matrix_modifier_son(event_id: String, label: String, categorie: String, emoji: Option<String>, gain: f64, changements: ChangementsVoix) -> Result<(), String> {
-        coeur()?.modifier_son(&event_id, &label, &categorie, emoji.as_deref(), gain, changements.ref_text(), changements.avatar()).await.map_err(erreur)
+    pub async fn matrix_modifier_son(salon: Option<String>, event_id: String, label: String, categorie: String, emoji: Option<String>, gain: f64, changements: ChangementsVoix) -> Result<(), String> {
+        coeur()?.modifier_son_dans(salon.as_deref(), &event_id, &label, &categorie, emoji.as_deref(), gain, changements.ref_text(), changements.avatar()).await.map_err(erreur)
     }
 
     #[tauri::command]
-    pub async fn matrix_modifier_meme(event_id: String, label: String, emoji: Option<String>) -> Result<(), String> {
-        coeur()?.modifier_meme(&event_id, &label, emoji.as_deref()).await.map_err(erreur)
+    pub async fn matrix_modifier_meme(salon: Option<String>, event_id: String, label: String, emoji: Option<String>, categorie: Option<String>) -> Result<(), String> {
+        coeur()?.modifier_meme_dans(salon.as_deref(), &event_id, &label, emoji.as_deref(), categorie.as_deref()).await.map_err(erreur)
     }
 
     #[tauri::command]
-    pub async fn matrix_supprimer_du_soundboard(event_id: String) -> Result<(), String> {
-        coeur()?.supprimer_du_soundboard(&event_id).await.map_err(erreur)
+    pub async fn matrix_supprimer_du_soundboard(salon: Option<String>, event_id: String) -> Result<(), String> {
+        coeur()?.supprimer_du_soundboard_dans(salon.as_deref(), &event_id).await.map_err(erreur)
     }
 
     #[tauri::command]
     #[allow(clippy::too_many_arguments)]
-    pub async fn matrix_envoyer_meme(chemin: String, mime: String, largeur: i64, hauteur: i64, duree_ms: i64, apercu: Option<String>, apercu_mime: Option<String>, label: String, emoji: Option<String>) -> Result<String, String> {
+    pub async fn matrix_envoyer_meme(salon: Option<String>, chemin: String, mime: String, largeur: i64, hauteur: i64, duree_ms: i64, apercu: Option<String>, apercu_mime: Option<String>, label: String, emoji: Option<String>, categorie: Option<String>) -> Result<String, String> {
         let video = lire_fichier_media(&chemin)?;
         let apercu = match (apercu, apercu_mime) {
             (Some(c), Some(m)) => Some((lire_fichier_media(&c)?, m)),
             _ => None,
         };
-        coeur()?.envoyer_meme(video, &mime, largeur, hauteur, duree_ms, apercu, &label, emoji.as_deref()).await.map_err(erreur)
+        coeur()?.envoyer_meme_dans(salon.as_deref(), video, &mime, largeur, hauteur, duree_ms, apercu, &label, emoji.as_deref(), categorie.as_deref()).await.map_err(erreur)
     }
 
     #[tauri::command]
@@ -1433,7 +1453,16 @@ pub mod commandes {
     }
 
     #[tauri::command]
-    pub async fn matrix_creer_salon(_nom: String, _vocal: bool, _publique: bool, _chiffre: bool) -> Result<String, String> {
+    pub async fn matrix_creer_espace(_nom: String, _sujet: String, _publique: bool) -> Result<String, String> { Err(INACTIF.into()) }
+    #[tauri::command]
+    pub async fn matrix_rejoindre_espace(_adresse: String, _via: Vec<String>) -> Result<String, String> { Err(INACTIF.into()) }
+    #[tauri::command]
+    pub async fn matrix_rejoindre_avec_via(_adresse: String, _via: Vec<String>) -> Result<String, String> { Err(INACTIF.into()) }
+    #[tauri::command]
+    pub async fn matrix_hierarchie_espace(_espace: String, _suivant: Option<String>) -> Result<serde_json::Value, String> { Err(INACTIF.into()) }
+
+    #[tauri::command]
+    pub async fn matrix_creer_salon(_nom: String, _vocal: bool, _publique: bool, _chiffre: bool, _espace: Option<String>, _bibliotheque: Option<bool>) -> Result<String, String> {
         Err(INACTIF.into())
     }
 
@@ -1642,39 +1671,39 @@ pub mod commandes {
     }
 
     #[tauri::command]
-    pub async fn matrix_sons() -> Result<serde_json::Value, String> {
+    pub async fn matrix_sons(_salon: Option<String>) -> Result<serde_json::Value, String> {
         Err(INACTIF.into())
     }
 
     #[tauri::command]
-    pub async fn matrix_memes() -> Result<serde_json::Value, String> {
-        Err(INACTIF.into())
-    }
-
-    #[tauri::command]
-    #[allow(clippy::too_many_arguments)]
-    pub async fn matrix_ajouter_son(_chemin: String, _nom_fichier: String, _mime: String, _duree: Option<i64>, _label: String, _categorie: String, _emoji: Option<String>, _gain: f64, _voix: Option<VoixJs>, _modele: Option<String>) -> Result<serde_json::Value, String> {
-        Err(INACTIF.into())
-    }
-
-    #[tauri::command]
-    pub async fn matrix_modifier_son(_event_id: String, _label: String, _categorie: String, _emoji: Option<String>, _gain: f64, _changements: ChangementsVoix) -> Result<(), String> {
-        Err(INACTIF.into())
-    }
-
-    #[tauri::command]
-    pub async fn matrix_modifier_meme(_event_id: String, _label: String, _emoji: Option<String>) -> Result<(), String> {
-        Err(INACTIF.into())
-    }
-
-    #[tauri::command]
-    pub async fn matrix_supprimer_du_soundboard(_event_id: String) -> Result<(), String> {
+    pub async fn matrix_memes(_salon: Option<String>) -> Result<serde_json::Value, String> {
         Err(INACTIF.into())
     }
 
     #[tauri::command]
     #[allow(clippy::too_many_arguments)]
-    pub async fn matrix_envoyer_meme(_chemin: String, _mime: String, _largeur: i64, _hauteur: i64, _duree_ms: i64, _apercu: Option<String>, _apercu_mime: Option<String>, _label: String, _emoji: Option<String>) -> Result<String, String> {
+    pub async fn matrix_ajouter_son(_salon: Option<String>, _chemin: String, _nom_fichier: String, _mime: String, _duree: Option<i64>, _label: String, _categorie: String, _emoji: Option<String>, _gain: f64, _voix: Option<VoixJs>, _modele: Option<String>) -> Result<serde_json::Value, String> {
+        Err(INACTIF.into())
+    }
+
+    #[tauri::command]
+    pub async fn matrix_modifier_son(_salon: Option<String>, _event_id: String, _label: String, _categorie: String, _emoji: Option<String>, _gain: f64, _changements: ChangementsVoix) -> Result<(), String> {
+        Err(INACTIF.into())
+    }
+
+    #[tauri::command]
+    pub async fn matrix_modifier_meme(_salon: Option<String>, _event_id: String, _label: String, _emoji: Option<String>, _categorie: Option<String>) -> Result<(), String> {
+        Err(INACTIF.into())
+    }
+
+    #[tauri::command]
+    pub async fn matrix_supprimer_du_soundboard(_salon: Option<String>, _event_id: String) -> Result<(), String> {
+        Err(INACTIF.into())
+    }
+
+    #[tauri::command]
+    #[allow(clippy::too_many_arguments)]
+    pub async fn matrix_envoyer_meme(_salon: Option<String>, _chemin: String, _mime: String, _largeur: i64, _hauteur: i64, _duree_ms: i64, _apercu: Option<String>, _apercu_mime: Option<String>, _label: String, _emoji: Option<String>, _categorie: Option<String>) -> Result<String, String> {
         Err(INACTIF.into())
     }
 

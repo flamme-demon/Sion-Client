@@ -2,16 +2,19 @@
 //! l'équivalent de la partie « gestion » de `matrixService.ts`, de
 //! `adminService.ts` (par un mandataire : le jeton d'accès ne quitte pas
 //! Rust) et de `adminCommandService.ts`.
+use std::collections::HashMap;
 use std::future::IntoFuture;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use matrix_sdk::deserialized_responses::RawAnySyncOrStrippedState;
 use matrix_sdk::ruma::api::client::room::create_room::v3::{Request as CreerSalon, RoomPreset};
 use matrix_sdk::ruma::api::client::uiaa::AuthData;
+use matrix_sdk::ruma::events::presence::PresenceEvent;
 use matrix_sdk::ruma::events::room::join_rules::JoinRule;
 use matrix_sdk::ruma::events::room::member::MembershipState;
 use matrix_sdk::ruma::events::room::power_levels::UserPowerLevel;
 use matrix_sdk::ruma::events::StateEventType;
+use matrix_sdk::ruma::presence::PresenceState;
 use matrix_sdk::ruma::serde::Raw;
 use matrix_sdk::ruma::{Int, OwnedDeviceId, OwnedUserId, RoomId, UserId};
 use matrix_sdk::{Client, Room, RoomMemberships};
@@ -36,6 +39,9 @@ pub struct MembreSalon {
     pub display_name: String,
     pub avatar_url: Option<String>,
     pub power_level: i64,
+    /// État de présence Matrix ; aucune valeur si le serveur n'en fournit pas.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub presence: Option<String>,
 }
 
 /// Ce que l'interface lit d'un salon pour ses écrans de gestion.
@@ -186,6 +192,20 @@ fn vue(liste: &[(String, String, String, Vec<String>)]) -> Vec<CandidatAdmin<'_>
     liste.iter().map(|(id, nom, alias, membres)| CandidatAdmin { id, nom, alias, membres }).collect()
 }
 
+/// Aucun statut implicite pour un événement absent, invalide ou inconnu.
+fn presences_connues(evenements: Vec<Raw<PresenceEvent>>) -> HashMap<String, String> {
+    evenements.into_iter().filter_map(|brut| {
+        let ev = brut.deserialize().ok()?;
+        let statut = match ev.content.presence {
+            PresenceState::Online => "online",
+            PresenceState::Unavailable => "unavailable",
+            PresenceState::Offline => "offline",
+            _ => return None,
+        };
+        Some((ev.sender.to_string(), statut.to_owned()))
+    }).collect()
+}
+
 // Chaque méthode publique rend un futur en boîte (voir `recursion_limit`
 // dans lib.rs) ; le travail est dans sa jumelle suffixée `_`.
 impl CoeurMatrix {
@@ -213,6 +233,10 @@ impl CoeurMatrix {
             _ => niveaux.utilisateurs.get(id).copied().unwrap_or(niveaux.par_defaut),
         };
         let tous = salon.members_no_sync(RoomMemberships::all()).await?;
+        let ids: Vec<_> = tous.iter().filter(|m| m.membership() == &MembershipState::Join)
+            .map(|m| m.user_id().to_owned()).collect();
+        // Lecture du magasin local alimenté par /sync : aucune requête par membre.
+        let presences = presences_connues(client.state_store().get_presence_events(&ids).await.unwrap_or_default());
         let mut noms = membres::noms_du_salon(&tous);
         let membres = tous
             .iter()
@@ -223,6 +247,7 @@ impl CoeurMatrix {
                     display_name: noms.remove(&id).unwrap_or_else(|| id.clone()),
                     avatar_url: m.avatar_url().and_then(|u| self.medias().url_avatar(u.as_str())),
                     power_level: niveau(&id),
+                    presence: presences.get(&id).cloned(),
                     user_id: id,
                 }
             })
@@ -426,23 +451,35 @@ impl CoeurMatrix {
     /// Création d'un salon (`createChannel`) : mêmes état initial et niveaux
     /// que le JS ; public, il est ouvert à tous les utilisateurs du serveur.
     pub async fn creer_salon(&self, nom: &str, vocal: bool, publique: bool, chiffre: bool) -> Resultat<String> {
-        Box::pin(self.creer_salon_(nom, vocal, publique, chiffre)).await
+        Box::pin(self.creer_salon_dans(nom, vocal, publique, chiffre, None, false)).await
     }
 
-    async fn creer_salon_(&self, nom: &str, vocal: bool, publique: bool, chiffre: bool) -> Resultat<String> {
+    pub async fn creer_salon_dans(&self, nom: &str, vocal: bool, publique: bool, chiffre: bool, espace: Option<&str>, bibliotheque: bool) -> Resultat<String> {
         let client = self.client_actif().await?;
         let moi = client.user_id().ok_or(Erreur::PasDeSession)?.to_string();
         // Les administrateurs du serveur sont administrateurs du salon dès sa
         // création : atomique, contrairement à un changement après coup.
         let mut utilisateurs = serde_json::Map::new();
         utilisateurs.insert(moi, 100.into());
-        for admin in self.admins_serveur().await.unwrap_or_default() {
-            utilisateurs.insert(admin, 100.into());
+        if let Some(espace) = espace {
+            self.verifier_gestion_espace(espace).await?;
+            for membre in self.details_salon(espace).await?.membres {
+                if membre.power_level >= 50 { utilisateurs.insert(membre.user_id, membre.power_level.min(100).into()); }
+            }
+        } else {
+            for admin in self.admins_serveur().await.unwrap_or_default() { utilisateurs.insert(admin, 100.into()); }
         }
         let mut etat = vec![
-            json!({ "type": "m.room.join_rules", "state_key": "", "content": { "join_rule": if publique { "public" } else { "invite" } } }),
+            json!({ "type": "m.room.join_rules", "state_key": "", "content": { "join_rule": if publique && espace.is_some() { "restricted" } else if publique { "public" } else { "invite" }, "allow": espace.filter(|_| publique).map(|id| vec![json!({"type":"m.room_membership", "room_id":id})]).unwrap_or_default() } }),
             json!({ "type": "m.room.history_visibility", "state_key": "", "content": { "history_visibility": "shared" } }),
         ];
+        if bibliotheque {
+            etat.push(json!({ "type": "m.room.type", "state_key": "", "content": { "type": "com.sion.board" } }));
+        }
+        if let Some(espace) = espace {
+            let via = client.user_id().ok_or(Erreur::PasDeSession)?.server_name().to_string();
+            etat.push(json!({"type":"m.space.parent", "state_key":espace, "content":{"via":[via],"canonical":true}}));
+        }
         if vocal {
             etat.push(json!({ "type": "m.room.type", "state_key": "", "content": { "type": "m.voice_channel" } }));
             etat.push(json!({ "type": "m.room.topic", "state_key": "", "content": { "topic": "voice" } }));
@@ -455,14 +492,14 @@ impl CoeurMatrix {
         requete.preset = Some(if publique { RoomPreset::PublicChat } else { RoomPreset::PrivateChat });
         requete.initial_state = etat.into_iter().map(brut).collect::<Resultat<_>>()?;
         requete.power_level_content_override = Some(brut(json!({
-            "users": utilisateurs,
+            "users": utilisateurs, "events_default": if bibliotheque { 50 } else { 0 },
+            "state_default": 50, "invite": 50,
             "events": { "org.matrix.msc3401.call.member": 0, EVENEMENT_VERSION: 0 },
         }))?);
         let salon = Box::pin(client.create_room(requete)).await?;
         let id = salon.room_id().to_string();
-        if publique {
-            Box::pin(self.ouvrir_a_tous(&id)).await;
-        }
+        // L'Espace sera lié avant d'inviter ses membres côté interface.
+        if publique && espace.is_none() { Box::pin(self.ouvrir_a_tous(&id)).await; }
         Ok(id)
     }
 
@@ -850,6 +887,24 @@ fn administration_etapes(r: ReponseServeur) -> EtapesInscription {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn presence_matrix_sans_deduire_offline_des_absences() {
+        let evenement = |id: &str, statut: &str| brut::<PresenceEvent>(json!({
+            "type": "m.presence", "sender": id, "content": { "presence": statut }
+        })).unwrap();
+        let carte = presences_connues(vec![
+            evenement("@a:hs", "online"), evenement("@b:hs", "unavailable"),
+            evenement("@c:hs", "offline"), evenement("@d:hs", "inconnu"),
+            brut(json!({ "type": "m.presence", "content": {} })).unwrap(),
+        ]);
+        assert_eq!(carte.get("@a:hs").map(String::as_str), Some("online"));
+        assert_eq!(carte.get("@b:hs").map(String::as_str), Some("unavailable"));
+        assert_eq!(carte.get("@c:hs").map(String::as_str), Some("offline"));
+        assert!(!carte.contains_key("@d:hs"));
+        assert!(!carte.contains_key("@absent:hs"));
+        assert!(presences_connues(Vec::new()).is_empty());
+    }
 
     #[test]
     fn etapes_d_inscription_comme_le_js() {

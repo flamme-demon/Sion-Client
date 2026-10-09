@@ -12,6 +12,28 @@ import { useLayoutStore, type BackgroundScope, type BgAnchor } from "../stores/u
  */
 const urlCache = new Map<string, string>();
 const inflight = new Map<string, Promise<string | null>>();
+let disposed = false;
+
+function cheminsUtilises(): Set<string> {
+  return new Set(Object.values(useLayoutStore.getState().panelBackgrounds).map((cfg) => cfg?.path).filter((path): path is string => !!path));
+}
+
+// Un fond remplacé ne doit pas retenir ses octets jusqu'au redémarrage.
+// Un même fichier utilisé par plusieurs modules reste partagé.
+const unsubscribe = useLayoutStore.subscribe((etat, avant) => {
+  if (etat.panelBackgrounds === avant.panelBackgrounds) return;
+  const utilises = cheminsUtilises();
+  for (const [path, url] of urlCache) if (!utilises.has(path)) {
+    URL.revokeObjectURL(url);
+    urlCache.delete(path);
+  }
+});
+if (import.meta.hot) import.meta.hot.dispose(() => {
+  disposed = true;
+  unsubscribe();
+  for (const url of urlCache.values()) URL.revokeObjectURL(url);
+  urlCache.clear();
+});
 
 async function resolveBackgroundUrl(path: string): Promise<string | null> {
   const cached = urlCache.get(path);
@@ -22,6 +44,7 @@ async function resolveBackgroundUrl(path: string): Promise<string | null> {
     try {
       const { invoke } = await import("@tauri-apps/api/core");
       const bytes = await invoke<Uint8Array>("read_dropped_file", { path });
+      if (disposed || !cheminsUtilises().has(path)) return null;
       const url = URL.createObjectURL(new Blob([bytes as BlobPart]));
       urlCache.set(path, url);
       return url;

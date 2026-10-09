@@ -238,6 +238,22 @@ pub(crate) fn adresse_media(service: &str) -> String {
     }
 }
 
+/// Respecte les installations qui séparent JWT et SFU. Les adresses de boucle
+/// locale renvoyées par certains déploiements restent résolues via leur proxy public.
+pub(crate) fn adresse_media_reponse(service: &str, reponse: Option<&str>) -> String {
+    if let Some(url) = reponse {
+        if let Some(reste) = url.strip_prefix("wss://").or_else(|| url.strip_prefix("ws://")) {
+            let autorite = reste.split(['/', '?', '#']).next().unwrap_or("");
+            let hote = if autorite.starts_with('[') { autorite.split(']').next().unwrap_or("").trim_start_matches('[') }
+                else { autorite.split(':').next().unwrap_or("") };
+            if !hote.is_empty() && !autorite.contains('@') && hote != "localhost" && hote != "::1" && hote != "::" && hote != "0.0.0.0" && !hote.starts_with("127.") {
+                return url.to_owned();
+            }
+        }
+    }
+    adresse_media(service)
+}
+
 /// Contenu d'un envoi de clé (`ToDeviceKeyTransport.sendKey`).
 pub(crate) fn contenu_cle(salon: &str, moi: &str, appareil: &str, index: u8, cle: &[u8], envoye: i64) -> Value {
     json!({
@@ -477,6 +493,15 @@ impl GestionCles {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn adresse_sfu_distincte_et_proxy_local() {
+        assert_eq!(adresse_media_reponse("https://jwt.team.example", Some("wss://sfu.team.example/rtc")), "wss://sfu.team.example/rtc");
+        assert_eq!(adresse_media_reponse("https://livekit.sionchat.fr", Some("ws://127.0.0.1:7880")), "wss://livekit.sionchat.fr");
+        assert_eq!(adresse_media_reponse("https://proxy.example", Some("ws://[::1]:7880")), "wss://proxy.example");
+        assert_eq!(adresse_media_reponse("https://jwt.example", Some("wss://192.168.1.5:7880")), "wss://192.168.1.5:7880");
+        assert_eq!(adresse_media_reponse("https://jwt.example", Some("https://invalid.example")), "wss://jwt.example");
+    }
+
     #[test]
     fn la_validite_se_compte_en_temps_reel_meme_apres_une_veille() {
         use super::{expires_couvrant, validite_restante, EXPIRATION_MS};

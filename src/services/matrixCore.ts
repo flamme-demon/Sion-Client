@@ -18,7 +18,7 @@
  * Le jeton d'accès ne passe jamais par ici : il reste côté Rust.
  */
 
-import type { Channel, ChatMessage } from "../types/matrix";
+import type { Channel, ChatMessage, MatrixPresence } from "../types/matrix";
 import type { PinnedSummary, RegistrationFlowInfo, SionMemberVersion, SoundboardCreationResult } from "./matrixService";
 import type { SoundEntry } from "./soundboardService";
 import type { MemeEntry } from "./memeboardService";
@@ -227,6 +227,8 @@ export interface MembreSalon {
   displayName: string;
   avatarUrl: string | null;
   powerLevel: number;
+  /** Présence reçue par Matrix ; absente si le serveur ne l'annonce pas. */
+  presence?: MatrixPresence;
 }
 
 /** Ce que les écrans de gestion lisent d'un salon (`getRoomMembers`,
@@ -269,8 +271,12 @@ export const changerSujet = (salon: string, sujet: string) => invoquer<void>("ma
 export const changerRegleAcces = (salon: string, publique: boolean) =>
   invoquer<void>("matrix_changer_regle_acces", { salon, publique });
 /** Création d'un salon (`createChannel`) ; public, il est ouvert à tout le serveur. */
-export const creerSalon = (nom: string, vocal: boolean, publique = true, chiffre = false) =>
-  invoquer<string>("matrix_creer_salon", { nom, vocal, publique, chiffre });
+export const creerSalon = (nom: string, vocal: boolean, publique = true, chiffre = false, espace?: string, bibliotheque = false) =>
+  invoquer<string>("matrix_creer_salon", { nom, vocal, publique, chiffre, ...(espace ? { espace, bibliotheque } : {}) });
+export const creerEspace = (nom: string, sujet: string, publique: boolean) => invoquer<string>("matrix_creer_espace", { nom, sujet, publique });
+export const rejoindreEspace = (adresse: string, via: string[]) => invoquer<string>("matrix_rejoindre_espace", { adresse, via });
+export const rejoindreAvecVia = (adresse: string, via: string[]) => invoquer<string>("matrix_rejoindre_avec_via", { adresse, via });
+export const hierarchieEspace = (espace: string, suivant?: string) => invoquer<{ rooms: import("./espacesService").SalonHierarchie[]; next_batch?: string }>("matrix_hierarchie_espace", { espace, suivant: suivant ?? null });
 /** MP avec un utilisateur, réutilisé s'il existe (`createOrGetDMRoom`). */
 export const mpAvec = (utilisateur: string) => invoquer<string>("matrix_mp_avec", { utilisateur });
 
@@ -473,9 +479,9 @@ export const salonSoundboard = () => invoquer<string | null>("matrix_salon_sound
 /** `createOrSyncSoundboardRoom`. */
 export const creerOuSynchroniserSoundboard = () => invoquer<SoundboardCreationResult>("matrix_creer_ou_synchroniser_soundboard");
 /** `listSounds`, au format `SoundEntry`. */
-export const sons = () => invoquer<SoundEntry[]>("matrix_sons");
+export const sons = (salon?: string) => invoquer<SoundEntry[]>("matrix_sons", salon ? { salon } : undefined);
 /** `listMemes`, au format `MemeEntry`. */
-export const memes = () => invoquer<MemeEntry[]>("matrix_memes");
+export const memes = (salon?: string) => invoquer<MemeEntry[]>("matrix_memes", salon ? { salon } : undefined);
 
 /** `uploadSound` : même contrôles (audio, 1 Mo, 20 s ; la durée est mesurée ici). */
 export async function ajouterSon(
@@ -487,13 +493,14 @@ export async function ajouterSon(
   voix?: { refText?: string; avatar?: string },
   modele?: string,
   duree?: number | null,
+  salon?: string,
 ): Promise<{ eventId: string; mxcUrl: string; duration: number | null }> {
   const { invoke } = await import("@tauri-apps/api/core");
   const octets = new Uint8Array(await fichier.arrayBuffer());
   const ext = (fichier.name.split(".").pop() || "bin").toLowerCase();
   const chemin = await invoke<string>("stage_media", octets, { headers: { "x-sion-ext": ext } });
   return invoquer("matrix_ajouter_son", {
-    chemin, nomFichier: fichier.name, mime: fichier.type, duree: duree ?? null, label, categorie,
+    ...(salon ? { salon } : {}), chemin, nomFichier: fichier.name, mime: fichier.type, duree: duree ?? null, label, categorie,
     emoji, gain, voix: voix ? { refText: voix.refText ?? null, avatar: voix.avatar ?? null } : null, modele: modele ?? null,
   });
 }
@@ -506,24 +513,27 @@ export const modifierSon = (
   emoji: string | null,
   gain: number,
   voix: { refText?: string | null; avatar?: string | null } = {},
-) => invoquer<void>("matrix_modifier_son", { eventId, label, categorie, emoji, gain, changements: voix });
+  salon?: string,
+) => invoquer<void>("matrix_modifier_son", { eventId, label, categorie, emoji, gain, changements: voix, ...(salon ? { salon } : {}) });
 
 /** Nom et emoji d'un meme (édition `m.replace`) ; `null` retire l'emoji. */
-export const modifierMeme = (eventId: string, label: string, emoji: string | null) =>
-  invoquer<void>("matrix_modifier_meme", { eventId, label, emoji });
+export const modifierMeme = (eventId: string, label: string, emoji: string | null, categorie?: string, salon?: string) =>
+  invoquer<void>("matrix_modifier_meme", { eventId, label, emoji, categorie: categorie ?? null, ...(salon ? { salon } : {}) });
 
 /** `deleteSound` / `supprimerMeme`. */
-export const supprimerDuSoundboard = (eventId: string) => invoquer<void>("matrix_supprimer_du_soundboard", { eventId });
+export const supprimerDuSoundboard = (eventId: string, salon?: string) => invoquer<void>("matrix_supprimer_du_soundboard", { eventId, ...(salon ? { salon } : {}) });
 
 /** `envoyerMeme`, à partir de ce que rend `memeboard_preparer`. */
 export const envoyerMeme = (
   prepare: { video: string; mime: string; largeur: number; hauteur: number; duree_ms: number; apercu?: string | null; apercu_mime?: string | null },
   label: string,
   emoji: string | null,
+  categorie = "Autre",
+  salon?: string,
 ) =>
   invoquer<string>("matrix_envoyer_meme", {
-    chemin: prepare.video, mime: prepare.mime, largeur: prepare.largeur, hauteur: prepare.hauteur, dureeMs: prepare.duree_ms,
-    apercu: prepare.apercu ?? null, apercuMime: prepare.apercu_mime ?? null, label, emoji,
+    ...(salon ? { salon } : {}), chemin: prepare.video, mime: prepare.mime, largeur: prepare.largeur, hauteur: prepare.hauteur, dureeMs: prepare.duree_ms,
+    apercu: prepare.apercu ?? null, apercuMime: prepare.apercu_mime ?? null, label, emoji, categorie,
   });
 
 /** Un événement `com.sion.*` du fil, tel que le cœur le relaie. */

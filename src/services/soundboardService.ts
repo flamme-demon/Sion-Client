@@ -176,7 +176,8 @@ export async function fetchSoundboardMessages(
  */
 export async function listSounds(): Promise<SoundEntry[]> {
   if (moteurRust()) {
-    return core.sons();
+    const salon = await findSoundboardRoom();
+    return salon ? core.sons(salon) : [];
   }
   const client = getMatrixClient();
   if (!client) return [];
@@ -269,6 +270,7 @@ export async function uploadSound(
   /** Modèle audio.cpp à mémoriser, pour une voix comme pour un son généré. */
   ttsModel?: string,
 ): Promise<{ eventId: string; mxcUrl: string; duration: number | null }> {
+  const bibliotheque = await bibliothequeRequise();
   if (moteurRust()) {
     if (file.size > SOUNDBOARD_MAX_FILE_SIZE) {
       throw new Error(`Fichier trop lourd (max ${Math.round(SOUNDBOARD_MAX_FILE_SIZE / 1024)} KB)`);
@@ -278,11 +280,11 @@ export async function uploadSound(
     if (duree !== null && duree > SOUNDBOARD_MAX_DURATION_MS) {
       throw new Error(`Son trop long (max ${Math.round(SOUNDBOARD_MAX_DURATION_MS / 1000)}s)`);
     }
-    return core.ajouterSon(file, label, category, emoji, gain, voice, ttsModel, duree);
+    return core.ajouterSon(file, label, category, emoji, gain, voice, ttsModel, duree, bibliotheque);
   }
   const client = getMatrixClient();
   if (!client) throw new Error("Matrix client not initialized");
-  const roomId = await findSoundboardRoom();
+  const roomId = bibliotheque;
   if (!roomId) throw new Error("Soundboard room not created yet");
   if (file.size > SOUNDBOARD_MAX_FILE_SIZE) {
     throw new Error(`Fichier trop lourd (max ${Math.round(SOUNDBOARD_MAX_FILE_SIZE / 1024)} KB)`);
@@ -348,6 +350,7 @@ function probeDuration(file: File): Promise<number> {
 // ---- Playback ----
 
 const blobCache = new Map<string, string>(); // mxc -> blob URL (LRU borné)
+const blobRequests = new Map<string, Promise<string>>();
 
 /** Plafond du cache de sons. Chaque entrée retient les OCTETS du fichier
  *  (pas seulement une URL) : une soundboard de 200 sons écoutés finissait par
@@ -363,6 +366,14 @@ async function resolveBlobUrl(mxcUrl: string): Promise<string> {
     blobCache.set(mxcUrl, cached);
     return cached;
   }
+  const pending = blobRequests.get(mxcUrl);
+  if (pending) return pending;
+  const request = downloadBlobUrl(mxcUrl).finally(() => blobRequests.delete(mxcUrl));
+  blobRequests.set(mxcUrl, request);
+  return request;
+}
+
+async function downloadBlobUrl(mxcUrl: string): Promise<string> {
   if (moteurRust()) {
     // Le cœur télécharge (authentifié) et sert le son par sion-media.
     const url = await core.urlMedia(mxcUrl);
@@ -389,6 +400,8 @@ async function resolveBlobUrl(mxcUrl: string): Promise<string> {
 /** Met un son en cache ; éviction LRU : la plus ancienne sort, son URL est
  *  révoquée. */
 function garderEnCache(mxcUrl: string, blobUrl: string): string {
+  const previous = blobCache.get(mxcUrl);
+  if (previous && previous !== blobUrl) URL.revokeObjectURL(previous);
   blobCache.set(mxcUrl, blobUrl);
   while (blobCache.size > BLOB_CACHE_MAX) {
     const oldest = blobCache.keys().next().value;
@@ -435,7 +448,7 @@ export async function editSound(
   voice?: { refText?: string | null; avatar?: string | null },
 ): Promise<void> {
   if (moteurRust()) {
-    return core.modifierSon(original.eventId, label, category, emoji, gain, voice ?? {});
+    return core.modifierSon(original.eventId, label, category, emoji, gain, voice ?? {}, await bibliothequeRequise());
   }
   const client = getMatrixClient();
   if (!client) throw new Error("Matrix client not initialized");
@@ -495,7 +508,7 @@ export async function editSound(
 
 export async function deleteSound(eventId: string): Promise<void> {
   if (moteurRust()) {
-    return core.supprimerDuSoundboard(eventId);
+    return core.supprimerDuSoundboard(eventId, await bibliothequeRequise());
   }
   const client = getMatrixClient();
   if (!client) throw new Error("Matrix client not initialized");
@@ -759,4 +772,10 @@ export function playErrorBuzzer(): void {
     osc.start(now);
     osc.stop(now + 0.4);
   } catch { /* AudioContext not available */ }
+}
+
+async function bibliothequeRequise(): Promise<string> {
+  const id = await findSoundboardRoom();
+  if (!id) throw new Error("spaces.noLibrary");
+  return id;
 }

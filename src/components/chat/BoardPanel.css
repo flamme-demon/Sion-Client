@@ -1,0 +1,77 @@
+.sion-board { position: relative; display: flex; flex-direction: column; flex: 1; min-height: 0; overflow: hidden; }
+.sion-board-outils { display: contents; }
+.sion-board-recherche { display: flex; gap: 8px; align-items: center; flex-shrink: 0; }
+.soundboard-panel .sion-board-recherche { padding: 12px 16px 8px; }
+.memeboard-panel .sion-board-recherche { padding: 0 16px 12px; }
+.sion-board-onglets { display: flex; gap: 18px; padding: 0 16px; border-bottom: 1px solid var(--color-border); overflow-x: auto; flex-shrink: 0; }
+.sion-board-onglets-select, .sion-board-filtre-compact { display: none; }
+.sion-board-contenu { flex: 1; min-height: 0; overflow: auto; }
+.soundboard-panel .sion-board-contenu { padding: 4px 16px 12px; }
+.soundboard-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; align-content: start; }
+.memeboard-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(112px, 1fr)); gap: 10px; align-content: start; padding: 4px 16px 16px; }
+.sound-card { display: flex; flex-direction: column; gap: 8px; padding: 12px; border-radius: var(--sion-carte-rayon); }
+.meme-tuile { display: flex; flex-direction: column; gap: 6px; padding: 6px; border-radius: 12px; }
+.sion-board-description { min-width: 0; }
+.sound-card .sion-board-visuel { width: 38px; height: 38px; display: flex; align-items: center; justify-content: center; font-size: 20px; }
+.meme-tuile .sion-board-visuel { aspect-ratio: 1; border-radius: 8px; overflow: hidden; display: flex; align-items: center; justify-content: center; font-size: 28px; }
+.sion-board-raccourci { position: absolute; bottom: 8px; right: 8px; background: var(--color-primary); color: var(--color-on-primary); font-size: 9px; padding: 1px 5px; border-radius: 5px; font-weight: 700; letter-spacing: .02em; pointer-events: none; }
+.sion-board-alternative { flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column; }
+.sion-board-message { margin: 0 16px 8px; padding: 6px 10px; border-radius: 8px; font-size: 12px; background: var(--color-surface-container-high); color: var(--color-on-surface); }
+.sion-carte-panneau:is([data-panneau="soundboard"], [data-panneau="memeboard"]) { container: carte-board / size; }
+
+/* Les contrôles occupent une ligne et les cartes les colonnes suivantes.
+   Le volume garde sa place à droite, même lorsque les outils défilent. */
+:is(.sion-panneau--top, .sion-panneau--bottom) .sion-board {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(100px, 140px);
+  grid-template-rows: 34px minmax(0, 1fr);
+  gap: 4px 8px;
+  padding: 0 10px 8px;
+}
+:is(.sion-panneau--top, .sion-panneau--bottom) .sion-board-outils { grid-area: 1 / 1; display: flex; align-items: center; gap: 6px; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+:is(.sion-panneau--top, .sion-panneau--bottom) .sion-board-outils::-webkit-scrollbar { display: none; }
+:is(.sion-panneau--top, .sion-panneau--bottom) .sion-board-recherche { flex: 1 0 128px; max-width: 240px; min-width: 128px; padding: 0; }
+:is(.sion-panneau--top, .sion-panneau--bottom) .sion-recherche-panneau { min-height: 30px; padding: 1px 4px 1px 8px; }
+:is(.sion-panneau--top, .sion-panneau--bottom) .sion-recherche-panneau input { padding: 4px 0; font-size: 11px; }
+:is(.sion-panneau--top, .sion-panneau--bottom) .sion-recherche-panneau > button { width: 24px; height: 24px; }
+:is(.sion-panneau--top, .sion-panneau--bottom) .sion-board-filtres-larges { display: none !important; }
+:is(.sion-panneau--top, .sion-panneau--bottom) :is(.sion-board-filtre-compact, .sion-board-onglets-select) { display: block; min-width: 0; height: 28px; padding: 3px 6px; border: 1px solid var(--color-border); border-radius: 8px; background: var(--color-surface-container-high); color: var(--color-on-surface-variant); font: inherit; font-size: 11px; }
+:is(.sion-panneau--top, .sion-panneau--bottom) .sion-board-filtre-compact { flex: 0 0 126px; width: 126px; }
+:is(.sion-panneau--top, .sion-panneau--bottom) .sion-board-onglets { position: absolute; top: 3px; left: 10px; width: 80px; height: 28px; padding: 0; border: 0; z-index: 1; }
+:is(.sion-panneau--top, .sion-panneau--bottom) .sion-board-onglets > button { display: none; }
+:is(.sion-panneau--top, .sion-panneau--bottom) .sion-board-onglets-select { width: 100%; }
+:is(.sion-panneau--top, .sion-panneau--bottom) .sion-board[data-onglets="true"] .sion-board-outils { padding-left: 86px; }
+:is(.sion-panneau--top, .sion-panneau--bottom) .sion-board > .sion-pied-panneau { grid-area: 1 / 2; margin: 0 !important; padding: 0 !important; border: 0; background: transparent; }
+:is(.sion-panneau--top, .sion-panneau--bottom) :is(.sion-board-contenu, .sion-board-alternative, .sion-board-vide) { grid-area: 2 / 1 / 3 / -1; min-width: 0; }
+:is(.sion-panneau--top, .sion-panneau--bottom) .sion-board-contenu { padding: 0; overflow-x: auto; overflow-y: hidden; scrollbar-width: thin; }
+:is(.sion-panneau--top, .sion-panneau--bottom) :is(.soundboard-grid, .memeboard-grid) { grid-template-columns: none; grid-auto-flow: column; grid-auto-columns: 210px; grid-template-rows: repeat(auto-fill, 82px); gap: 8px; }
+:is(.sion-panneau--top, .sion-panneau--bottom) .soundboard-grid { height: 100%; }
+:is(.sion-panneau--top, .sion-panneau--bottom) :is(.sound-card, .meme-tuile) { flex-direction: row; align-items: center; gap: 8px; padding: 8px; min-width: 0; min-height: 0; }
+:is(.sion-panneau--top, .sion-panneau--bottom) .sion-board-visuel { flex-shrink: 0; width: 64px; height: 64px; aspect-ratio: 1; }
+:is(.sion-panneau--top, .sion-panneau--bottom) .sound-card .sion-board-visuel { width: 38px; height: 38px; }
+:is(.sion-panneau--top, .sion-panneau--bottom) .sion-board-description { flex: 1; }
+:is(.sion-panneau--top, .sion-panneau--bottom) .sion-board-message { position: absolute; bottom: 10px; left: 10px; right: 10px; margin: 0; z-index: 2; }
+:is(.sion-panneau--top, .sion-panneau--bottom) .sion-board[data-prete="false"] .sion-board-vide { grid-row: 1 / 3; }
+
+@container carte-board (max-height: 180px) {
+  :is(.sion-panneau--top, .sion-panneau--bottom) .sion-panneau-entete { padding: 4px 10px; }
+  :is(.sion-panneau--top, .sion-panneau--bottom) .sion-board { grid-template-rows: 26px minmax(0, 1fr); gap: 2px 6px; padding-bottom: 4px; --sion-board-visuel: clamp(24px, calc(100cqh - 76px), 40px); }
+  :is(.sion-panneau--top, .sion-panneau--bottom) .sion-recherche-panneau { min-height: 26px; }
+  :is(.sion-panneau--top, .sion-panneau--bottom) .sion-recherche-panneau input { padding: 2px 0; }
+  :is(.sion-panneau--top, .sion-panneau--bottom) .sion-recherche-panneau > button { width: 20px; height: 20px; font-size: 17px; }
+  :is(.sion-panneau--top, .sion-panneau--bottom) :is(.sion-board-filtre-compact, .sion-board-onglets-select) { height: 26px; }
+  :is(.sion-panneau--top, .sion-panneau--bottom) .sion-board-onglets { top: 0; }
+  :is(.sion-panneau--top, .sion-panneau--bottom) :is(.soundboard-grid, .memeboard-grid) { grid-template-rows: minmax(0, 1fr); grid-auto-columns: 148px; gap: 6px; }
+  :is(.sion-panneau--top, .sion-panneau--bottom) .sion-board-contenu { scrollbar-width: none; }
+  :is(.sion-panneau--top, .sion-panneau--bottom) .sion-board-contenu::-webkit-scrollbar { display: none; }
+  :is(.sion-panneau--top, .sion-panneau--bottom) .sion-board-vide { padding: 4px !important; font-size: 11px !important; }
+  :is(.sion-panneau--top, .sion-panneau--bottom) :is(.sound-card, .meme-tuile) { padding: 3px; gap: 6px; border-radius: 8px; }
+  :is(.sion-panneau--top, .sion-panneau--bottom) .sion-board-visuel { width: var(--sion-board-visuel); height: var(--sion-board-visuel); font-size: 20px; border-radius: 5px; }
+  :is(.sion-panneau--top, .sion-panneau--bottom) .sound-card .sion-board-visuel { width: var(--sion-board-visuel); height: var(--sion-board-visuel); }
+  :is(.sion-panneau--top, .sion-panneau--bottom) .sion-carte-board-nom { display: block; white-space: nowrap; text-overflow: ellipsis; font-size: 11px; line-height: 1.2; }
+  :is(.sion-panneau--top, .sion-panneau--bottom) .sion-carte-board-categorie { font-size: 9px; line-height: 1.2; }
+  :is(.sion-panneau--top, .sion-panneau--bottom) .sion-board-modele { display: none !important; }
+  :is(.sion-panneau--top, .sion-panneau--bottom) .sion-board-raccourci { top: 2px; bottom: auto; right: 3px; font-size: 8px; padding: 0 3px; }
+  :is(.sion-panneau--top, .sion-panneau--bottom) .sion-actions-carte-board { top: 50%; right: 3px; transform: translateY(-50%); gap: 2px; padding: 2px; border-radius: 10px; background: var(--color-surface-container-high); }
+  :is(.sion-panneau--top, .sion-panneau--bottom) .sion-actions-carte-board > button { width: 20px; height: 20px; }
+}

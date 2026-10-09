@@ -1,5 +1,8 @@
 import { RecherchePanneau } from "./RecherchePanneau";
 import { useCompteurPanneau } from "../layout/panneauxCompteurs";
+import { SoundboardIcon } from "../icons";
+import { ActionsCarteBoard } from "./ActionsCarteBoard";
+import { ConfirmationSuppressionBoard } from "./ConfirmationSuppressionBoard";
 import { useEffect, useState, useMemo, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { useAppStore } from "../../stores/useAppStore";
@@ -28,54 +31,15 @@ import { formatCombo } from "../../utils/keyCombo";
 import { UserAvatar } from "../sidebar/UserAvatar";
 import { loadHotkeys, onHotkeysChange, pruneHotkeys, resyncHotkeys } from "../../services/soundboardHotkeys";
 import { SUR_ANDROID } from "../../utils/plateforme";
+import { buildTree, findNode, sortedChildren, parentPath } from "../../utils/categories";
+import { FiltreBoardCompact } from "./FiltreBoardCompact";
+import "./BoardPanel.css";
 
-// Build a nested tree from "Films/Kamelott" paths so the pill navigation can
-// list top-level categories and drill into sub-categories.
-type TreeNode = { name: string; fullPath: string; children: Map<string, TreeNode> };
-
-function buildTree(categories: string[]): TreeNode {
-  const root: TreeNode = { name: "", fullPath: "", children: new Map() };
-  for (const cat of categories) {
-    const parts = cat.split("/").filter(Boolean);
-    let cur = root;
-    let path = "";
-    for (const p of parts) {
-      path = path ? `${path}/${p}` : p;
-      let next = cur.children.get(p);
-      if (!next) {
-        next = { name: p, fullPath: path, children: new Map() };
-        cur.children.set(p, next);
-      }
-      cur = next;
-    }
-  }
-  return root;
-}
-
-/** Walk the tree to the node at `path` (null = root). */
-function findNode(root: TreeNode, path: string | null): TreeNode | null {
-  if (!path) return root;
-  let cur: TreeNode | undefined = root;
-  for (const p of path.split("/").filter(Boolean)) {
-    cur = cur?.children.get(p);
-    if (!cur) return null;
-  }
-  return cur || null;
-}
-
-const sortedChildren = (node: TreeNode | null) =>
-  node ? Array.from(node.children.values()).sort((a, b) => a.name.localeCompare(b.name)) : [];
-
-const parentPath = (path: string): string | null => {
-  const parts = path.split("/").filter(Boolean);
-  parts.pop();
-  return parts.length ? parts.join("/") : null;
-};
-
-type FilterMode = "all" | "favorites" | "top";
+type FilterMode = "all" | "top";
 
 export function SoundboardPanel() {
   const { t } = useTranslation();
+  const espacesPresents = useMatrixStore((s) => s.channels.some((c) => c.isSpace));
   const connectedVoice = useAppStore((s) => s.connectedVoiceChannel);
   const [sounds, setSounds] = useState<SoundEntry[]>([]);
   const [roomId, setRoomId] = useState<string | null>(null);
@@ -89,6 +53,7 @@ export function SoundboardPanel() {
   const [errorToast, setErrorToast] = useState<string | null>(null);
   const [hotkeyTarget, setHotkeyTarget] = useState<SoundEntry | null>(null);
   const [editTarget, setEditTarget] = useState<SoundEntry | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<SoundEntry | null>(null);
   const [hotkeysTick, setHotkeysTick] = useState(0);
   const volume = useSettingsStore((s) => s.soundboardVolume);
   const setVolume = useSettingsStore((s) => s.setSoundboardVolume);
@@ -96,8 +61,6 @@ export function SoundboardPanel() {
   const setEnabled = useSettingsStore((s) => s.setSoundboardEnabled);
   const hiddenCategories = useSettingsStore((s) => s.hiddenCategories);
   const toggleCategoryHidden = useSettingsStore((s) => s.toggleCategoryHidden);
-  const favorites = useSettingsStore((s) => s.soundboardFavorites);
-  const toggleFavorite = useSettingsStore((s) => s.toggleSoundboardFavorite);
   const playCounts = useSettingsStore((s) => s.soundboardPlayCounts);
   const incrementPlay = useSettingsStore((s) => s.incrementSoundboardPlay);
   const refreshRef = useRef<() => void>(() => {});
@@ -121,9 +84,9 @@ export function SoundboardPanel() {
 
   // Prune hotkeys that reference deleted sounds
   useEffect(() => {
-    if (sounds.length === 0) return;
+    if (sounds.length === 0 || espacesPresents) return;
     pruneHotkeys(new Set(sounds.map((s) => s.eventId)));
-  }, [sounds]);
+  }, [sounds, espacesPresents]);
 
   const hotkeys = useMemo(() => { void hotkeysTick; return loadHotkeys(); }, [hotkeysTick]);
 
@@ -134,14 +97,26 @@ export function SoundboardPanel() {
     let cancelled = false;
     let debounceTimer: ReturnType<typeof setTimeout> | null = null;
     let cachedRoomId: string | null = null;
+    let loading = false;
+    let requested = false;
 
     const refresh = async () => {
-      const rid = await getSoundboardRoomId();
       if (cancelled) return;
-      cachedRoomId = rid;
-      setRoomId(rid);
-      const list = await listSounds();
-      if (!cancelled) setSounds(list);
+      if (loading) { requested = true; return; }
+      loading = true;
+      try {
+        const rid = await getSoundboardRoomId();
+        if (cancelled) return;
+        cachedRoomId = rid;
+        setRoomId(rid);
+        const list = await listSounds();
+        if (!cancelled) setSounds(list);
+      } catch (err) {
+        if (!cancelled) console.warn("[Sion][soundboard] rafraîchissement impossible", err);
+      } finally {
+        loading = false;
+        if (requested && !cancelled) { requested = false; void refresh(); }
+      }
     };
     refreshRef.current = refresh;
     refresh();
@@ -168,7 +143,7 @@ export function SoundboardPanel() {
     }
 
     const client = getMatrixClient();
-    if (!client) return;
+    if (!client) return () => { cancelled = true; };
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const onTimeline = (_event: any, room: any) => {
       if (!room || !cachedRoomId || room.roomId !== cachedRoomId) return;
@@ -248,7 +223,6 @@ export function SoundboardPanel() {
   };
 
   const hiddenCategoriesSet = useMemo(() => new Set(hiddenCategories), [hiddenCategories]);
-  const favoritesSet = useMemo(() => new Set(favorites), [favorites]);
 
   const isCategoryHidden = (cat: string): boolean => {
     if (hiddenCategoriesSet.has(cat)) return true;
@@ -283,9 +257,6 @@ export function SoundboardPanel() {
     const matchesQuery = (s: SoundEntry) =>
       !q || s.label.toLowerCase().includes(q) || s.category.toLowerCase().includes(q);
 
-    if (filterMode === "favorites") {
-      return playable.filter((s) => favoritesSet.has(s.eventId) && matchesQuery(s));
-    }
     if (filterMode === "top") {
       // Most-played first; ties broken by label. Only sounds played at least once.
       return playable
@@ -305,7 +276,7 @@ export function SoundboardPanel() {
       return matchesQuery(s);
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [playable, search, selectedCat, filterMode, hiddenCategoriesSet, favoritesSet, playCounts]);
+  }, [playable, search, selectedCat, filterMode, hiddenCategoriesSet, playCounts]);
 
   const handlePlay = async (s: SoundEntry) => {
     if (!enabled) return;
@@ -326,16 +297,9 @@ export function SoundboardPanel() {
   };
 
   const handleDelete = async (s: SoundEntry) => {
-    if (!window.confirm(t("soundboard.deleteConfirm", { label: s.label }))) return;
-    try {
-      await deleteSound(s.eventId);
-      invalidateSoundCache(s.mxcUrl);
-      refreshRef.current();
-    } catch (err) {
-      console.error("[Sion] delete failed:", err);
-      setErrorToast(t("soundboard.deleteError"));
-      setTimeout(() => setErrorToast(null), 5000);
-    }
+    await deleteSound(s.eventId);
+    invalidateSoundCache(s.mxcUrl);
+    refreshRef.current();
   };
 
   // Translate vertical wheel into horizontal scroll so the pill rows are
@@ -381,27 +345,17 @@ export function SoundboardPanel() {
     { key: "members" as const, label: `${t("soundboard.tabMembers")} · ${members.length}`, show: canManageMembers },
   ].filter((x) => x.show);
 
-  const volumeControl = (inHeader: boolean) => (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0, flexShrink: 0, color: 'var(--color-on-surface-variant)' }}>
+  const volumeControl = (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0, flex: 1, color: 'var(--color-on-surface-variant)' }}>
       <button
         type="button"
         onClick={() => setEnabled(!enabled)}
+        aria-pressed={enabled}
+        aria-label={enabled ? t("soundboard.disableSb") : t("soundboard.enableSb")}
         title={enabled ? t("soundboard.disableSb") : t("soundboard.enableSb")}
         style={{ flexShrink: 0, border: 'none', background: 'transparent', cursor: 'pointer', padding: 4, borderRadius: 8, display: 'flex', color: enabled ? 'var(--color-on-surface)' : 'var(--color-error)' }}
       >
-        {enabled ? (
-          <svg width={inHeader ? 15 : 18} height={inHeader ? 15 : 18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
-            <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />
-            <path d="M19.07 4.93a10 10 0 0 1 0 14.14" />
-          </svg>
-        ) : (
-          <svg width={inHeader ? 15 : 18} height={inHeader ? 15 : 18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
-            <line x1="23" y1="9" x2="17" y2="15" />
-            <line x1="17" y1="9" x2="23" y2="15" />
-          </svg>
-        )}
+        <SoundboardIcon muted={!enabled} size={18} />
       </button>
       <input
         type="range" min={0} max={1} step={0.05} value={volume}
@@ -409,23 +363,20 @@ export function SoundboardPanel() {
         disabled={!enabled}
         onChange={(e) => setVolume(parseFloat(e.target.value))}
         style={{
-          width: inHeader ? 90 : undefined,
-          flex: inHeader ? '0 0 auto' : 1,
+          minWidth: 0, flex: 1,
           opacity: enabled ? 1 : 0.4,
           cursor: enabled ? 'pointer' : 'not-allowed',
           '--sion-range-progress': `${Math.round(volume * 100)}%`,
         } as React.CSSProperties}
         aria-label={t("soundboard.volume")} title={t("soundboard.volume")}
       />
-      <span style={{ minWidth: inHeader ? 26 : 30, textAlign: 'right', fontSize: inHeader ? 10 : 11, opacity: enabled ? 1 : 0.4 }}>{Math.round(volume * 100)}%</span>
+      <span style={{ minWidth: 30, textAlign: 'right', fontSize: 11, opacity: enabled ? 1 : 0.4 }}>{Math.round(volume * 100)}%</span>
     </div>
   );
 
   return (
-    <div className="soundboard-panel" style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, overflow: 'hidden' }}>
+    <div className="soundboard-panel sion-board" data-tab={tab} data-prete={!!roomId} data-onglets={!!roomId && (canUpload || canManageMembers)}>
       <style>{`
-        .sound-card:hover .sound-delete-btn { display: flex !important; }
-        .sound-card:hover .sound-edit-btn { display: flex !important; }
         /* Scrollbar masquée — navigation à la molette (onPillWheel). */
         .sb-pills { scrollbar-width: none; -ms-overflow-style: none; }
         .sb-pills::-webkit-scrollbar { height: 0; width: 0; }
@@ -436,7 +387,11 @@ export function SoundboardPanel() {
           {/* Tabs — défilement horizontal (masqué) pour ne jamais rogner quand le
               panneau est étroit. */}
           {roomId && (canUpload || canManageMembers) && (
-            <div className="sb-pills" onWheel={onPillWheel} style={{ display: 'flex', gap: 18, padding: '0 16px', borderBottom: '1px solid var(--color-border)', overflowX: 'auto' }}>
+            <div className="sb-pills sion-board-onglets" onWheel={onPillWheel}>
+              <select className="sion-board-onglets-select" aria-label={t("soundboard.title")} value={tab}
+                onChange={(e) => setTab(e.currentTarget.value as typeof tab)}>
+                {tabDefs.map((x) => <option key={x.key} value={x.key}>{x.label}</option>)}
+              </select>
               {tabDefs.map((x) => (
                 <button
                   key={x.key}
@@ -455,22 +410,24 @@ export function SoundboardPanel() {
       )}
 
       {!roomId && (
-        <div style={{ padding: 20, fontSize: 12, color: 'var(--color-outline)', textAlign: 'center' }}>
+        <div className="sion-board-vide" style={{ padding: 20, fontSize: 12, color: 'var(--color-outline)', textAlign: 'center' }}>
           {t("soundboard.notCreated")}
         </div>
       )}
 
       {roomId && tab === "voices" && canUpload && (
+        <div className="sion-board-alternative">
         <VoicePanel
           sounds={sounds}
           resolveSound={fetchSoundFile}
           onUploaded={() => refreshRef.current()}
           connectedVoice={!!connectedVoice}
         />
+        </div>
       )}
 
       {roomId && tab === "members" && canManageMembers && (
-        <div style={{ flex: 1, overflow: 'auto', padding: 12 }}>
+        <div className="sion-board-alternative" style={{ padding: 12 }}>
           {members.map((m) => {
             const isMe = m.userId === myUserId;
             const role = m.pl >= 100 ? "admin" : m.pl >= 50 ? "mod" : "user";
@@ -509,17 +466,17 @@ export function SoundboardPanel() {
 
       {roomId && tab === "sounds" && (
         <>
+          <div className="sion-board-outils" onWheel={onPillWheel}>
           {/* Recherche et ajout réunis dans un même champ. */}
           {(
-            <div style={{ padding: '12px 16px 8px', display: 'flex', gap: 8, alignItems: 'center' }}>
+            <div className="sion-board-recherche">
               <RecherchePanneau valeur={search} onChange={setSearch} libelle={t("soundboard.searchPlaceholder")}
                 ajout={canUpload ? { libelle: t("soundboard.upload"), onClick: () => setShowUpload(true) } : undefined} />
             </div>
           )}
 
           {/* Quick-filter + top-level category pills */}
-          <div className="sb-pills" onWheel={onPillWheel} style={{ display: 'flex', gap: 8, padding: '4px 16px 8px', overflowX: 'auto' }}>
-            {pill("fav", <>⭐ {t("soundboard.favorites")}</>, filterMode === "favorites", () => { setFilterMode("favorites"); setSelectedCat(null); })}
+          <div className="sb-pills sion-board-filtres-larges" onWheel={onPillWheel} style={{ display: 'flex', gap: 8, padding: '4px 16px 8px', overflowX: 'auto', flexShrink: 0 }}>
             {pill("top", <>🔥 {t("soundboard.top")}</>, filterMode === "top", () => { setFilterMode("top"); setSelectedCat(null); })}
             {pill("all", t("soundboard.allCategories"), filterMode === "all" && selectedCat === null, () => { setFilterMode("all"); setSelectedCat(null); })}
             {topLevels.map((c) => pill(
@@ -537,7 +494,7 @@ export function SoundboardPanel() {
 
           {/* Sub-category drill-down */}
           {showSubRow && anchorNode && (
-            <div className="sb-pills" onWheel={onPillWheel} style={{ display: 'flex', gap: 8, padding: '0 16px 8px', overflowX: 'auto', alignItems: 'center' }}>
+            <div className="sb-pills sion-board-filtres-larges" onWheel={onPillWheel} style={{ display: 'flex', gap: 8, padding: '0 16px 8px', overflowX: 'auto', alignItems: 'center', flexShrink: 0 }}>
               <button
                 type="button"
                 onClick={() => setSelectedCat(parentPath(anchorNode.fullPath))}
@@ -560,99 +517,72 @@ export function SoundboardPanel() {
             </div>
           )}
 
+          <FiltreBoardCompact arbre={tree} mode={filterMode} categorie={selectedCat}
+            toutes={t("soundboard.allCategories")} libelle={t("soundboard.category")}
+            onChange={(mode, categorie) => { setFilterMode(mode); setSelectedCat(categorie); }}
+            onMasquer={toggleCategoryHidden} />
+          </div>
+
           {/* Sound cards */}
-          <div style={{ flex: 1, overflow: 'auto', padding: '4px 16px 12px' }}>
+          <div className="sion-board-contenu" onWheel={(e) => {
+            if (getComputedStyle(e.currentTarget).overflowY === "hidden") onPillWheel(e);
+          }}>
             {filtered.length === 0 ? (
               <div style={{ padding: 24, fontSize: 12, color: 'var(--color-outline)', textAlign: 'center' }}>
-                {filterMode === "favorites" ? t("soundboard.noFavorites") : filterMode === "top" ? t("soundboard.noTop") : t("soundboard.empty")}
+                {filterMode === "top" ? t("soundboard.noTop") : t("soundboard.empty")}
               </div>
             ) : (
-              <div className="soundboard-grid" style={{
-                display: 'grid',
-                gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
-                gap: 10,
-                alignContent: 'start',
-              }}>
+              <div className="soundboard-grid">
                 {filtered.map((s) => {
                   const hotkey = hotkeys[s.eventId] || null;
-                  const isFav = favoritesSet.has(s.eventId);
                   const subtitle = s.category.replace(/\//g, " · ");
                   return (
                     <div
                       key={s.eventId}
-                      className="sound-card"
+                      className="sound-card sion-carte-board"
                       onClick={() => handlePlay(s)}
                       onContextMenu={(ev) => { ev.preventDefault(); setHotkeyTarget(s); }}
                       title={!enabled ? t("soundboard.disabledHint") : `${s.label} — ${s.category}${s.ttsModel ? `\n${t("tts.generatedWith", { model: TTS_MODEL_LABELS[s.ttsModel] || s.ttsModel })}` : ""}\n${t("soundboard.rightClickAssign")}${hotkey ? `\n${t("soundboard.currentHotkey", { combo: formatCombo(hotkey) })}` : ""}`}
                       style={{
-                        position: 'relative', display: 'flex', flexDirection: 'column', gap: 8,
-                        padding: 12, borderRadius: 'var(--sion-carte-rayon)',
+                        position: 'relative',
                         border: 'none',
-                        background: 'var(--color-surface-container)',
+                        background: 'var(--sion-fond-carte-board)',
                         cursor: 'pointer', opacity: enabled ? 1 : 0.4, pointerEvents: enabled ? 'auto' : 'none',
                         transition: 'background 120ms',
                       }}
                       onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--color-surface-container-high)'; }}
-                      onMouseLeave={(e) => { e.currentTarget.style.background = 'var(--color-surface-container)'; }}
+                      onMouseLeave={(e) => { e.currentTarget.style.background = 'var(--sion-fond-carte-board)'; }}
                     >
-                      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between' }}>
-                        <div style={{ width: 38, height: 38, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 20 }}>
+                        <div className="sion-board-visuel">
                           {s.emoji || '🔊'}
                         </div>
-                        {/* Un son de synthèse ne se distingue autrement en rien
-                            d'un extrait enregistré : sans marqueur, l'origine
-                            se perd dès la séance suivante. */}
+                      <div className="sion-board-description">
+                        <div className="sion-carte-board-nom">{s.label}</div>
+                        <div className="sion-carte-board-categorie">{subtitle}</div>
                         {s.ttsModel && (
-                          <span style={{
-                            fontSize: 9, fontWeight: 700, letterSpacing: 0.4, padding: '1px 5px',
-                            borderRadius: 999, background: 'var(--color-primary)',
-                            color: 'var(--color-on-primary)', alignSelf: 'flex-start', marginLeft: 'auto', marginRight: 4,
-                          }}>{t("tts.badge")}</span>
-                        )}
-                        <button
-                          onClick={(e) => { e.stopPropagation(); toggleFavorite(s.eventId); }}
-                          aria-pressed={isFav} aria-label={isFav ? t("soundboard.unfavorite") : t("soundboard.favorite")} title={isFav ? t("soundboard.unfavorite") : t("soundboard.favorite")}
-                          style={{ border: 'none', background: 'transparent', cursor: 'pointer', fontSize: 16, lineHeight: 1, padding: 2, color: isFav ? 'var(--color-orange)' : 'var(--color-outline)', opacity: isFav ? 1 : 0.5 }}
-                        >{isFav ? '★' : '☆'}</button>
-                      </div>
-                      <div style={{ minWidth: 0 }}>
-                        <div style={{
-                          fontSize: 13, fontWeight: 600, color: 'var(--color-on-surface)',
-                          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                        }}>{s.label}</div>
-                        <div style={{
-                          fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--color-on-surface-variant)',
-                          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                        }}>{subtitle}</div>
-                        {s.ttsModel && (
-                          <div style={{
-                            fontSize: 10, color: 'var(--color-outline)', marginTop: 2,
-                            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                          }}>{TTS_MODEL_LABELS[s.ttsModel] || s.ttsModel}</div>
+                          <div className="sion-board-modele" style={{
+                            display: 'flex', alignItems: 'center', gap: 4,
+                            fontSize: 10, color: 'var(--color-outline)', marginTop: 2, minWidth: 0,
+                          }}>
+                            <span style={{
+                              fontSize: 9, fontWeight: 700, letterSpacing: 0.4, padding: '1px 5px',
+                              borderRadius: 999, background: 'var(--color-primary)',
+                              color: 'var(--color-on-primary)', flexShrink: 0,
+                            }}>{t("tts.badge")}</span>
+                            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                              {TTS_MODEL_LABELS[s.ttsModel] || s.ttsModel}
+                            </span>
+                          </div>
                         )}
                       </div>
                       {hotkey && (
-                        <span style={{
-                          position: 'absolute', bottom: 8, right: 8,
-                          background: 'var(--color-primary)', color: 'var(--color-on-primary)',
-                          fontSize: 9, padding: '1px 5px', borderRadius: 5, fontWeight: 700, letterSpacing: '0.02em', pointerEvents: 'none',
-                        }}>{formatCombo(hotkey)}</span>
+                        <span className="sion-board-raccourci">{formatCombo(hotkey)}</span>
                       )}
                       {canUpload && (
-                        <>
-                          <button
-                            onClick={(e) => { e.stopPropagation(); handleDelete(s); }}
-                            title={t("soundboard.deleteHint")}
-                            className="sound-delete-btn"
-                            style={{ position: 'absolute', bottom: 8, left: 8, width: 22, height: 22, borderRadius: 11, border: 'none', background: 'var(--color-error-container)', color: 'var(--color-error)', fontSize: 12, fontWeight: 700, cursor: 'pointer', display: 'none', alignItems: 'center', justifyContent: 'center', lineHeight: 1, padding: 0 }}
-                          >×</button>
-                          <button
-                            onClick={(e) => { e.stopPropagation(); setEditTarget(s); }}
-                            title={t("soundboard.editHint")}
-                            className="sound-edit-btn"
-                            style={{ position: 'absolute', bottom: 8, left: 34, width: 22, height: 22, borderRadius: 11, border: 'none', background: 'var(--color-secondary-container)', color: 'var(--color-on-secondary-container)', fontSize: 11, cursor: 'pointer', display: 'none', alignItems: 'center', justifyContent: 'center', lineHeight: 1, padding: 0 }}
-                          >✎</button>
-                        </>
+                        <ActionsCarteBoard
+                          modifier={{ libelle: t("soundboard.editHint"), onClick: () => setEditTarget(s) }}
+                          supprimer={{ libelle: t("soundboard.deleteHint"), onClick: () => setDeleteTarget(s) }}
+                        />
                       )}
                     </div>
                   );
@@ -664,10 +594,10 @@ export function SoundboardPanel() {
           {/* Volume en pied de panneau. */}
           {(
             <div className="sion-pied-panneau" style={{
-              padding: '8px 16px',
+              padding: '8px 16px', marginTop: 'auto', flexShrink: 0,
               display: 'flex', alignItems: 'center', gap: 8, fontSize: 11, color: 'var(--color-on-surface-variant)',
             }}>
-              {volumeControl(false)}
+              {volumeControl}
             </div>
           )}
         </>
@@ -678,6 +608,16 @@ export function SoundboardPanel() {
           position: 'absolute', bottom: 60, right: 20, padding: '8px 14px', borderRadius: 10,
           background: 'var(--color-error-container)', color: 'var(--color-error)', fontSize: 12, maxWidth: 280,
         }}>{errorToast}</div>
+      )}
+
+      {deleteTarget && (
+        <ConfirmationSuppressionBoard
+          titre={t("soundboard.deleteTitle", { defaultValue: "Supprimer ce son ?" })}
+          description={t("soundboard.deleteConfirm", { label: deleteTarget.label })}
+          messageErreur={t("soundboard.deleteError")}
+          onConfirmer={() => handleDelete(deleteTarget)}
+          onFermer={() => setDeleteTarget(null)}
+        />
       )}
 
       {showUpload && roomId && (

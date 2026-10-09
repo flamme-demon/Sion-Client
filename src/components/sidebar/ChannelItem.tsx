@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { SpeakerIcon, SpeakerOffIcon, MicIcon, HeadphoneIcon, CrownIcon, ShieldIcon, MessageBubbleIcon, SignalBarsIcon, PhoneIcon } from "../icons";
+import { useTranslation } from "react-i18next";
+import { SpeakerIcon, SpeakerOffIcon, MicIcon, HeadphoneIcon, CrownIcon, ShieldIcon, MessageBubbleIcon, SignalBarsIcon, PhoneIcon, LogoutIcon } from "../icons";
 import { ChannelIcon } from "./ChannelIcon";
 import { UserAvatar } from "./UserAvatar";
 import { useAppStore, APP_SESSION_START_TS } from "../../stores/useAppStore";
@@ -15,7 +16,9 @@ import { getMatrixClient } from "../../services/matrixService";
 import * as matrixService from "../../services/matrixService";
 import type { Channel, UserRole } from "../../types/matrix";
 import { moteurRust } from "../../services/moteur";
-import { leaveRoom as matrixServiceLeave } from "../../services/matrixService";
+import { quitterSalon } from "../../services/quitterSalon";
+import { MenuMessage } from "../chat/MenuMessage";
+import { ConfirmationDepartSalon } from "./ConfirmationDepartSalon";
 import * as cacheRust from "../../services/cacheRust";
 import { plateformeLocale, plateformeMobile } from "../../utils/plateforme";
 import { appareilDeIdentite, estCetAppareil } from "../../utils/identiteVocale";
@@ -106,6 +109,7 @@ function getParticipantInfo(identity: string, roomId: string | null, localUserId
 }
 
 export function ChannelItem({ channel, compact = false }: { channel: Channel; compact?: boolean }) {
+  const { t } = useTranslation(undefined, { bindI18n: "languageChanged loaded" });
   const activeChannel = useAppStore((s) => s.activeChannel);
   const connectedVoiceChannel = useAppStore((s) => s.connectedVoiceChannel);
   const setActiveChannel = useAppStore((s) => s.setActiveChannel);
@@ -118,7 +122,7 @@ export function ChannelItem({ channel, compact = false }: { channel: Channel; co
   const isMuted = useAppStore((s) => s.isMuted);
   const isDeafened = useAppStore((s) => s.isDeafened);
   const setSidebarView = useSettingsStore((s) => s.setSidebarView);
-  const { joinVoiceChannel, hasLiveKitConfig } = useVoiceChannel();
+  const { joinVoiceChannel, leaveVoiceChannel, hasLiveKitConfig } = useVoiceChannel();
 
   const isMobile = useIsMobile();
   const openUserContextMenu = useAppStore((s) => s.openUserContextMenu);
@@ -295,43 +299,24 @@ export function ChannelItem({ channel, compact = false }: { channel: Channel; co
     if (hoverCloseTimerRef.current) window.clearTimeout(hoverCloseTimerRef.current);
   }, []);
 
-  // Context menu state (right-click on a DM offers "leave conversation")
+  // Le même départ pour les salons texte, vocaux et les MP, sans droit admin.
+  const boutonSalon = useRef<HTMLButtonElement>(null);
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number } | null>(null);
-  const closeCtxMenu = () => setCtxMenu(null);
-  const handleLeaveDM = async () => {
-    closeCtxMenu();
-    if (!channel.isDM) return;
-    if (!window.confirm(`Quitter la conversation avec ${channel.name} ?`)) return;
-    try {
-      if (moteurRust()) {
-        await matrixServiceLeave(channel.id);
-        return;
-      }
-      const client = getMatrixClient();
-      if (!client) return;
-      await client.leave(channel.id);
-      // Scrub this room from m.direct so it doesn't come back as an auto-resolved DM.
-      try {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const directEvent = (client as any).getAccountData("m.direct");
-        const prev = (directEvent?.getContent?.() || {}) as Record<string, string[]>;
-        const next: Record<string, string[]> = {};
-        for (const [peer, rooms] of Object.entries(prev)) {
-          const filtered = rooms.filter((rid) => rid !== channel.id);
-          if (filtered.length > 0) next[peer] = filtered;
-        }
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        await (client as any).setAccountData("m.direct", next);
-      } catch { /* m.direct cleanup is best-effort */ }
-    } catch (err) {
-      console.error("[Sion] Failed to leave DM:", err);
-    }
+  const [confirmerDepart, setConfirmerDepart] = useState(false);
+  const closeCtxMenu = (restoreFocus = false) => {
+    setCtxMenu(null);
+    if (restoreFocus) boutonSalon.current?.focus();
+  };
+  const handleLeave = async () => {
+    if (useAppStore.getState().connectedVoiceChannel === channel.id) await leaveVoiceChannel(channel.id);
+    await quitterSalon(channel);
   };
 
   return (
     <div>
       {/* M3 Navigation Drawer item */}
       <button
+        ref={boutonSalon}
         onClick={handleClick}
         onDoubleClick={handleDoubleClick}
         onMouseEnter={openHoverCard}
@@ -341,9 +326,9 @@ export function ChannelItem({ channel, compact = false }: { channel: Channel; co
               ? `${channel.name} — ${voiceUsers.map((u) => u.name).join(", ")}`
               : channel.name)
           : undefined}
-        {...(channel.isDM ? gestesMenuContextuel((x, y) => setCtxMenu({ x, y })) : {})}
+        {...gestesMenuContextuel((x, y) => { setHoverCard(null); setCtxMenu({ x, y }); })}
         style={{
-          ...(channel.isDM ? STYLE_SANS_SELECTION : {}),
+          ...STYLE_SANS_SELECTION,
           width: '100%',
           display: 'flex',
           alignItems: 'center',
@@ -733,44 +718,13 @@ export function ChannelItem({ channel, compact = false }: { channel: Channel; co
         </div>
       )}
 
-      {ctxMenu && (
-        <>
-          {/* Invisible fullscreen catcher closes the menu on any outside click */}
-          <div
-            onClick={closeCtxMenu}
-            onContextMenu={(e) => { e.preventDefault(); closeCtxMenu(); }}
-            style={{ position: 'fixed', inset: 0, zIndex: 999 }}
-          />
-          <div
-            style={{
-              position: 'fixed',
-              left: ctxMenu.x,
-              top: ctxMenu.y,
-              zIndex: 1000,
-              background: 'var(--color-surface-container-high)',
-              borderRadius: 12,
-              boxShadow: '0 4px 12px rgba(0,0,0,0.25)',
-              padding: '6px 0',
-              minWidth: 220,
-              fontSize: 13,
-            }}
-          >
-            <button
-              onClick={handleLeaveDM}
-              style={{
-                width: '100%', padding: '8px 16px', border: 'none',
-                background: 'transparent', textAlign: 'left' as const,
-                cursor: 'pointer', color: 'var(--color-error)', fontFamily: 'inherit',
-                fontSize: 13,
-              }}
-              onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--color-error-container)')}
-              onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
-            >
-              Quitter cette conversation
-            </button>
-          </div>
-        </>
-      )}
+      {ctxMenu && <MenuMessage x={ctxMenu.x} y={ctxMenu.y} onClose={closeCtxMenu} actions={[{
+        label: channel.isDM ? t("channels.leaveConversation", { defaultValue: "Quitter cette conversation" })
+          : t("channels.leave", { defaultValue: "Quitter le salon" }),
+        icon: <LogoutIcon />, tone: "error", action: () => setConfirmerDepart(true),
+      }]} />}
+      {confirmerDepart && <ConfirmationDepartSalon salon={channel} onConfirmer={handleLeave}
+        onFermer={() => { setConfirmerDepart(false); boutonSalon.current?.focus(); }} />}
     </div>
   );
 }

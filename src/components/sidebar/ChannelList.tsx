@@ -1,16 +1,15 @@
+import { useEspacesStore } from "../../stores/useEspacesStore";
+import { salonsDansEspace } from "../../utils/espaces";
 import { useMemo, useState, useRef, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { useMatrixStore } from "../../stores/useMatrixStore";
-import { useAppStore, APP_SESSION_START_TS } from "../../stores/useAppStore";
+import { useAppStore } from "../../stores/useAppStore";
 import { useSettingsStore, type ChannelSortMode } from "../../stores/useSettingsStore";
-import { SortIcon, HashIcon, MessageBubbleIcon } from "../icons";
+import { SortIcon } from "../icons";
+import { NavigationEspaces } from "./NavigationEspaces";
+import { useIsMobile } from "../../hooks/useIsMobile";
 import { ChannelItem } from "./ChannelItem";
 import { MatrixRain, MATRIX_GREEN } from "./MatrixRain";
-import { findAdminRoom } from "../../services/adminCommandService";
-import { getMatrixClient } from "../../services/matrixService";
-import * as cacheRust from "../../services/cacheRust";
-import { moteurRust } from "../../services/moteur";
-import { leaveRoom } from "../../services/matrixService";
 
 const SORT_OPTIONS: ChannelSortMode[] = ["created", "name", "activity"];
 
@@ -22,12 +21,13 @@ const SORT_KEYS: Record<ChannelSortMode, string> = {
 
 export function ChannelList({ compact = false }: { compact?: boolean }) {
   const { t } = useTranslation();
+  const isMobile = useIsMobile();
   const channels = useMatrixStore((s) => s.channels);
+  const espaceActif = useEspacesStore((s) => s.espaceActif);
   const connectingVoice = useAppStore((s) => s.connectingVoiceChannel);
   const channelSort = useSettingsStore((s) => s.channelSort);
   const setChannelSort = useSettingsStore((s) => s.setChannelSort);
   const sidebarView = useSettingsStore((s) => s.sidebarView);
-  const setSidebarView = useSettingsStore((s) => s.setSidebarView);
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
 
@@ -48,9 +48,8 @@ export function ChannelList({ compact = false }: { compact?: boolean }) {
     // fact that a peer posted in a different room than the one the user is
     // watching (leading to "the message disappeared" confusion). Duplicates
     // are cleaned up via the admin-side "Nettoyer MP dupliqués" action.
-    const filtered = channels.filter((ch) =>
-      !ch.isSoundboard && (sidebarView === "dm" ? ch.isDM : !ch.isDM)
-    );
+    const filtered = sidebarView === "dm" ? channels.filter((ch) => ch.isDM && !ch.isSpace && !ch.isSoundboard)
+      : salonsDansEspace(channels, espaceActif);
     const copy = [...filtered];
     switch (channelSort) {
       case "created":
@@ -62,145 +61,14 @@ export function ChannelList({ compact = false }: { compact?: boolean }) {
       default:
         return copy;
     }
-  }, [channels, channelSort, sidebarView]);
-
-  const allMessages = useMatrixStore((s) => s.messages);
-  const lastReadMessageId = useAppStore((s) => s.lastReadMessageId);
-  const activeChannel = useAppStore((s) => s.activeChannel);
-  const currentUserId = useMatrixStore((s) => s.currentUserId);
-
-  const { unreadChannels, unreadDMs } = useMemo(() => {
-    const adminRoom = findAdminRoom();
-    let chCount = 0;
-    let dmCount = 0;
-    // Own messages (e.g. poke sent by the user) never count as unread.
-    const isUnreadMsg = (m: { senderId?: string }) => !currentUserId || m.senderId !== currentUserId;
-    for (const ch of channels) {
-      if (ch.id === adminRoom || ch.id === activeChannel) continue;
-      const msgs = allMessages[ch.id];
-      if (!msgs || msgs.length === 0) continue;
-      const lastReadId = lastReadMessageId[ch.id];
-      const sessionFilter = (m: { ts?: number; senderId?: string }) =>
-        (m.ts ?? 0) > APP_SESSION_START_TS && isUnreadMsg(m);
-      let unread: number;
-      if (!lastReadId) {
-        // Channel never opened: ignore historical messages from initial sync,
-        // only count messages received during the current session.
-        unread = msgs.filter(sessionFilter).length;
-      } else {
-        const idx = msgs.findIndex((m) => (m.eventId || String(m.id)) === lastReadId);
-        if (idx === -1) {
-          // lastReadId outside loaded window — fall back to session-start filter.
-          unread = msgs.filter(sessionFilter).length;
-        } else {
-          unread = msgs.slice(idx + 1).filter(isUnreadMsg).length;
-        }
-      }
-      if (unread > 0) {
-        if (ch.isDM) dmCount += unread;
-        else chCount += unread;
-      }
-    }
-    return { unreadChannels: chCount, unreadDMs: dmCount };
-  }, [channels, allMessages, lastReadMessageId, activeChannel, currentUserId]);
-
-  const tabStyle = (active: boolean): React.CSSProperties => ({
-    flex: 1,
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    // Rail : boutons d'onglet réduits à leurs icônes.
-    gap: compact ? 0 : 6,
-    padding: compact ? '7px 2px' : '7px 8px',
-    border: 'none',
-    borderRadius: 10,
-    cursor: 'pointer',
-    fontSize: 12,
-    fontWeight: 600,
-    fontFamily: 'inherit',
-    letterSpacing: '0.02em',
-    background: active ? 'var(--color-secondary-container)' : 'transparent',
-    color: active ? 'var(--color-on-secondary-container)' : 'var(--color-on-surface-variant)',
-    transition: 'all 150ms ease',
-  });
+  }, [channels, channelSort, sidebarView, espaceActif]);
 
   return (
     <div style={{ flex: 1, overflowY: 'auto', padding: compact ? '4px 6px' : '4px 12px' }}>
-      {/* Tabs + sort */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 4, padding: compact ? '8px 4px' : '8px 12px 8px 12px' }}>
-        <button
-          onClick={() => setSidebarView("channels")}
-          title={t("channels.tabChannels")}
-          style={{ ...tabStyle(sidebarView === "channels"), position: 'relative' }}
-        >
-          <HashIcon />
-          {!compact && t("channels.tabChannels")}
-          {sidebarView !== "channels" && unreadChannels > 0 && (
-            <span style={{
-              position: 'absolute', top: 2, right: compact ? 6 : 2,
-              minWidth: 8, height: 8,
-              borderRadius: 4,
-              background: 'var(--color-error)',
-            }} />
-          )}
-        </button>
-        <button
-          onClick={() => setSidebarView("dm")}
-          title={t("channels.tabDM")}
-          onContextMenu={async (e) => {
-            e.preventDefault();
-            const myUserId = useMatrixStore.getState().currentUserId;
-            const empties = channels.filter((ch) =>
-              ch.isDM
-              && (ch.voiceUsers?.length ?? 0) === 0
-              && !!myUserId
-              // Only "empty" DMs: ours is the sole surviving member
-              && (() => {
-                if (moteurRust()) {
-                  const membres = cacheRust.detailsSalon(ch.id)?.membres ?? [];
-                  return membres.length === 1 && membres[0].userId === myUserId;
-                }
-                try {
-                  const cli = getMatrixClient();
-                  const room = cli?.getRoom(ch.id);
-                  if (!room) return false;
-                  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                  const live = (room.getMembers?.() || []).filter((m: any) =>
-                    m.membership === "join" || m.membership === "invite",
-                  );
-                  return live.length === 1 && live[0].userId === myUserId;
-                } catch { return false; }
-              })()
-            );
-            if (empties.length === 0) {
-              window.alert("Aucune conversation vide à nettoyer.");
-              return;
-            }
-            if (!window.confirm(`Quitter ${empties.length} conversation(s) vide(s) ?`)) return;
-            const cli = getMatrixClient();
-            for (const ch of empties) {
-              try {
-                if (moteurRust()) await leaveRoom(ch.id);
-                else await cli?.leave(ch.id);
-              } catch (err) {
-                console.warn("[Sion][DM] bulk leave failed for", ch.id, err);
-              }
-            }
-            window.alert(`${empties.length} conversation(s) vide(s) quittée(s).`);
-          }}
-          style={{ ...tabStyle(sidebarView === "dm"), position: 'relative' }}
-        >
-          <MessageBubbleIcon />
-          {!compact && t("channels.tabDM")}
-          {sidebarView !== "dm" && unreadDMs > 0 && (
-            <span style={{
-              position: 'absolute', top: 2, right: compact ? 6 : 2,
-              minWidth: 8, height: 8,
-              borderRadius: 4,
-              background: 'var(--color-error)',
-            }} />
-          )}
-        </button>
+      {/* Sur téléphone, les espaces restent dans la liste ; desktop utilise le rail. */}
+      {(isMobile || !compact) && <div style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '8px 12px' }}>
+        {isMobile && <NavigationEspaces />}
+        {!isMobile && <span className="sion-titre" style={{ fontSize: 11, fontWeight: 600, color: 'var(--color-on-surface-variant)' }}>{t(sidebarView === "dm" ? "channels.tabDM" : "layout.channels")}</span>}
         {!compact && (
         <div ref={menuRef} style={{ position: 'relative', marginLeft: 'auto', flexShrink: 0 }}>
           <button
@@ -265,7 +133,7 @@ export function ChannelList({ compact = false }: { compact?: boolean }) {
           )}
         </div>
         )}
-      </div>
+      </div>}
       {connectingVoice ? (
         <div style={{
           flex: 1, display: 'flex', flexDirection: 'column',

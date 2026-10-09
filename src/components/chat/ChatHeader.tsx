@@ -15,7 +15,7 @@ import { useLiveKitStore } from "../../stores/useLiveKitStore";
 const ScreenShareOptionsModal = lazy(() =>
   import("./ScreenShareOptionsModal").then((m) => ({ default: m.ScreenShareOptionsModal })),
 );
-import { useLayoutStore } from "../../stores/useLayoutStore";
+import { useLayoutStore, type PanneauId } from "../../stores/useLayoutStore";
 import { estMembre, monId, regleAcces } from "../../services/vueSalon";
 
 function buildWavePath(amplitude: number, phase: number): string {
@@ -107,7 +107,13 @@ export function ChatHeader() {
   // Panneaux de la dock ouverts (zone droite ou basse) : les bascules du
   // header s'allument quand leur panneau est ouvert quelque part.
   const panneau = useLayoutStore((s) => s.panneau);
-  const panelOpen = (id: string) => panneau === id;
+  const panneaux = useLayoutStore((s) => s.panneaux);
+  const panelOpen = (id: PanneauId) => isMobile ? panneau === id : panneaux.includes(id);
+  const basculerPanneau = (id: PanneauId) => {
+    const s = useLayoutStore.getState();
+    if (isMobile && panneau !== id) s.ouvrirPanneau(id);
+    else s.basculerPanneau(id);
+  };
 
   const channel = channels.find((c) => c.id === activeChannel);
   const channelName = channel?.name || "general";
@@ -290,7 +296,7 @@ export function ChatHeader() {
           )}
           {!isMobile && !channel?.isDM && (
             <button
-              onClick={() => useLayoutStore.getState().basculerPanneau("members")}
+              onClick={() => basculerPanneau("members")}
               style={{
                 padding: 6,
                 borderRadius: 8,
@@ -311,7 +317,7 @@ export function ChatHeader() {
           )}
           {channels.some((c) => c.isSoundboard) && (
             <button
-              onClick={() => useLayoutStore.getState().basculerPanneau("soundboard")}
+              onClick={() => basculerPanneau("soundboard")}
               style={{
                 padding: 6,
                 borderRadius: 8,
@@ -332,7 +338,7 @@ export function ChatHeader() {
           )}
           {channels.some((c) => c.isSoundboard) && (
             <button
-              onClick={() => useLayoutStore.getState().basculerPanneau("memeboard")}
+              onClick={() => basculerPanneau("memeboard")}
               style={{
                 padding: 6,
                 borderRadius: 8,
@@ -438,8 +444,8 @@ export function ChatHeader() {
           <div className="sion-chat-salon"><ChannelIcon channel={channel} /><span title={channelName}>{channelName}</span></div>
           <OngletsPanneaux salonVocal={!!channel?.hasVoice || !!connectedVoice} />
           <div className="sion-chat-actions">
-            <button type="button" aria-label={t("chat.pinnedList")} title={t("chat.pinnedList")} aria-pressed={panelOpen("pinned")} onClick={() => useLayoutStore.getState().basculerPanneau("pinned")}><PinIcon filled /></button>
-            {!channel?.isDM && <button type="button" aria-label={t("members.title")} title={t("members.title")} aria-pressed={panelOpen("members")} onClick={() => useLayoutStore.getState().basculerPanneau("members")}><UsersIcon /></button>}
+            <button type="button" aria-label={t("chat.pinnedList")} title={t("chat.pinnedList")} aria-pressed={panelOpen("pinned")} onClick={() => basculerPanneau("pinned")}><PinIcon filled /></button>
+            {!channel?.isDM && <button type="button" aria-label={t("members.title")} title={t("members.title")} aria-pressed={panelOpen("members")} onClick={() => basculerPanneau("members")}><UsersIcon /></button>}
             {connectedVoice && <button type="button" className="sion-chat-partage" aria-label={isScreenSharing ? t("chat.stopShare") : t("chat.shareScreen")} title={isScreenSharing ? t("chat.stopShare") : t("chat.shareScreen")} aria-pressed={isScreenSharing}
               onClick={() => isScreenSharing ? toggleScreenShare() : setShowScreenShareOptions(true)}><ScreenIcon /></button>}
             {((!channel?.isDM && (canEdit || (canInvite && isInviteOnly))) || isScreenSharing) && <div ref={plusRef} style={{ position: 'relative' }} onKeyDown={(e) => { if (e.key === 'Escape') { setPlusActions(false); (plusRef.current?.querySelector('button') as HTMLButtonElement)?.focus(); } }}>

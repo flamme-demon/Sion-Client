@@ -1,12 +1,11 @@
 import { useCallback } from "react";
-import { useMatrix } from "./useMatrix";
 import { useLiveKit } from "./useLiveKit";
 import { useAppStore } from "../stores/useAppStore";
 import { useAuthStore } from "../stores/useAuthStore";
 import { useMatrixStore } from "../stores/useMatrixStore";
 import { useSettingsStore } from "../stores/useSettingsStore";
 import { generateLiveKitToken, getMatrixRTCToken } from "../services/livekitTokenService";
-import { getMatrixClient, getLocalVoiceState, sendCallMemberEvent, removeCallMemberEvent, republishCallMember } from "../services/matrixService";
+import { getMatrixClient, getLocalVoiceState, joinRoom, sendCallMemberEvent, removeCallMemberEvent, republishCallMember } from "../services/matrixService";
 import { MatrixKeyProvider } from "../services/matrixRTCE2EE";
 import { autoriserMicro, startVoiceService, stopVoiceService } from "../services/androidVoiceService";
 import { plateformeLocale } from "../utils/plateforme";
@@ -190,8 +189,9 @@ async function onNativeSessionDisconnected(reprendre: boolean) {
 let joinChain: Promise<void> = Promise.resolve();
 
 export function useVoiceChannel() {
-  const { joinRoom } = useMatrix();
-  const { connectNative, disconnectNative, connected, participants } = useLiveKit();
+  // Rejoindre Matrix est une commande : aucun abonnement aux messages ou
+  // aux salons n'est nécessaire pour les boutons qui déclenchent l'appel.
+  const { connectNative, disconnectNative } = useLiveKit();
   const setConnectedVoice = useAppStore((s) => s.setConnectedVoice);
   const disconnectVoice = useAppStore((s) => s.disconnectVoice);
   const credentials = useAuthStore((s) => s.credentials);
@@ -524,7 +524,7 @@ export function useVoiceChannel() {
         throw err;
       }
     },
-    [joinRoom, connectNative, setConnectedVoice, credentials, joinMuted, leaveCurrentVoiceChannel],
+    [connectNative, setConnectedVoice, credentials, joinMuted, leaveCurrentVoiceChannel],
   );
 
   const joinVoiceChannel = useCallback((matrixRoomId: string) => {
@@ -548,8 +548,6 @@ export function useVoiceChannel() {
   return {
     joinVoiceChannel,
     leaveVoiceChannel,
-    connected,
-    participants,
     hasLiveKitConfig,
   };
 }

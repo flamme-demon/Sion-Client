@@ -21,7 +21,9 @@ const epingles = new Map<string, string[]>();
 let salons = new Map<string, Channel>();
 let admins: Entree<string[]> | null = null;
 let salonAdminConnu: Entree<string | null> | null = null;
-const enCours = new Set<string>();
+const enCours = new Map<string, symbol>();
+let generation = 0;
+const SALONS_MAX = 128;
 
 let prevenir: () => void = () => {};
 
@@ -31,6 +33,8 @@ export function surChangement(rappel: () => void): void {
 }
 
 export function vider(): void {
+  generation++;
+  enCours.clear();
   details.clear();
   versions.clear();
   epingles.clear();
@@ -49,21 +53,26 @@ function perimee<T>(e: Entree<T> | null | undefined): boolean {
  *  lu par chacun) ; la relecture périodique des membres, des versions ou des
  *  admins, presque toujours identique, gelait l'interface 200 à 400 ms
  *  toutes les 30 s (mesuré le 27/09). */
-function demander(cle: string, requete: () => Promise<boolean>): void {
+function demander(cle: string, requete: (actuelle: () => boolean) => Promise<boolean>): void {
   if (enCours.has(cle)) return;
-  enCours.add(cle);
-  requete()
+  const session = generation;
+  const demande = Symbol(cle);
+  enCours.set(cle, demande);
+  const actuelle = () => generation === session && enCours.get(cle) === demande;
+  requete(actuelle)
     .then((change) => {
-      if (change) prevenir();
+      if (actuelle() && change) prevenir();
     })
     .catch((e) => console.warn(`[Sion][rust] ${cle} :`, e))
-    .finally(() => enCours.delete(cle));
+    .finally(() => { if (enCours.get(cle) === demande) enCours.delete(cle); });
 }
 
 /** Range une valeur ; vrai si elle diffère de la précédente. */
 function ranger<T>(carte: Map<string, Entree<T>>, cle: string, valeur: T): boolean {
   const avant = carte.get(cle);
+  carte.delete(cle);
   carte.set(cle, { valeur, date: Date.now() });
+  while (carte.size > SALONS_MAX) carte.delete(carte.keys().next().value!);
   return !avant || JSON.stringify(avant.valeur) !== JSON.stringify(valeur);
 }
 
@@ -71,9 +80,10 @@ function ranger<T>(carte: Map<string, Entree<T>>, cle: string, valeur: T): boole
 export function detailsSalon(salon: string): DetailsSalon | undefined {
   const e = details.get(salon);
   if (perimee(e)) {
-    demander(`details:${salon}`, async () => {
+    demander(`details:${salon}`, async (actuelle) => {
       const { detailsSalon: lire } = await import("./matrixCore");
-      return ranger(details, salon, await lire(salon));
+      const valeur = await lire(salon);
+      return actuelle() ? ranger(details, salon, valeur) : false;
     });
   }
   return e?.valeur;
@@ -93,9 +103,10 @@ export function oublierDetails(salon: string): void {
 export function versionsSalon(salon: string): SionMemberVersion[] {
   const e = versions.get(salon);
   if (perimee(e)) {
-    demander(`versions:${salon}`, async () => {
+    demander(`versions:${salon}`, async (actuelle) => {
       const { versionsSalon: lire } = await import("./matrixCore");
-      return ranger(versions, salon, await lire(salon));
+      const valeur = await lire(salon);
+      return actuelle() ? ranger(versions, salon, valeur) : false;
     });
   }
   return e?.valeur ?? [];
@@ -103,9 +114,10 @@ export function versionsSalon(salon: string): SionMemberVersion[] {
 
 export function adminsServeur(): string[] {
   if (perimee(admins)) {
-    demander("admins", async () => {
+    demander("admins", async (actuelle) => {
       const { adminsServeur: lire } = await import("./matrixCore");
       const valeur = await lire();
+      if (!actuelle()) return false;
       const change = !admins || JSON.stringify(admins.valeur) !== JSON.stringify(valeur);
       admins = { valeur, date: Date.now() };
       return change;
@@ -139,9 +151,10 @@ export function estMp(salon: string): boolean {
 /** Salon d'administration (`findAdminRoom`), dernière valeur connue. */
 export function salonAdmin(): string | null {
   if (perimee(salonAdminConnu)) {
-    demander("salon-admin", async () => {
+    demander("salon-admin", async (actuelle) => {
       const { salonAdmin: lire } = await import("./matrixCore");
       const valeur = await lire();
+      if (!actuelle()) return false;
       const change = !salonAdminConnu || salonAdminConnu.valeur !== valeur;
       salonAdminConnu = { valeur, date: Date.now() };
       return change;
@@ -157,8 +170,9 @@ export function salonsConnus(): Channel[] {
 
 /** Membres et niveaux d'un salon, FRAIS (attend la réponse du cœur). */
 export async function detailsFrais(salon: string): Promise<DetailsSalon> {
+  const session = generation;
   const { detailsSalon: lire } = await import("./matrixCore");
   const valeur = await lire(salon);
-  details.set(salon, { valeur, date: Date.now() });
+  if (session === generation) ranger(details, salon, valeur);
   return valeur;
 }

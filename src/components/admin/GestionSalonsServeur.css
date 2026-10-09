@@ -1,0 +1,25 @@
+.sion-gestion-serveur { width: min(720px, 100%); display: flex; flex-direction: column; gap: 18px; }
+.sion-gestion-serveur-entete { display: flex; flex-direction: column; gap: 6px; }
+.sion-gestion-serveur-filtres { display: flex; flex-wrap: wrap; gap: 6px; }
+.sion-gestion-serveur-filtres button { padding: 7px 10px; color: var(--color-on-surface-variant); font-size: 12px; }
+.sion-gestion-serveur-filtres button[aria-pressed=true] { color: var(--color-on-primary-container); background: var(--color-primary-container); }
+.sion-gestion-serveur-liste { min-height: 80px; overflow-y: auto; display: flex; flex-direction: column; gap: 18px; }
+.sion-gestion-serveur-groupe h3 { display: flex; align-items: center; gap: 8px; color: var(--color-on-surface-variant); font-size: 12px; }
+.sion-gestion-serveur-groupe h3 svg { width: 16px; height: 16px; }
+.sion-gestion-serveur-lignes { display: grid; gap: 8px; }
+.sion-gestion-serveur-ligne { display: flex; align-items: center; gap: 12px; padding: 12px; border-radius: 14px; background: var(--color-surface-container-high); }
+.sion-gestion-serveur-icone { display: flex; align-items: center; justify-content: center; flex: 0 0 32px; width: 32px; height: 32px; color: var(--color-primary); }
+.sion-gestion-serveur-texte { display: flex; flex-direction: column; gap: 3px; min-width: 0; flex: 1; }
+.sion-gestion-serveur-texte strong { font-size: 13px; font-weight: 500; overflow-wrap: anywhere; }
+.sion-gestion-serveur-texte small { font-size: 11px; }
+.sion-gestion-serveur-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; flex-shrink: 0; }
+.sion-gestion-serveur-actions button { padding: 7px 10px; font-size: 12px; }
+.sion-gestion-serveur-actions button.sion-gestion-serveur-supprimer { color: var(--color-error); background: color-mix(in srgb, var(--color-error) 9%, transparent); }
+.sion-gestion-serveur-confirmation { padding: 12px; border-radius: 14px; background: color-mix(in srgb, var(--color-error) 9%, var(--color-surface-container-high)); display: grid; gap: 10px; }
+.sion-gestion-serveur-confirmation p { color: var(--color-error); }
+.sion-gestion-serveur-confirmation button.sion-gestion-serveur-supprimer { background: var(--color-error); color: var(--color-on-error); }
+.sion-gestion-serveur footer { display: flex; justify-content: flex-end; flex-shrink: 0; }
+@media (max-width: 480px) {
+  .sion-gestion-serveur-ligne { flex-wrap: wrap; gap: 8px; }
+  .sion-gestion-serveur-actions { margin-left: auto; }
+}

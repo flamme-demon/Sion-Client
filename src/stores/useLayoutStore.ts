@@ -31,6 +31,12 @@ const SIDEBAR_MODE_CYCLE: readonly SidebarMode[] = ["full", "rail", "hidden"];
 
 export const PANNEAU_IDS = ["members", "soundboard", "memeboard", "transcript", "pinned"] as const;
 export type PanneauId = typeof PANNEAU_IDS[number];
+export const ZONES_PANNEAUX = ["left", "right", "top", "bottom"] as const;
+export type ZonePanneau = typeof ZONES_PANNEAUX[number];
+export const PANNEAUX_BAS_DEFAULT_HEIGHT = 280;
+export const PANNEAUX_BAS_MIN_HEIGHT = 100;
+export const PANNEAUX_BAS_MAX_HEIGHT = 520;
+export const MIME_PANNEAU = "application/x-sion-panneau";
 export const PANNEAU_MIN_WIDTH = 300;
 export const PANNEAU_MAX_WIDTH = 520;
 export const PANNEAU_DEFAULT_WIDTH = 360;
@@ -92,7 +98,13 @@ interface LayoutState {
   sidebarMode: SidebarMode;
   sidebarSide: SidebarSide;
   panneau: PanneauId | null;
+  panneaux: PanneauId[];
+  positionsPanneaux: Partial<Record<PanneauId, ZonePanneau>>;
+  panneauEnDeplacement: PanneauId | null;
   largeurPanneau: number;
+  largeurPanneauGauche: number;
+  hauteurPanneauxBas: number;
+  hauteurPanneauxHaut: number;
   shareViewMaxVh: number;
   shareDock: ShareDock;
   shareFloating: { x: number; y: number; w: number; h: number };
@@ -105,8 +117,11 @@ interface LayoutState {
   resetSidebar: () => void;
   ouvrirPanneau: (id: PanneauId) => void;
   basculerPanneau: (id: PanneauId) => void;
-  fermerPanneau: () => void;
-  setLargeurPanneau: (px: number) => void;
+  fermerPanneau: (id?: PanneauId) => void;
+  deplacerPanneau: (id: PanneauId, zone: ZonePanneau, avant?: PanneauId) => void;
+  ordonnerPanneau: (id: PanneauId, direction: -1 | 1) => void;
+  commencerDeplacement: (id: PanneauId | null) => void;
+  setLargeurPanneau: (px: number, zone?: ZonePanneau) => void;
   setPanelBackground: (scope: BackgroundScope, cfg: PanelBackgroundCfg | null) => void;
   setShareViewMaxVh: (vh: number) => void;
   resetShareViewMaxVh: () => void;
@@ -119,12 +134,21 @@ interface LayoutState {
 function preferences(persisted: unknown) {
   const s = (persisted && typeof persisted === "object" ? persisted : {}) as Partial<LayoutState>;
   const rect = s.shareFloating;
+  const panneau = estPanneau(s.panneau) ? s.panneau : null;
+  const panneaux = [...new Set(Array.isArray(s.panneaux) ? s.panneaux.filter(estPanneau) : panneau ? [panneau] : [])];
+  if (panneau && !panneaux.includes(panneau)) panneaux.push(panneau);
   return {
     sidebarWidth: borne(s.sidebarWidth, SIDEBAR_MIN_WIDTH, SIDEBAR_MAX_WIDTH, SIDEBAR_DEFAULT_WIDTH),
     sidebarMode: SIDEBAR_MODE_CYCLE.includes(s.sidebarMode as SidebarMode) ? s.sidebarMode! : "full" as SidebarMode,
     sidebarSide: s.sidebarSide === "right" ? "right" as SidebarSide : "left" as SidebarSide,
-    panneau: estPanneau(s.panneau) ? s.panneau : null,
+    panneau,
+    panneaux,
+    positionsPanneaux: Object.fromEntries(Object.entries(s.positionsPanneaux ?? {}).filter(([id, zone]) =>
+      estPanneau(id) && ZONES_PANNEAUX.includes(zone))),
     largeurPanneau: largeurPanneau(s.largeurPanneau),
+    largeurPanneauGauche: largeurPanneau(s.largeurPanneauGauche),
+    hauteurPanneauxBas: borne(s.hauteurPanneauxBas, PANNEAUX_BAS_MIN_HEIGHT, PANNEAUX_BAS_MAX_HEIGHT, PANNEAUX_BAS_DEFAULT_HEIGHT),
+    hauteurPanneauxHaut: borne(s.hauteurPanneauxHaut, PANNEAUX_BAS_MIN_HEIGHT, PANNEAUX_BAS_MAX_HEIGHT, PANNEAUX_BAS_DEFAULT_HEIGHT),
     panelBackgrounds: Object.fromEntries(Object.entries(s.panelBackgrounds ?? {}).filter(([id, cfg]) =>
       (id === "chat" || id === "channels" || estPanneau(id)) && cfg && typeof cfg.path === "string")),
     shareViewMaxVh: borne(s.shareViewMaxVh, SHARE_VIEW_MIN_VH, SHARE_VIEW_MAX_VH, SHARE_VIEW_DEFAULT_VH),
@@ -142,6 +166,7 @@ export const useLayoutStore = create<LayoutState>()(
   persist(
     (set) => ({
       ...preferences({}),
+      panneauEnDeplacement: null,
       setSidebarWidth: (raw) =>
         set((s) => {
           if (s.sidebarMode === "hidden") return {};
@@ -172,20 +197,46 @@ export const useLayoutStore = create<LayoutState>()(
           else delete next[scope];
           return { panelBackgrounds: next };
         }),
-      ouvrirPanneau: (id) => set(() => {
-        persistSoundboardAtLaunch(id === "soundboard");
-        return { panneau: id };
+      ouvrirPanneau: (id) => set((s) => {
+        const panneaux = s.panneaux.includes(id) ? s.panneaux : [...s.panneaux, id];
+        persistSoundboardAtLaunch(panneaux.includes("soundboard"));
+        return { panneau: id, panneaux };
       }),
       basculerPanneau: (id) => set((s) => {
-        const panneau = s.panneau === id ? null : id;
-        persistSoundboardAtLaunch(panneau === "soundboard");
-        return { panneau };
+        const ouvert = s.panneaux.includes(id);
+        const panneaux = ouvert ? s.panneaux.filter((p) => p !== id) : [...s.panneaux, id];
+        persistSoundboardAtLaunch(panneaux.includes("soundboard"));
+        return { panneau: ouvert ? s.panneau === id ? null : s.panneau : id, panneaux };
       }),
-      fermerPanneau: () => set(() => {
-        persistSoundboardAtLaunch(false);
-        return { panneau: null };
+      fermerPanneau: (id) => set((s) => {
+        const cible = id ?? s.panneau;
+        const panneaux = s.panneaux.filter((p) => p !== cible);
+        persistSoundboardAtLaunch(panneaux.includes("soundboard"));
+        return { panneau: s.panneau === cible ? null : s.panneau, panneaux };
       }),
-      setLargeurPanneau: (px) => set({ largeurPanneau: largeurPanneau(px) }),
+      deplacerPanneau: (id, zone, avant) => set((s) => {
+        if (!s.panneaux.includes(id) || !ZONES_PANNEAUX.includes(zone) || avant === id) return {};
+        const panneaux = s.panneaux.filter((p) => p !== id);
+        const index = avant ? panneaux.indexOf(avant) : -1;
+        panneaux.splice(index < 0 ? panneaux.length : index, 0, id);
+        return { panneaux, positionsPanneaux: { ...s.positionsPanneaux, [id]: zone }, panneauEnDeplacement: null };
+      }),
+      ordonnerPanneau: (id, direction) => set((s) => {
+        const zone = s.positionsPanneaux[id] ?? "right";
+        const voisins = s.panneaux.filter((p) => (s.positionsPanneaux[p] ?? "right") === zone);
+        const index = voisins.indexOf(id);
+        const voisin = voisins[index + direction];
+        if (index < 0 || !voisin) return {};
+        const panneaux = [...s.panneaux];
+        const a = panneaux.indexOf(id), b = panneaux.indexOf(voisin);
+        [panneaux[a], panneaux[b]] = [panneaux[b], panneaux[a]];
+        return { panneaux };
+      }),
+      commencerDeplacement: (id) => set({ panneauEnDeplacement: id }),
+      setLargeurPanneau: (px, zone = "right") => set(zone === "bottom"
+        ? { hauteurPanneauxBas: borne(px, PANNEAUX_BAS_MIN_HEIGHT, PANNEAUX_BAS_MAX_HEIGHT, PANNEAUX_BAS_DEFAULT_HEIGHT) }
+        : zone === "top" ? { hauteurPanneauxHaut: borne(px, PANNEAUX_BAS_MIN_HEIGHT, PANNEAUX_BAS_MAX_HEIGHT, PANNEAUX_BAS_DEFAULT_HEIGHT) }
+        : zone === "left" ? { largeurPanneauGauche: largeurPanneau(px) } : { largeurPanneau: largeurPanneau(px) }),
       setShareViewMaxVh: (vh) => set({ shareViewMaxVh: clampShareViewVh(vh) }),
       resetShareViewMaxVh: () => set({ shareViewMaxVh: SHARE_VIEW_DEFAULT_VH }),
       shareDock: "inline" as ShareDock,
@@ -205,19 +256,35 @@ export const useLayoutStore = create<LayoutState>()(
     }),
     {
       name: "sion-layout",
-      version: 6,
+      version: 7,
       partialize: (s) => preferences(s),
       merge: (saved, current) => ({ ...current, ...preferences(saved) }),
       migrate: (saved, version) => {
         const s = (saved && typeof saved === "object" ? saved : {}) as Record<string, unknown>;
         if (version >= 6) return preferences(s);
+        const zones = s.dockZones as Partial<Record<ZonePanneau, { panels?: unknown[]; active?: unknown; size?: number }>> | undefined;
         const right = (s.dockZones as { right?: { active?: unknown; panels?: unknown[]; size?: number } } | undefined)?.right;
         const legacy = s.rightPanelWidths as Record<string, number> | undefined;
         const oldWidth = right?.size ?? s.rightPanelWidth ?? (legacy ? Math.max(...Object.values(legacy)) : undefined);
+        const panneaux: PanneauId[] = [];
+        const positionsPanneaux: Partial<Record<PanneauId, ZonePanneau>> = {};
+        for (const zone of ZONES_PANNEAUX) {
+          const liste = zones?.[zone]?.panels;
+          if (!Array.isArray(liste)) continue;
+          for (const id of liste.filter(estPanneau)) {
+            if (panneaux.includes(id)) continue;
+            panneaux.push(id);
+            positionsPanneaux[id] = zone;
+          }
+        }
         return preferences({
           ...s,
           panneau: estPanneau(right?.active) ? right.active : Array.isArray(right?.panels) ? right.panels.find(estPanneau) ?? null : null,
+          panneaux, positionsPanneaux,
           largeurPanneau: oldWidth,
+          largeurPanneauGauche: zones?.left?.size,
+          hauteurPanneauxBas: zones?.bottom?.size,
+          hauteurPanneauxHaut: zones?.top?.size,
         });
       },
     },

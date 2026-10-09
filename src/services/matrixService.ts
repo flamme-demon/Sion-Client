@@ -1,5 +1,7 @@
+import { useEspacesStore } from "../stores/useEspacesStore";
 import * as sdk from "matrix-js-sdk";
 import type { MatrixClient } from "matrix-js-sdk";
+import type { MatrixPresence } from "../types/matrix";
 import { parseMentions } from "../utils/mentions";
 import * as core from "./matrixCore";
 import * as cacheRust from "./cacheRust";
@@ -1582,19 +1584,27 @@ export function getInvitePowerLevel(roomId: string): number {
   return content.invite ?? 0;
 }
 
-export function getRoomMembers(roomId: string): { userId: string; displayName: string; avatarUrl: string | null }[] {
+export function getRoomMembers(roomId: string): { userId: string; displayName: string; avatarUrl: string | null; presence?: MatrixPresence }[] {
   if (moteurRust()) {
-    return (cacheRust.detailsSalon(roomId)?.membres ?? []).map((m) => ({ userId: m.userId, displayName: m.displayName, avatarUrl: m.avatarUrl }));
+    return (cacheRust.detailsSalon(roomId)?.membres ?? []).map((m) => ({ userId: m.userId, displayName: m.displayName, avatarUrl: m.avatarUrl, presence: m.presence }));
   }
   if (!matrixClient) return [];
   const room = matrixClient.getRoom(roomId);
   if (!room) return [];
   const members = room.getJoinedMembers();
-  return members.map((m) => ({
-    userId: m.userId,
-    displayName: m.name || m.userId,
-    avatarUrl: m.getAvatarUrl(matrixClient!.getHomeserverUrl(), 32, 32, "crop", false, false) || null,
-  }));
+  return members.map((m) => {
+    const user = matrixClient!.getUser(m.userId);
+    // Le SDK initialise tout utilisateur à « offline », même sans événement.
+    // L'absence de présence annoncée ne permet pas de conclure hors ligne.
+    const status = user?.events.presence ? user.presence : undefined;
+    const presence = status === "online" || status === "offline" || status === "unavailable" ? status : undefined;
+    return {
+      userId: m.userId,
+      displayName: m.name || m.userId,
+      avatarUrl: m.getAvatarUrl(matrixClient!.getHomeserverUrl(), 64, 64, "crop", false, false) || null,
+      presence,
+    };
+  });
 }
 
 /** Resolve a single room member's display name + (small) avatar URL. Falls back
@@ -1615,6 +1625,10 @@ export function getRoomMemberInfo(roomId: string, userId: string): { displayName
 }
 
 export async function createChannel(name: string, isVoice: boolean, isPublic = true, encrypted = false): Promise<string> {
+  const espace = useEspacesStore.getState().espaceActif;
+  if (espace) return (await import("./espacesService")).creerSalonDansEspace(espace, name, isVoice, isPublic, encrypted);
+  const { useMatrixStore } = await import("../stores/useMatrixStore");
+  if (useMatrixStore.getState().channels.some((c) => c.isSpace)) throw new Error("Sélectionne un Espace avant de créer un salon.");
   if (moteurRust()) {
     return core.creerSalon(name, isVoice, isPublic, encrypted);
   }
@@ -1769,6 +1783,22 @@ async function fanOutPublicInvites(roomId: string): Promise<void> {
 }
 
 export async function setRoomJoinRule(roomId: string, joinRule: "public" | "invite"): Promise<void> {
+  const { useMatrixStore } = await import("../stores/useMatrixStore");
+  const parents = useMatrixStore.getState().channels.filter((c) => c.isSpace && c.spaceChildren?.includes(roomId));
+  if (parents.length) {
+    const espace = parents.find((c) => c.id === useEspacesStore.getState().espaceActif) ?? parents[0];
+    const service = await import("./espacesService");
+    await service.verifierResponsable(espace.id);
+    const precedente = await service.lireEtat(roomId, "m.room.join_rules");
+    const allow = Array.isArray(precedente?.allow) ? precedente.allow.filter((a) => !(a?.type === "m.room_membership" && a.room_id === espace.id)) : [];
+    await service.envoyerEtat(roomId, "m.room.join_rules", joinRule === "public"
+      ? { join_rule: "restricted", allow: [...allow, { type: "m.room_membership", room_id: espace.id }] }
+      : { join_rule: "invite" });
+    await service.envoyerEtat(espace.id, "m.space.child", { via: service.serveursVia(roomId), suggested: joinRule === "public" }, roomId);
+    if (joinRule === "public") await service.inviterMembresEspace(espace.id, roomId);
+    cacheRust.oublierDetails(roomId);
+    return;
+  }
   if (moteurRust()) {
     await core.changerRegleAcces(roomId, joinRule === "public");
     cacheRust.oublierDetails(roomId);
@@ -1953,6 +1983,17 @@ let soundboardLookupInflight: Promise<string | null> | null = null;
  * is cached for the session and de-duplicated across concurrent callers.
  */
 export async function findSoundboardRoom(): Promise<string | null> {
+  const espace = useEspacesStore.getState().espaceActif;
+  if (espace) {
+    const { espaceSelectionne, lireEtat } = await import("./espacesService");
+    return espaceSelectionne(espace)?.boardRoomId ?? (String((await lireEtat(espace, "com.sion.space"))?.board_room_id ?? "") || null);
+  }
+  const id = await findLegacySoundboardRoom();
+  const { useMatrixStore } = await import("../stores/useMatrixStore");
+  return useMatrixStore.getState().channels.some((c) => c.isSpace && c.boardRoomId === id) ? null : id;
+}
+
+async function findLegacySoundboardRoom(): Promise<string | null> {
   if (moteurRust()) {
     return core.salonSoundboard().catch(() => null);
   }
@@ -2002,6 +2043,10 @@ export interface SoundboardCreationResult {
  * to newcomers so no-one is left behind after admin promotions or signups.
  */
 export async function createOrSyncSoundboardRoom(): Promise<SoundboardCreationResult> {
+  const espace = useEspacesStore.getState().espaceActif;
+  if (espace) return (await import("./espacesService")).creerBibliotheque(espace);
+  const { useMatrixStore } = await import("../stores/useMatrixStore");
+  if (useMatrixStore.getState().channels.some((c) => c.isSpace)) throw new Error("Sélectionne un Espace avant de créer sa bibliothèque.");
   if (moteurRust()) {
     return core.creerOuSynchroniserSoundboard();
   }

@@ -23,6 +23,7 @@ import {
 import { readMediaBytes } from "./videoPrepare";
 import { useAppStore } from "../stores/useAppStore";
 import { useSettingsStore } from "../stores/useSettingsStore";
+import { normaliserCategorie } from "../utils/categories";
 
 export const MEMEBOARD_TOPIC = "sion-memeboard";
 const NAMESPACE = "com.sion.meme";
@@ -40,6 +41,7 @@ export interface MemeEntry {
   /** Aperçu animé (WebP) pour la grille ; image fixe à défaut. */
   apercuMxc: string | null;
   label: string;
+  category: string;
   emoji: string | null;
   /** Multiplicateur de volume propre au meme, 1 = niveau d'origine. */
   gain: number;
@@ -62,6 +64,7 @@ interface ContenuMeme {
   };
   [NAMESPACE]?: {
     label?: string;
+    category?: string;
     emoji?: string | null;
     gain_pct?: number;
   };
@@ -88,6 +91,7 @@ function lireMeme(ev: {
     mxcUrl: contenu.url,
     apercuMxc: contenu.info?.thumbnail_url ?? null,
     label: meta.label || contenu.body || "meme",
+    category: normaliserCategorie(meta.category),
     emoji: meta.emoji || null,
     gain,
     durationMs: contenu.info?.duration ?? null,
@@ -101,7 +105,9 @@ function lireMeme(ev: {
 /** Tous les memes du salon, du plus récent au plus ancien. */
 export async function listMemes(): Promise<MemeEntry[]> {
   if (moteurRust()) {
-    return core.memes();
+    const salon = await findSoundboardRoom();
+    if (!salon) return [];
+    return (await core.memes(salon)).map((m) => ({ ...m, category: normaliserCategorie(m.category) }));
   }
   const client = getMatrixClient();
   if (!client) return [];
@@ -292,9 +298,9 @@ export async function blobPrepare(chemin: string, type: string): Promise<Blob> {
 }
 
 /** Envoie un meme préparé dans le salon de la soundboard. */
-export async function envoyerMeme(prepare: MemePrepare, label: string, emoji: string | null): Promise<string> {
+export async function envoyerMeme(prepare: MemePrepare, label: string, emoji: string | null, categorie = "Autre"): Promise<string> {
   if (moteurRust()) {
-    return core.envoyerMeme(prepare, label, emoji);
+    return core.envoyerMeme(prepare, label, emoji, normaliserCategorie(categorie), await bibliothequeRequise());
   }
   const client = getMatrixClient();
   if (!client) throw new Error("Matrix client not initialized");
@@ -325,7 +331,7 @@ export async function envoyerMeme(prepare: MemePrepare, label: string, emoji: st
       duration: prepare.duree_ms,
       ...(apercu ? { thumbnail_url: apercu, thumbnail_info: { mimetype: prepare.apercu_mime } } : {}),
     },
-    [NAMESPACE]: { label: label.trim() || "meme", emoji: emoji || null, gain_pct: 100 },
+    [NAMESPACE]: { label: label.trim() || "meme", category: normaliserCategorie(categorie), emoji: emoji || null, gain_pct: 100 },
   };
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const reponse = await (client as any).sendEvent(roomId, "m.room.message", contenu);
@@ -333,15 +339,15 @@ export async function envoyerMeme(prepare: MemePrepare, label: string, emoji: st
 }
 
 /** Renomme un meme ou change son emoji — cœur Rust seulement. */
-export async function modifierMeme(eventId: string, label: string, emoji: string | null): Promise<void> {
+export async function modifierMeme(eventId: string, label: string, emoji: string | null, categorie?: string): Promise<void> {
   if (!moteurRust()) throw new Error("Édition des memes réservée au moteur Rust");
-  return core.modifierMeme(eventId, label, emoji);
+  return core.modifierMeme(eventId, label, emoji, categorie === undefined ? undefined : normaliserCategorie(categorie), await bibliothequeRequise());
 }
 
 /** Supprime un meme (rédaction Matrix) — l'auteur, ou un modérateur. */
 export async function supprimerMeme(eventId: string): Promise<void> {
   if (moteurRust()) {
-    return core.supprimerDuSoundboard(eventId);
+    return core.supprimerDuSoundboard(eventId, await bibliothequeRequise());
   }
   const client = getMatrixClient();
   if (!client) throw new Error("Matrix client not initialized");
@@ -365,4 +371,10 @@ export async function arreterMemes(): Promise<void> {
 /** Réservé aux tests : oublie les délais anti-rafale. */
 export function __reinitialiserDelais(): void {
   derniers.clear();
+}
+
+async function bibliothequeRequise(): Promise<string> {
+  const id = await findSoundboardRoom();
+  if (!id) throw new Error("spaces.noLibrary");
+  return id;
 }

@@ -20,7 +20,7 @@ vi.mock("../../services/matrixService", () => ({
   sendReaction: serveur.reagir, redactMessage: serveur.retirerReaction,
 }));
 vi.mock("./MarkdownRenderer", () => ({ MarkdownRenderer: ({ content }: { content: string }) => <span>{content}</span> }));
-vi.mock("./EmojiGridPanel", () => ({ EmojiGridPanel: ({ onPick }: { onPick: (emoji: string) => void }) => <button onClick={() => onPick("😂")}>rire</button> }));
+vi.mock("./EmojiGridPanel", () => ({ EmojiGridPanel: ({ onPick }: { onPick: (emoji: string) => void }) => <><input aria-label="Rechercher un emoji" /><button onClick={() => onPick("😂")}>rire</button></> }));
 vi.mock("./ModaleSignalement", () => ({ ModaleSignalement: ({ eventId }: { eventId: string }) => <div role="dialog">{eventId}</div> }));
 
 const vue = montage();
@@ -51,6 +51,11 @@ const choisir = async (label: string) => {
   const button = Array.from(menu()?.querySelectorAll("button") ?? []).find((item) => item.textContent === label)!;
   await act(async () => button.click());
 };
+const boutonReaction = () => vue.container.querySelector<HTMLButtonElement>('[aria-label="chat.react"]')!;
+const selecteurReaction = () => document.querySelector<HTMLDivElement>(".sion-reactions-picker");
+const ouvrirReactions = async () => {
+  await act(async () => { boutonReaction().dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true })); });
+};
 
 it("seuls Réagir et Répondre restent visibles et fonctionnent", async () => {
   serveur.pouvoir = 100;
@@ -58,9 +63,69 @@ it("seuls Réagir et Répondre restent visibles et fonctionnent", async () => {
   expect(Array.from(vue.container.querySelectorAll("button")).map((button) => button.getAttribute("aria-label"))).toEqual(["chat.react", "chat.reply"]);
   await vue.click('[aria-label="chat.reply"]');
   expect(useAppStore.getState().replyingTo?.eventId).toBe("$message");
-  await act(async () => { vue.container.querySelector('[aria-label="chat.react"]')!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true })); });
-  await act(async () => { Array.from(vue.container.querySelectorAll("button")).find((button) => button.textContent === "rire")!.click(); });
+  await ouvrirReactions();
+  await act(async () => { selecteurReaction()!.querySelector("button")!.click(); });
   expect(serveur.reagir).toHaveBeenCalledWith("!salon", "$message", "😂");
+});
+
+it.each([
+  { own: true, x: 580, expectedLeft: 280 },
+  { own: false, x: 0, expectedLeft: 8 },
+])("le sélecteur échappe au chat et reste visible près du bord (message propre : $own)", async ({ own, x, expectedLeft }) => {
+  vi.stubGlobal("innerWidth", 620);
+  vi.stubGlobal("innerHeight", 600);
+  vue.container.style.cssText = "overflow: hidden; contain: strict; width: 620px; height: 600px";
+  await rendre(own);
+  vi.spyOn(boutonReaction().parentElement!, "getBoundingClientRect").mockReturnValue(new DOMRect(x, 400, 20, 20));
+  await ouvrirReactions();
+  const picker = selecteurReaction()!;
+  expect(picker.parentElement).toBe(document.body);
+  expect(vue.container.contains(picker)).toBe(false);
+  expect(picker.style.position).toBe("fixed");
+  expect(picker.style.left).toBe(`${expectedLeft}px`);
+  expect(picker.style.top).toBe("36px");
+  expect(picker.style.width).toBe("320px");
+  expect(picker.style.height).toBe("360px");
+});
+
+it("le sélecteur tient dans une petite fenêtre même en bas du chat", async () => {
+  vi.stubGlobal("innerWidth", 280);
+  vi.stubGlobal("innerHeight", 300);
+  await rendre(true);
+  vi.spyOn(boutonReaction().parentElement!, "getBoundingClientRect").mockReturnValue(new DOMRect(230, 264, 20, 20));
+  await ouvrirReactions();
+  const picker = selecteurReaction()!;
+  expect(picker.style.left).toBe("8px");
+  expect(picker.style.top).toBe("8px");
+  expect(picker.style.width).toBe("264px");
+  expect(picker.style.height).toBe("284px");
+});
+
+it("la recherche et le défilement des emojis restent accessibles ; les événements extérieurs ferment le sélecteur", async () => {
+  await rendre(true);
+  await ouvrirReactions();
+  await act(async () => {
+    selecteurReaction()!.querySelector("input")!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+    selecteurReaction()!.dispatchEvent(new Event("scroll"));
+  });
+  expect(selecteurReaction()).not.toBeNull();
+  await act(async () => { document.body.dispatchEvent(new MouseEvent("mousedown", { bubbles: true })); });
+  expect(selecteurReaction()).toBeNull();
+  await ouvrirReactions();
+  await act(async () => { vue.container.dispatchEvent(new Event("scroll")); });
+  expect(selecteurReaction()).toBeNull();
+  await ouvrirReactions();
+  await act(async () => { window.dispatchEvent(new Event("resize")); });
+  expect(selecteurReaction()).toBeNull();
+});
+
+it("Échap ferme le sélecteur et rend le focus au bouton de réaction", async () => {
+  await rendre(true);
+  await ouvrirReactions();
+  await act(async () => { selecteurReaction()!.querySelector<HTMLInputElement>("input")!.focus(); });
+  await act(async () => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" })); });
+  expect(selecteurReaction()).toBeNull();
+  expect(document.activeElement).toBe(boutonReaction());
 });
 
 it("un membre peut signaler un message tiers, sans le supprimer ni l'épingler", async () => {

@@ -27,6 +27,12 @@ pub struct Salon {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dm_user_id: Option<String>,
     pub is_soundboard: bool,
+    pub is_space: bool,
+    pub space_children: Vec<String>,
+    pub common_room_ids: Vec<String>,
+    pub membership: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub board_room_id: Option<String>,
 }
 
 /// Ce que l'adaptateur a lu d'un salon.
@@ -40,6 +46,10 @@ pub(crate) struct EntreesSalon {
     pub icone: Option<String>,
     /// `type` du contenu de `m.room.create`.
     pub type_creation: String,
+    pub enfants_espace: Vec<String>,
+    pub salons_communs: Vec<String>,
+    pub adhesion: String,
+    pub bibliotheque_espace: Option<String>,
     /// `type` de l'état personnalisé `m.room.type` — celui que Sion pose sur
     /// ses salons vocaux (`m.voice_channel`).
     pub type_personnalise: String,
@@ -109,16 +119,22 @@ pub(crate) fn classer(e: &EntreesSalon, maintenant_serveur: i64) -> Salon {
         name: nom,
         topic: e.sujet.clone().filter(|s| !s.is_empty()),
         icon: e.icone.clone(),
-        has_voice: est_vocal(e),
+        has_voice: e.type_creation != "m.space" && est_vocal(e),
         voice_users: appels::participants(&e.membres_appel, maintenant_serveur, |id| {
             e.profils.get(id).cloned().unwrap_or((None, None))
         }),
         created_at: e.cree_a,
         last_activity: e.derniere_activite,
-        is_dm: dm.is_some(),
+        is_dm: e.type_creation != "m.space" && dm.is_some(),
         dm_user_id: dm,
         // Masqués de la barre latérale : on y accède par le panneau dédié.
-        is_soundboard: e.alias.as_deref().is_some_and(|a| a.starts_with("#soundboard:")),
+        is_soundboard: e.alias.as_deref().is_some_and(|a| a.starts_with("#soundboard:"))
+            || e.type_personnalise == "com.sion.board",
+        is_space: e.type_creation == "m.space",
+        space_children: e.enfants_espace.clone(),
+        common_room_ids: e.salons_communs.clone(),
+        membership: e.adhesion.clone(),
+        board_room_id: e.bibliotheque_espace.clone(),
     }
 }
 
@@ -137,6 +153,19 @@ mod tests {
             membres_historiques: vec![("@moi:hs".into(), true), ("@a:hs".into(), true), ("@b:hs".into(), true)],
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn espace_et_bibliotheque_ne_sont_pas_des_conversations() {
+        let e = EntreesSalon { id: "!e:hs".into(), type_creation: "m.space".into(),
+            sujet: Some("voice".into()), enfants_espace: vec!["!commun:hs".into()],
+            salons_communs: vec!["!commun:hs".into()], bibliotheque_espace: Some("!board:hs".into()), adhesion: "invite".into(), ..Default::default() };
+        let s = classer(&e, 0);
+        assert!(s.is_space); assert!(!s.is_dm); assert!(!s.has_voice);
+        assert_eq!(s.board_room_id.as_deref(), Some("!board:hs"));
+        assert_eq!(s.membership, "invite"); assert_eq!(s.common_room_ids, vec!["!commun:hs"]);
+        let b = classer(&EntreesSalon { type_personnalise: "com.sion.board".into(), ..Default::default() }, 0);
+        assert!(b.is_soundboard); assert!(!b.is_dm);
     }
 
     #[test]

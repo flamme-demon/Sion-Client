@@ -669,14 +669,8 @@ export const Message = React.memo(function Message({ message, showHeader, isFirs
   const [menuMessage, setMenuMessage] = useState<{ x: number; y: number } | null>(null);
   const messageBubbleRef = useRef<HTMLDivElement>(null);
   const reactionPickerRef = useRef<HTMLDivElement>(null);
-  /** Anchor side chosen dynamically at open time based on available space
-   *  between the reaction button and the viewport edges. "left" means the
-   *  picker's left edge pins to the button's left edge (picker extends
-   *  rightward); "right" is the mirror. Picked statically from
-   *  `isOwnMessage` was a blind guess that broke in narrow layouts and for
-   *  short messages where the button's actual position didn't track the
-   *  bubble's side — measure the DOM instead. */
-  const [reactionPickerSide, setReactionPickerSide] = useState<"left" | "right">(isOwnMessage ? "right" : "left");
+  const reactionPopoverRef = useRef<HTMLDivElement>(null);
+  const [reactionPickerPosition, setReactionPickerPosition] = useState({ left: 8, top: 8, width: 320, height: 360 });
   const [showUserPopover, setShowUserPopover] = useState(false);
   const userPopoverRef = useRef<HTMLDivElement>(null);
 
@@ -684,7 +678,7 @@ export const Message = React.memo(function Message({ message, showHeader, isFirs
   useEffect(() => {
     if (!showReactionPicker && !showUserPopover) return;
     const handleClick = (e: MouseEvent) => {
-      if (showReactionPicker && reactionPickerRef.current && !reactionPickerRef.current.contains(e.target as Node)) {
+      if (showReactionPicker && !reactionPickerRef.current?.contains(e.target as Node) && !reactionPopoverRef.current?.contains(e.target as Node)) {
         setShowReactionPicker(false);
       }
       if (showUserPopover && userPopoverRef.current && !userPopoverRef.current.contains(e.target as Node)) {
@@ -694,6 +688,30 @@ export const Message = React.memo(function Message({ message, showHeader, isFirs
     window.addEventListener("mousedown", handleClick);
     return () => window.removeEventListener("mousedown", handleClick);
   }, [showReactionPicker, showUserPopover]);
+
+  useEffect(() => {
+    if (!showReactionPicker) return;
+    const handleKey = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      setShowReactionPicker(false);
+      reactionPickerRef.current?.querySelector("button")?.focus({ preventScroll: true });
+    };
+    const handleScroll = (event: Event) => {
+      // La grille peut défiler sans fermer le panneau. En revanche, le
+      // défilement du chat éloigne le bouton de sa position d'ouverture.
+      if (event.target instanceof Node && reactionPopoverRef.current?.contains(event.target)) return;
+      setShowReactionPicker(false);
+    };
+    const handleResize = () => setShowReactionPicker(false);
+    window.addEventListener("keydown", handleKey);
+    window.addEventListener("scroll", handleScroll, true);
+    window.addEventListener("resize", handleResize);
+    return () => {
+      window.removeEventListener("keydown", handleKey);
+      window.removeEventListener("scroll", handleScroll, true);
+      window.removeEventListener("resize", handleResize);
+    };
+  }, [showReactionPicker]);
 
   const myPowerLevel = activeChannel ? matrixService.getUserPowerLevel(activeChannel) : 0;
   const targetPowerLevel = activeChannel && message.senderId ? matrixService.getMemberPowerLevel(activeChannel, message.senderId) : 0;
@@ -904,27 +922,21 @@ export const Message = React.memo(function Message({ message, showHeader, isFirs
                 e.preventDefault();
                 const willOpen = !showReactionPicker;
                 if (willOpen) {
-                  // Decide anchor side from actual viewport geometry rather
-                  // than the isOwnMessage proxy: 320 px picker needs to fit
-                  // to one side of the button. Prefer rightward expansion
-                  // when it fits; fall back to leftward otherwise.
                   const anchor = reactionPickerRef.current;
-                  const PICKER_WIDTH = 320;
-                  const EDGE_MARGIN = 8; // small breathing room from the edge
                   if (anchor) {
                     const rect = anchor.getBoundingClientRect();
-                    const spaceRight = window.innerWidth - rect.left - EDGE_MARGIN;
-                    const spaceLeft = rect.right - EDGE_MARGIN;
-                    if (spaceRight >= PICKER_WIDTH) {
-                      setReactionPickerSide("left");   // extend right
-                    } else if (spaceLeft >= PICKER_WIDTH) {
-                      setReactionPickerSide("right");  // extend left
-                    } else {
-                      // Neither side has enough space → pick the side with
-                      // more room; picker will clip slightly but stay as in-
-                      // view as possible. Extremely narrow windows only.
-                      setReactionPickerSide(spaceRight >= spaceLeft ? "left" : "right");
-                    }
+                    const margin = 8;
+                    const width = Math.min(320, Math.max(0, window.innerWidth - 2 * margin));
+                    const height = Math.min(360, Math.max(0, window.innerHeight - 2 * margin));
+                    const left = isOwnMessage ? rect.right - width : rect.left;
+                    const above = rect.top - height - 4;
+                    const top = above >= margin ? above : rect.bottom + 4;
+                    setReactionPickerPosition({
+                      left: Math.max(margin, Math.min(left, window.innerWidth - width - margin)),
+                      top: Math.max(margin, Math.min(top, window.innerHeight - height - margin)),
+                      width,
+                      height,
+                    });
                   }
                 }
                 setShowReactionPicker((v) => !v);
@@ -934,28 +946,27 @@ export const Message = React.memo(function Message({ message, showHeader, isFirs
               style={{ ...actionButtonStyle, background: showReactionPicker ? 'var(--color-secondary-container)' : 'transparent' }}
               title={t("chat.react")}
               aria-label={t("chat.react")}
+              aria-haspopup="dialog"
+              aria-expanded={showReactionPicker}
             >
               <EmojiIcon className={isMobile ? undefined : "size-3.5"} />
             </button>
-            {showReactionPicker && (
-              <div style={{
-                position: 'absolute',
-                bottom: '100%',
-                left: reactionPickerSide === "left" ? 0 : undefined,
-                right: reactionPickerSide === "right" ? 0 : undefined,
-                marginBottom: 4,
-                width: 320,
-                height: 360,
+            {/* Le portail échappe au containment et au défilement du chat. */}
+            {showReactionPicker && createPortal(
+              <div ref={reactionPopoverRef} className="sion-reactions-picker" role="dialog" aria-label={t("chat.react")} style={{
+                position: 'fixed',
+                ...reactionPickerPosition,
                 background: 'var(--color-surface-container)',
                 borderRadius: 16,
                 boxShadow: '0 -4px 24px rgba(0,0,0,0.3)',
                 display: 'flex',
                 flexDirection: 'column',
                 overflow: 'hidden',
-                zIndex: 200,
+                zIndex: 10000,
               }}>
                 <EmojiGridPanel onPick={handleReaction} emojiSize={34} />
-              </div>
+              </div>,
+              document.body,
             )}
           </div>
           <button

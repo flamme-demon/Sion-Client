@@ -1,3 +1,4 @@
+import { useEspacesStore } from "../../stores/useEspacesStore";
 import { useState, useRef, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { ServerIcon, LogoutIcon, SettingsIcon } from "../icons";
@@ -10,10 +11,13 @@ import { useMatrixStore } from "../../stores/useMatrixStore";
 import { useIsMobile } from "../../hooks/useIsMobile";
 import { useLayoutStore } from "../../stores/useLayoutStore";
 import { preloadHeavyScreens } from "../../services/lazyScreens";
+import { nomServeur } from "../../utils/nomServeur";
+import { useSettingsStore } from "../../stores/useSettingsStore";
 
 export function ServerHeader({ compact = false }: { compact?: boolean }) {
   const { t } = useTranslation();
   const isMobile = useIsMobile();
+  const sidebarView = useSettingsStore((s) => s.sidebarView);
   const toggleSidebar = useLayoutStore((s) => s.toggleSidebar);
   const toggleAdmin = useAppStore((s) => s.toggleAdmin);
   const showAdmin = useAppStore((s) => s.showAdmin);
@@ -23,6 +27,8 @@ export function ServerHeader({ compact = false }: { compact?: boolean }) {
   const pendingCount = usePendingUsersStore((s) => s.pendingCount);
   const credentials = useAuthStore((s) => s.credentials);
   const homeserverUrl = credentials?.homeserverUrl || "";
+  const espaceActif = useEspacesStore((s) => s.espaceActif);
+  const espace = useMatrixStore((s) => s.channels.find((c) => c.id === espaceActif && c.isSpace));
   const logout = useAuthStore((s) => s.logout);
   const resetMatrix = useMatrixStore((s) => s.reset);
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
@@ -43,18 +49,13 @@ export function ServerHeader({ compact = false }: { compact?: boolean }) {
 
   const displayName = credentials?.displayName || credentials?.userId || "User";
   const avatarUrl = credentials?.avatarUrl;
-  const serverName = (() => {
-    try {
-      return new URL(homeserverUrl).hostname;
-    } catch {
-      return homeserverUrl || "Sion";
-    }
-  })();
+  const serverName = espace?.name ?? nomServeur(homeserverUrl);
 
+  if (!isMobile && compact) return null;
   if (!isMobile) return (
     <div style={{ padding: compact ? '16px 8px' : '20px 18px', borderBottom: '1px solid var(--color-border)', flexShrink: 0 }}>
-      <div title={serverName} style={{ fontSize: 14, fontWeight: 700, color: 'var(--color-on-surface)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textAlign: compact ? 'center' : 'left' }}>{compact ? "S" : serverName}</div>
-      {!compact && <div style={{ marginTop: 4, fontSize: 11, color: 'var(--color-on-surface-variant)' }}>{t("server.online")}</div>}
+      <button type="button" onClick={() => espace && useEspacesStore.getState().ouvrir("gerer")} className="sion-titre" title={serverName} style={{ border: 0, padding: 0, background: 'none', cursor: espace ? 'pointer' : 'default', width: '100%', fontSize: 14, fontWeight: 700, color: 'var(--color-on-surface)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textAlign: compact ? 'center' : 'left' }}>{sidebarView === "dm" ? t("channels.directMessages", { defaultValue: t("channels.tabDM") }) : serverName}</button>
+      {!compact && <div style={{ marginTop: 4, fontSize: 11, color: 'var(--color-on-surface-variant)' }}>{sidebarView === "dm" ? serverName : espace ? t("spaces.manage") : t("server.online")}</div>}
     </div>
   );
 
@@ -88,7 +89,7 @@ export function ServerHeader({ compact = false }: { compact?: boolean }) {
             color: 'var(--color-on-primary-container)',
           }}
         >
-          S
+          {espace?.icon ? <img src={espace.icon} className="sion-espace-avatar" alt="" /> : espace ? espace.name.slice(0, 2).toUpperCase() : "S"}
         </button>
       ) : (
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 0 }}>
@@ -105,12 +106,12 @@ export function ServerHeader({ compact = false }: { compact?: boolean }) {
           fontWeight: 600,
           color: 'var(--color-on-primary-container)',
         }}>
-          S
+          {espace?.icon ? <img src={espace.icon} className="sion-espace-avatar" alt="" /> : espace ? espace.name.slice(0, 2).toUpperCase() : "S"}
         </div>
         <div style={{ minWidth: 0 }}>
-          <div style={{ fontWeight: 600, fontSize: 15, color: 'var(--color-on-surface)', letterSpacing: '0.01em', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          <button type="button" onClick={() => espace && useEspacesStore.getState().ouvrir("gerer")} className="sion-titre" style={{ padding: 0, border: 0, background: "none", cursor: espace ? "pointer" : "default", fontWeight: 600, fontSize: 15, color: 'var(--color-on-surface)', letterSpacing: '0.01em', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
             {serverName}
-          </div>
+          </button>
           <div style={{ fontSize: 11, color: 'var(--color-green)', display: 'flex', alignItems: 'center', gap: 5, marginTop: 2 }}>
             <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--color-green)', display: 'inline-block' }} />
             {t("server.online")}

@@ -282,11 +282,12 @@ async fn banc_local_t4_t5() {
     assert_eq!(a1.coeur.media(&cle, false).await.unwrap(), b"OggS-son-de-test");
     let meme = admin
         .coeur
-        .envoyer_meme(b"video".to_vec(), "video/mp4", 640, 360, 3000, Some((b"apercu".to_vec(), "image/webp".into())), "Chat !", Some("🐱"))
+        .envoyer_meme(b"video".to_vec(), "video/mp4", 640, 360, 3000, Some((b"apercu".to_vec(), "image/webp".into())), "Chat !", Some("🐱"), Some("Animaux/Chats"))
         .await
         .expect("meme");
     let memes = admin.coeur.memes().await.unwrap();
     let m = memes.iter().find(|x| x.event_id == meme).expect("meme relu");
+    assert_eq!(m.category, "Animaux/Chats");
     assert_eq!((m.label.as_str(), m.largeur, m.duration_ms, m.apercu_mxc.is_some()), ("Chat !", Some(640), Some(3000), true));
     assert!(admin.coeur.sons().await.unwrap().iter().all(|x| x.event_id != meme), "un meme n'est pas un son");
     admin.coeur.supprimer_du_soundboard(&ajoute.event_id).await.expect("suppression du son");

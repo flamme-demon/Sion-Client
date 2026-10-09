@@ -3,14 +3,16 @@ interface UserAvatarProps {
   speaking: boolean;
   size?: "sm" | "md";
   avatarUrl?: string;
+  className?: string;
   presence?: "online" | "offline" | "unavailable";
+  presenceLabel?: string;
   /** Emoji displayed in a badge over the avatar while a soundboard sound is
    *  playing. The soundboard ring replaces the speaking ring when both are
    *  active so the soundboard state stays visible. */
   playingSoundEmoji?: string;
 }
 
-export function UserAvatar({ name, speaking, size = "sm", avatarUrl, presence, playingSoundEmoji }: UserAvatarProps) {
+export function UserAvatar({ name, speaking, size = "sm", avatarUrl, className, presence, presenceLabel, playingSoundEmoji }: UserAvatarProps) {
   const dim = size === "sm" ? 24 : 36;
   const fontSize = size === "sm" ? 10 : 14;
 
@@ -30,14 +32,14 @@ export function UserAvatar({ name, speaking, size = "sm", avatarUrl, presence, p
   const badgeFontSize = Math.round(badgeDim * 0.7);
 
   return (
-    <div style={{ position: 'relative', display: 'inline-flex', flexShrink: 0 }}>
+    <div className={className} style={{ position: 'relative', display: 'inline-flex', flexShrink: 0 }}>
       {avatarUrl ? (
         <img
           src={avatarUrl}
           alt={name}
           style={{
-            width: dim,
-            height: dim,
+            width: `var(--sion-avatar-taille, ${dim}px)`,
+            height: `var(--sion-avatar-taille, ${dim}px)`,
             borderRadius: '50%',
             objectFit: 'cover' as const,
             transition: 'background 200ms, color 200ms, outline-color 200ms',
@@ -48,14 +50,14 @@ export function UserAvatar({ name, speaking, size = "sm", avatarUrl, presence, p
         />
       ) : (
         <div style={{
-          width: dim,
-          height: dim,
+          width: `var(--sion-avatar-taille, ${dim}px)`,
+          height: `var(--sion-avatar-taille, ${dim}px)`,
           borderRadius: '50%',
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
           fontWeight: 600,
-          fontSize,
+          fontSize: `var(--sion-avatar-police, ${fontSize}px)`,
           transition: 'all 200ms',
           background: speaking ? 'rgba(125, 220, 135, 0.15)' : 'var(--color-surface-container-highest)',
           color: speaking ? 'var(--color-green)' : 'var(--color-on-surface-variant)',
@@ -67,12 +69,12 @@ export function UserAvatar({ name, speaking, size = "sm", avatarUrl, presence, p
         </div>
       )}
       {presence && (
-        <span style={{
+        <span title={presenceLabel} role={presenceLabel ? "img" : undefined} aria-label={presenceLabel} data-presence={presence} style={{
           position: 'absolute' as const,
           bottom: -1,
           right: -1,
-          width: 8,
-          height: 8,
+          width: `var(--sion-avatar-presence, ${size === "md" ? 10 : 8}px)`,
+          height: `var(--sion-avatar-presence, ${size === "md" ? 10 : 8}px)`,
           borderRadius: '50%',
           border: '2px solid var(--color-surface-container-low)',
           background: presence === "online" ? 'var(--color-green)' : presence === "unavailable" ? 'var(--color-yellow)' : 'var(--color-outline)',

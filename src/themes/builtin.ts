@@ -43,7 +43,7 @@ export const SION_DARK_TOKENS: Record<ThemeTokenName, string> = {
   "color-success-hover": "#66bb6a",
   "color-glow-strong": "rgba(125, 220, 135, 0.3)",
   "color-glow": "rgba(125, 220, 135, 0.12)",
-  "font-family-sans": "\"Google Sans\", \"Roboto\", ui-sans-serif, system-ui, -apple-system, sans-serif",
+  "font-family-sans": "\"Roboto\", ui-sans-serif, system-ui, -apple-system, sans-serif",
   "font-family-mono": "\"JetBrains Mono\", \"Roboto Mono\", \"Fira Code\", ui-monospace, monospace",
 };
 
@@ -99,7 +99,7 @@ export const SION_LIGHT_TOKENS: Record<ThemeTokenName, string> = {
   "color-success-hover": "#1b5e20",
   "color-glow-strong": "rgba(40, 122, 59, 0.24)",
   "color-glow": "rgba(40, 122, 59, 0.10)",
-  "font-family-sans": "\"Google Sans\", \"Roboto\", ui-sans-serif, system-ui, -apple-system, sans-serif",
+  "font-family-sans": "\"Roboto\", ui-sans-serif, system-ui, -apple-system, sans-serif",
   "font-family-mono": "\"JetBrains Mono\", \"Roboto Mono\", \"Fira Code\", ui-monospace, monospace",
 };
 

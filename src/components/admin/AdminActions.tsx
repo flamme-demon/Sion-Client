@@ -4,50 +4,31 @@ import * as matrixService from "../../services/matrixService";
 import * as cacheRust from "../../services/cacheRust";
 import { adminsServeur } from "../../services/matrixCore";
 import { moteurRust } from "../../services/moteur";
-import { getRoomsList, banRoom } from "../../services/adminService";
 import { useMatrixStore } from "../../stores/useMatrixStore";
 import { getMatrixClient } from "../../services/matrixService";
 import { sendAdminCommand, findAdminRoom } from "../../services/adminCommandService";
+import { GestionSalonsServeur } from "./GestionSalonsServeur";
+import { PlusIcon, ServerIcon, ShieldIcon } from "../icons";
 
-export function AdminActions() {
-  const { t } = useTranslation();
+export function AdminActions({ onDialogueChange }: { onDialogueChange?: (ouvert: boolean) => void }) {
+  const { t, i18n } = useTranslation(undefined, { bindI18n: "languageChanged loaded" });
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [newChannelName, setNewChannelName] = useState("");
   const [newChannelIsVoice, setNewChannelIsVoice] = useState(false);
   const [newChannelIsPublic, setNewChannelIsPublic] = useState(true);
   const [newChannelEncrypted, setNewChannelEncrypted] = useState(false);
   const [creating, setCreating] = useState(false);
-  const channels = useMatrixStore((s) => s.channels);
   const [showRoomManager, setShowRoomManager] = useState(false);
-  const [roomIds, setRoomIds] = useState<string[]>([]);
-  const [roomsLoading, setRoomsLoading] = useState(false);
-  const [deletingRoom, setDeletingRoom] = useState<string | null>(null);
-  const [confirmDeleteRoom, setConfirmDeleteRoom] = useState<string | null>(null);
 
   // Permissions modal state
   const [showPermissions, setShowPermissions] = useState(false);
   const [permUsers, setPermUsers] = useState<{ userId: string; isAdmin: boolean }[]>([]);
   const [permLoading, setPermLoading] = useState(false);
   const [permAction, setPermAction] = useState<string | null>(null);
-
-  const loadRooms = async () => {
-    setRoomsLoading(true);
-    try {
-      const res = await getRoomsList();
-      const list = (res as { rooms?: string[] }).rooms;
-      if (Array.isArray(list)) {
-        setRoomIds(list);
-      }
-    } catch (err) {
-      console.error("[Sion] Failed to load rooms:", err);
-    } finally {
-      setRoomsLoading(false);
-    }
-  };
-
+  useEffect(() => { onDialogueChange?.(showCreateModal || showPermissions || showRoomManager); }, [onDialogueChange, showCreateModal, showPermissions, showRoomManager]);
   useEffect(() => {
-    if (showRoomManager) loadRooms();
-  }, [showRoomManager]);
+    if (import.meta.env.DEV && i18n && !i18n.exists("admin.actions.sectionSpaces")) void i18n.reloadResources().catch(() => {});
+  }, [i18n]);
 
   // Load users + detect admin status for permissions modal
   const loadPermUsers = useCallback(async () => {
@@ -251,44 +232,6 @@ export function AdminActions() {
     }
   };
 
-  const handleDeleteRoom = async (roomId: string) => {
-    setDeletingRoom(roomId);
-    try {
-      // Kick tous les membres du salon
-      if (moteurRust()) {
-        const d = await cacheRust.detailsFrais(roomId).catch(() => null);
-        for (const member of d?.membres ?? []) {
-          if (member.userId.includes("conduit")) continue;
-          try {
-            await sendAdminCommand(`!admin users force-leave-room ${member.userId} ${roomId}`);
-          } catch { /* ignore */ }
-        }
-      }
-      const client = getMatrixClient();
-      const room = client?.getRoom(roomId);
-      if (room) {
-        const members = room.getJoinedMembers();
-        for (const member of members) {
-          if (member.userId.includes("conduit")) continue;
-          try {
-            await sendAdminCommand(`!admin users force-leave-room ${member.userId} ${roomId}`);
-          } catch { /* ignore */ }
-        }
-      }
-
-      // Bannir la room (empêche de la rejoindre)
-      await banRoom(roomId, true);
-
-      // Retirer de la liste
-      setRoomIds((prev) => prev.filter((id) => id !== roomId));
-      setConfirmDeleteRoom(null);
-    } catch (err) {
-      console.error("[Sion] Failed to delete room:", err);
-    } finally {
-      setDeletingRoom(null);
-    }
-  };
-
   const handleCreateChannel = async () => {
     if (!newChannelName.trim() || creating) return;
     setCreating(true);
@@ -306,34 +249,10 @@ export function AdminActions() {
     }
   };
 
-  const [soundboardBusy, setSoundboardBusy] = useState(false);
-  const [soundboardToast, setSoundboardToast] = useState<string | null>(null);
-
-  const handleSoundboard = async () => {
-    if (soundboardBusy) return;
-    setSoundboardBusy(true);
-    setSoundboardToast(null);
-    try {
-      const res = await matrixService.createOrSyncSoundboardRoom();
-      if (res.alreadyExisted) {
-        setSoundboardToast(t("admin.actions.soundboardSynced", { count: res.invitedCount }));
-      } else {
-        setSoundboardToast(t("admin.actions.soundboardCreated"));
-      }
-    } catch (err) {
-      console.error("[Sion] Failed to create/sync soundboard:", err);
-      setSoundboardToast(t("admin.actions.soundboardFailed"));
-    } finally {
-      setSoundboardBusy(false);
-      setTimeout(() => setSoundboardToast(null), 4000);
-    }
-  };
-
   const actions = [
-    { label: t("admin.actions.createRoom"), icon: "+", onClick: () => setShowCreateModal(true), enabled: true },
-    { label: t("admin.actions.manageRooms"), icon: "🏠", onClick: () => setShowRoomManager(true), enabled: true },
-    { label: t("admin.actions.permissions"), icon: "\u{1F6E1}", onClick: () => setShowPermissions(true), enabled: true },
-    { label: t("admin.actions.soundboard"), icon: "🔊", onClick: handleSoundboard, enabled: !soundboardBusy },
+    { label: t("admin.actions.createRoom"), icon: <PlusIcon />, onClick: () => setShowCreateModal(true), enabled: true },
+    { label: t("admin.actions.manageRooms"), icon: <ServerIcon />, onClick: () => setShowRoomManager(true), enabled: true },
+    { label: t("admin.actions.permissions"), icon: <ShieldIcon />, onClick: () => setShowPermissions(true), enabled: true },
   ];
 
   return (
@@ -342,18 +261,7 @@ export function AdminActions() {
       borderRadius: 16,
       padding: '10px 12px',
     }}>
-      {soundboardToast && (
-        <div style={{
-          padding: '8px 12px',
-          marginBottom: 8,
-          borderRadius: 12,
-          background: 'var(--color-primary-container)',
-          color: 'var(--color-on-primary-container)',
-          fontSize: 12,
-          textAlign: 'center',
-        }}>{soundboardToast}</div>
-      )}
-      <div style={{ display: 'flex', gap: 6, justifyContent: 'center' }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
         {actions.map((action, i) => (
           <button
             key={i}
@@ -363,237 +271,31 @@ export function AdminActions() {
             style={{
               display: 'flex',
               alignItems: 'center',
-              justifyContent: 'center',
-              width: 40,
-              height: 40,
+              justifyContent: 'flex-start',
+              gap: 10,
+              width: '100%',
+              minHeight: 40,
+              padding: '10px 12px',
               borderRadius: 12,
               border: 'none',
               background: 'var(--color-surface-container-high)',
               cursor: action.enabled ? 'pointer' : 'default',
               color: 'var(--color-on-surface-variant)',
               opacity: action.enabled ? 1 : 0.4,
-              fontSize: 16,
+              fontSize: 12,
+              textAlign: 'left',
               fontFamily: 'inherit',
               transition: 'background 200ms',
             }}
             onMouseEnter={(e) => { if (action.enabled) e.currentTarget.style.background = 'var(--color-primary-container)'; }}
             onMouseLeave={(e) => { e.currentTarget.style.background = 'var(--color-surface-container-high)'; }}
           >
-            {action.icon}
+            <span style={{ display: 'flex', flexShrink: 0 }} aria-hidden="true">{action.icon}</span>{action.label}
           </button>
         ))}
       </div>
 
-      {showRoomManager && (
-        <div
-          onClick={() => setShowRoomManager(false)}
-          style={{
-            position: 'fixed',
-            inset: 0,
-            background: 'rgba(0,0,0,0.5)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            zIndex: 9999,
-          }}
-        >
-          <div
-            onClick={(e) => e.stopPropagation()}
-            style={{
-              background: 'var(--color-surface-container)',
-              borderRadius: 24,
-              padding: '28px 28px 20px 28px',
-              maxWidth: 500,
-              width: '90%',
-              maxHeight: '70vh',
-              display: 'flex',
-              flexDirection: 'column',
-              boxShadow: '0 8px 32px rgba(0,0,0,0.3)',
-            }}
-          >
-            <div style={{ fontSize: 18, fontWeight: 600, color: 'var(--color-on-surface)', marginBottom: 16 }}>
-              {t("admin.actions.manageRooms")}
-            </div>
-            {roomsLoading ? (
-              <div style={{ padding: 20, textAlign: 'center', color: 'var(--color-outline)', fontSize: 13 }}>
-                {t("settings.loadingSessions")}
-              </div>
-            ) : (
-              <div style={{ overflow: 'auto', flex: 1, display: 'flex', flexDirection: 'column', gap: 4 }}>
-                {/* Séparer canaux et MPs */}
-                {(() => {
-                  const client = getMatrixClient();
-                  const dmRoomIds = new Set<string>(
-                    moteurRust() ? cacheRust.salonsConnus().filter((c) => c.isDM).map((c) => c.id) : [],
-                  );
-                  try {
-                    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                    const directEvent = client?.getAccountData("m.direct" as any);
-                    const directContent = (directEvent?.getContent() || {}) as Record<string, string[]>;
-                    for (const ids of Object.values(directContent)) {
-                      for (const id of ids) dmRoomIds.add(id);
-                    }
-                  } catch { /* ignore */ }
-
-                  const channelRooms = roomIds.filter((id) => !dmRoomIds.has(id));
-                  const dmRooms = roomIds.filter((id) => dmRoomIds.has(id));
-
-                  const adminRoomId = findAdminRoom();
-
-                  return (
-                    <>
-                      <div style={{ fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--color-on-surface-variant)', padding: '8px 4px 4px' }}>
-                        {t("admin.actions.sectionChannels")} ({channelRooms.filter((id) => id !== adminRoomId).length})
-                      </div>
-                      {channelRooms.filter((id) => id !== adminRoomId).map((roomId) => {
-                  const ch = channels.find((c) => c.id === roomId);
-                  const isConfirming = confirmDeleteRoom === roomId;
-                  return (
-                    <div
-                      key={roomId}
-                      style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'space-between',
-                        padding: '8px 12px',
-                        borderRadius: 12,
-                        background: isConfirming ? 'var(--color-error-container)' : 'var(--color-surface-container-high)',
-                        transition: 'background 200ms',
-                      }}
-                    >
-                      <div style={{ minWidth: 0, flex: 1 }}>
-                        <div style={{ fontSize: 13, fontWeight: 500, color: 'var(--color-on-surface)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                          {ch?.name || roomId}
-                        </div>
-                        {isConfirming && (
-                          <div style={{ fontSize: 11, color: 'var(--color-error)', fontWeight: 500, marginTop: 2 }}>
-                            {t("admin.actions.confirmDelete")}
-                          </div>
-                        )}
-                      </div>
-                      {isConfirming ? (
-                        <div style={{ display: 'flex', gap: 4, flexShrink: 0, marginLeft: 8 }}>
-                          <button
-                            onClick={() => handleDeleteRoom(roomId)}
-                            disabled={deletingRoom === roomId}
-                            style={{
-                              padding: '6px 14px',
-                              borderRadius: 16,
-                              border: 'none',
-                              cursor: deletingRoom === roomId ? 'not-allowed' : 'pointer',
-                              fontSize: 12,
-                              fontWeight: 600,
-                              fontFamily: 'inherit',
-                              background: 'var(--color-error)',
-                              color: 'var(--color-on-error)',
-                              opacity: deletingRoom === roomId ? 0.5 : 1,
-                            }}
-                          >
-                            {deletingRoom === roomId ? "..." : t("admin.actions.confirmYes")}
-                          </button>
-                          <button
-                            onClick={() => setConfirmDeleteRoom(null)}
-                            style={{
-                              padding: '6px 14px',
-                              borderRadius: 16,
-                              border: 'none',
-                              cursor: 'pointer',
-                              fontSize: 12,
-                              fontWeight: 500,
-                              fontFamily: 'inherit',
-                              background: 'var(--color-surface-container-high)',
-                              color: 'var(--color-on-surface)',
-                            }}
-                          >
-                            {t("auth.cancel")}
-                          </button>
-                        </div>
-                      ) : (
-                        <button
-                          onClick={() => setConfirmDeleteRoom(roomId)}
-                          style={{
-                            padding: '6px 14px',
-                            borderRadius: 16,
-                            border: 'none',
-                            cursor: 'pointer',
-                            fontSize: 12,
-                            fontWeight: 500,
-                            fontFamily: 'inherit',
-                            flexShrink: 0,
-                            marginLeft: 8,
-                            background: 'var(--color-error-container)',
-                            color: 'var(--color-error)',
-                          }}
-                        >
-                          {t("admin.actions.deleteRoom")}
-                        </button>
-                      )}
-                    </div>
-                  );
-                })}
-
-                      {dmRooms.length > 0 && (
-                        <>
-                          <div style={{ fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--color-on-surface-variant)', padding: '12px 4px 4px' }}>
-                            {t("admin.actions.sectionDMs")} ({dmRooms.length})
-                          </div>
-                          {dmRooms.map((roomId) => {
-                            const ch = channels.find((c) => c.id === roomId);
-                            const room = client?.getRoom(roomId);
-                            const myId = client?.getUserId();
-                            const otherMember = room?.getJoinedMembers().find((m) => m.userId !== myId);
-                            const dmName = otherMember?.name || otherMember?.userId || ch?.name || roomId;
-                            return (
-                              <div
-                                key={roomId}
-                                style={{
-                                  display: 'flex',
-                                  alignItems: 'center',
-                                  padding: '6px 12px',
-                                  borderRadius: 12,
-                                  background: 'var(--color-surface-container-high)',
-                                }}
-                              >
-                                <div style={{ fontSize: 12, color: 'var(--color-on-surface-variant)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                                  {dmName}
-                                </div>
-                              </div>
-                            );
-                          })}
-                        </>
-                      )}
-
-                      {roomIds.length === 0 && (
-                        <div style={{ padding: 20, textAlign: 'center', color: 'var(--color-outline)', fontSize: 13 }}>
-                          {t("admin.actions.noRooms")}
-                        </div>
-                      )}
-                    </>
-                  );
-                })()}
-              </div>
-            )}
-            <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 16 }}>
-              <button
-                onClick={() => setShowRoomManager(false)}
-                style={{
-                  padding: '10px 20px',
-                  borderRadius: 20,
-                  border: 'none',
-                  cursor: 'pointer',
-                  fontSize: 14,
-                  fontWeight: 500,
-                  fontFamily: 'inherit',
-                  background: 'var(--color-surface-container-high)',
-                  color: 'var(--color-on-surface)',
-                }}
-              >
-                {t("auth.cancel")}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      {showRoomManager && <GestionSalonsServeur onFermer={() => setShowRoomManager(false)} />}
 
       {showCreateModal && (
         <div

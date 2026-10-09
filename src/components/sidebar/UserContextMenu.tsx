@@ -1,4 +1,4 @@
-import { useState, useEffect, useLayoutEffect, useRef } from "react";
+import { useState, useEffect, useLayoutEffect, useRef, useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import type { ConnectionQuality } from "../../types/livekit";
 import { useLiveKitStore } from "../../stores/useLiveKitStore";
@@ -103,6 +103,13 @@ export function UserContextMenu({ userId: rawUserId, userName, x, y, onClose }: 
 
   // Current user's power level in this room
   const myPowerLevel = activeChannel ? matrixService.getUserPowerLevel(activeChannel) : 0;
+  const versionCache = useMatrixStore((s) => s.pinnedVersion);
+  const versionAnnoncee = useMemo(() => {
+    void versionCache;
+    // Même visibilité que dans la liste des membres : administrateurs du salon.
+    if (!activeChannel || myPowerLevel < 100) return undefined;
+    return matrixService.getRoomClientVersions(activeChannel).find((version) => version.userId === matrixUserId);
+  }, [activeChannel, matrixUserId, myPowerLevel, versionCache]);
   // Target user's power level
   const targetPowerLevel = activeChannel ? matrixService.getMemberPowerLevel(activeChannel, matrixUserId) : 0;
   const targetRole = getRoleFromPowerLevel(targetPowerLevel);
@@ -435,6 +442,17 @@ export function UserContextMenu({ userId: rawUserId, userName, x, y, onClose }: 
           {roleLabel}
         </span>
       </div>
+
+      {myPowerLevel >= 100 && (
+        <div data-version-client style={{ padding: "2px 14px 8px", fontSize: 11, color: "var(--color-on-surface-variant)" }}>
+          <div>{t("members.clientVersion", { defaultValue: "Version du client" })}</div>
+          <div style={{ marginTop: 3, fontVariantNumeric: "tabular-nums", color: "var(--color-on-surface)", overflowWrap: "anywhere" }}>
+            {versionAnnoncee
+              ? `${versionAnnoncee.version}${versionAnnoncee.os && versionAnnoncee.os !== "?" ? ` · ${versionAnnoncee.os}` : ""}`
+              : t("members.clientVersionUnknown", { defaultValue: "Non annoncée" })}
+          </div>
+        </div>
+      )}
 
       {/* Latency */}
       <button onClick={() => setShowLatency(!showLatency)} style={itemStyle}>

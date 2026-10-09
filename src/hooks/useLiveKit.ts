@@ -13,10 +13,13 @@ import { estCetAppareil } from "../utils/identiteVocale";
  *  `Room` : elle suit les événements `voice-native-*` et publie ses paquets
  *  data-channel via `voice_native_publish_data`. */
 export function useLiveKit() {
-  const { connected, roomName, participants } = useLiveKitStore();
-  const { setParticipants, disconnect: storeDisconnect } = useLiveKitStore();
+  // Les commandes de session sont aussi utilisées par App. Ne pas y abonner
+  // toute la fenêtre aux niveaux audio reçus plusieurs fois par seconde :
+  // les composants qui affichent les participants sélectionnent leur état.
+  const setParticipants = useLiveKitStore((s) => s.setParticipants);
+  const storeDisconnect = useLiveKitStore((s) => s.disconnect);
   const throttleRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const pendingUpdate = useRef<typeof participants | null>(null);
+  const pendingUpdate = useRef<ParticipantInfo[] | null>(null);
   const nativeAfkHeartbeat = useRef<ReturnType<typeof setInterval> | null>(null);
   /** Identités déjà vues (pour re-broadcast AFK aux nouveaux arrivants). */
   const knownNativeIdentities = useRef<Set<string> | null>(null);
@@ -25,7 +28,7 @@ export function useLiveKit() {
   const lastQualities = useRef<Map<string, ParticipantInfo["connectionQuality"]>>(new Map());
   const firstSnapshot = useRef(true);
 
-  const pushThrottled = useCallback((updatedParticipants: typeof participants) => {
+  const pushThrottled = useCallback((updatedParticipants: ParticipantInfo[]) => {
     // Throttle store updates to max ~4 per second to avoid choking React renders
     pendingUpdate.current = updatedParticipants;
     if (!throttleRef.current) {
@@ -61,6 +64,7 @@ export function useLiveKit() {
     console.info(`[Sion][voix-native] join natif ${room} (moteur Rust)`);
     const native = await import("../services/voiceNativeService");
     await disconnectNativeSession();
+    let closed = false;
     setNativeCursorDisplayName(displayName);
     knownNativeIdentities.current = new Set();
     const { useAuthStore } = await import("../stores/useAuthStore");
@@ -69,7 +73,7 @@ export function useLiveKit() {
     // Cet appareil seulement : mon téléphone qui rejoint est un participant
     // comme un autre (cues, qualité, AFK).
     const isLocalIdentity = (id: string) => estCetAppareil(id, localUserId, localDeviceId);
-    const onParticipants = (updatedParticipants: typeof participants, isCurrent: () => boolean) => {
+    const onParticipants = (updatedParticipants: ParticipantInfo[], isCurrent: () => boolean) => {
       // Cues TeamSpeak join/leave/timeout : le moteur Rust ne les émet pas,
       // on les dérive des différences de listes. La première liste (pairs
       // déjà présents) ne déclenche rien, et notre propre identité est ignorée.
@@ -96,7 +100,7 @@ export function useLiveKit() {
       const known = knownNativeIdentities.current;
       if (known) {
         const fresh = updatedParticipants.some((p) => !known.has(p.identity));
-        updatedParticipants.forEach((p) => known.add(p.identity));
+        knownNativeIdentities.current = new Set(updatedParticipants.map((p) => p.identity));
         if (fresh) {
           import("../stores/useAppStore").then(({ useAppStore }) => {
             if (!isCurrent()) return;
@@ -193,8 +197,9 @@ export function useLiveKit() {
         noiseSuppression: settings.aiNoiseSuppression, mix: settings.aiNoiseSuppressionMix },
       audioQuality: settings.audioQuality,
       onParticipants, onData, onE2ee, onLocalScreenShareFailed,
-      onClosed: clearNativeResources, onDisconnected,
+      onClosed: async () => { closed = true; await clearNativeResources(); }, onDisconnected,
     });
+    if (closed) return;
     // Page rechargée en plein appel (03/10 : processus web tué à 8,5 Go
     // après une nuit) : le moteur est resté dans l'appel, avec SON micro
     // coupé et SA sourdine, et la page repart de zéro. Elle affichait « ni
@@ -202,8 +207,10 @@ export function useLiveKit() {
     // de micro, et les boutons agissaient à l'envers. On reprend l'état du
     // moteur, AVANT tout réglage du micro à l'entrée (`joinMuted`).
     const enCours = await getVoiceNativeStatus().catch(() => null);
+    if (closed) return;
     if (enCours) {
       const { useAppStore } = await import("../stores/useAppStore");
+      if (closed) return;
       const app = useAppStore.getState();
       if (enCours.deafened !== app.isDeafened || enCours.muted !== app.isMuted) {
         const message = `[Sion][voix] état du moteur repris : micro coupé=${enCours.muted}, sourdine=${enCours.deafened}`;
@@ -226,20 +233,25 @@ export function useLiveKit() {
     // 16/09). On interroge donc la vérité terrain du moteur.
     void getVoiceNativeStatus()
       .then(async (status) => {
-        if (!status.screenshare_published) return;
+        if (closed || !status?.screenshare_published) return;
         const { useAppStore } = await import("../stores/useAppStore");
+        if (closed) return;
         useAppStore.setState({ isScreenSharing: true });
         const { openCursorOverlay } = await import("../services/cursorOverlayService");
+        if (closed) return;
         await openCursorOverlay();
       })
       .catch(() => {});
     // Heartbeat AFK natif : tout état manqué ou rassis chez les pairs se
     // répare sous 30 s.
+    if (closed) return;
     if (nativeAfkHeartbeat.current) clearInterval(nativeAfkHeartbeat.current);
     nativeAfkHeartbeat.current = setInterval(() => {
       import("../stores/useAppStore").then(({ useAppStore }) => {
+        if (closed) return;
         const deafened = useAppStore.getState().isDeafened;
         import("../services/voiceNativeService").then((svc) => {
+          if (closed) return;
           console.log(`[Sion][deafen] AFK tx natif deafened=${deafened}`);
           const payload = new TextEncoder().encode(JSON.stringify({ deafened }));
           svc.voiceNativePublishData("sion-afk", svc.bytesToB64(payload)).catch(() => {});
@@ -254,9 +266,6 @@ export function useLiveKit() {
   }, [storeDisconnect]);
 
   return {
-    connected,
-    roomName,
-    participants,
     connectNative,
     disconnectNative,
   };

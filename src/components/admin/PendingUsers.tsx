@@ -1,3 +1,7 @@
+import { useEspacesStore } from "../../stores/useEspacesStore";
+import { useMatrixStore } from "../../stores/useMatrixStore";
+import { lireEtat, verifierResponsable } from "../../services/espacesService";
+import { salonCommun } from "../../utils/espaces";
 import { useState, useEffect, useCallback } from "react";
 import { useTranslation } from "react-i18next";
 import { checkUserSuspended, suspendUser, getRoomsList, clearDeactivatedCache } from "../../services/adminService";
@@ -21,6 +25,7 @@ function usePendingUsers() {
   const [pendingUsers, setPendingUsers] = useState<UserEntry[]>([]);
   const [activeUsers, setActiveUsers] = useState<UserEntry[]>([]);
   const [loading, setLoading] = useState(false);
+  const espaceActif = useEspacesStore((s) => s.espaceActif);
   const knownUserIds = usePendingUsersStore((s) => s._knownUserIds);
   const fullDiscover = usePendingUsersStore((s) => s.fullDiscover);
 
@@ -30,6 +35,7 @@ function usePendingUsers() {
     // Compute the public-room set once per pass instead of walking the
     // room graph for every user.
     const publicRoomIds = getPublicRoomIds();
+    if (moteurRust()) await Promise.all(publicRoomIds.map((id) => cacheRust.detailsFrais(id).catch(() => null)));
     const pending: UserEntry[] = [];
     const active: UserEntry[] = [];
 
@@ -52,9 +58,10 @@ function usePendingUsers() {
     pending.sort((a, b) => a.userId.localeCompare(b.userId));
     active.sort((a, b) => a.userId.localeCompare(b.userId));
 
+    if (useEspacesStore.getState().espaceActif !== espaceActif) return;
     setPendingUsers(pending);
     setActiveUsers(active);
-  }, [knownUserIds]);
+  }, [knownUserIds, espaceActif]);
 
   // User-triggered refresh: full re-discovery (catches new registrations
   // that haven't joined any room yet), then per-user suspension check.
@@ -73,7 +80,7 @@ function usePendingUsers() {
 
   // React to knownUserIds changes (fullDiscover updates the store).
   useEffect(() => {
-    checkAll();
+    queueMicrotask(() => { void checkAll(); });
   }, [checkAll]);
 
   return { pendingUsers, activeUsers, loading, refresh };
@@ -82,16 +89,35 @@ function usePendingUsers() {
 export function PendingUsers() {
   const { t } = useTranslation();
   const { pendingUsers, activeUsers: _activeUsers, loading, refresh } = usePendingUsers();
+  const espaceActif = useEspacesStore((s) => s.espaceActif);
+  const espace = useMatrixStore((s) => s.channels.find((c) => c.id === espaceActif && c.isSpace));
+  const [approvalError, setApprovalError] = useState("");
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const refreshPendingCount = usePendingUsersStore((s) => s.refresh);
 
   const handleApprove = async (userId: string) => {
-    setActionLoading(userId);
+    setActionLoading(userId); setApprovalError("");
     try {
+      const espaces = useMatrixStore.getState().channels.filter((c) => c.isSpace);
+      if (espaces.length && !espaceActif) throw new Error(t("spaces.selectForApproval"));
+      if (espaceActif) await verifierResponsable(espaceActif);
       // 1. Unsuspend
       await suspendUser(userId, false);
 
-      // 2. Récupérer toutes les rooms du serveur via l'API admin
+      // L'admission dans l'équipe suit la validation du compte. Aucun autre Espace n'est parcouru.
+      if (espaceActif) {
+        const rooms = getPublicRoomIds();
+        const echecs: string[] = [];
+        for (const id of rooms) {
+          if (id !== espaceActif && !salonCommun(await lireEtat(id, "m.room.join_rules"), espaceActif)) continue;
+          try { await sendAdminCommand(`!admin users force-join-room ${userId} ${id}`); }
+          catch { echecs.push(id); }
+        }
+        await refresh(); refreshPendingCount();
+        if (echecs.length) throw new Error(t("spaces.approvalPartial", { count: echecs.length }));
+        return;
+      }
+      // Avant la création du premier Espace, conserver l'admission historique.
       const adminRoomId = findAdminRoom();
       let roomIds: string[] = [];
       try {
@@ -148,6 +174,7 @@ export function PendingUsers() {
       refreshPendingCount();
     } catch (err) {
       console.error("[Sion] Failed to approve user:", err);
+      setApprovalError(err instanceof Error ? err.message : String(err));
     } finally {
       setActionLoading(null);
     }
@@ -173,6 +200,8 @@ export function PendingUsers() {
 
   return (
     <>
+      {espace && <p style={{ color: "var(--color-on-surface-variant)", fontSize: 13 }}>{t("spaces.approvalScope", { name: espace.name })}</p>}
+      {approvalError && <p role="alert" style={{ color: "var(--color-error)" }}>{approvalError}</p>}
       {/* Pending approvals */}
       <div style={{
         background: 'var(--color-surface-container)',

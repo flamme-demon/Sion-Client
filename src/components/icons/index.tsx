@@ -44,22 +44,24 @@ export function ScreenIcon({ className }: IconProps) {
   );
 }
 
-export function SoundboardIcon({ className }: IconProps) {
+export function SoundboardIcon({ muted, className, size = 16 }: MuteableIconProps & { size?: number }) {
   return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" className={className} aria-hidden="true">
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" className={className} aria-hidden="true">
       <path d="m9 5 12-3v15h-2V8l-8 2v10H9Z" />
       <ellipse cx="7" cy="19" rx="4" ry="3" />
       <ellipse cx="17" cy="16" rx="4" ry="3" />
+      {muted && <line x1="1" y1="1" x2="23" y2="23" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" />}
     </svg>
   );
 }
 
 /** Visage qui pleure de rire : les traits sont évidés dans la forme pleine. */
-export function MemeboardIcon({ className }: IconProps) {
+export function MemeboardIcon({ muted, className, size = 16 }: MuteableIconProps & { size?: number }) {
   return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" className={className} aria-hidden="true">
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" className={className} aria-hidden="true">
       <path fillRule="evenodd" d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20ZM5.5 8.5 9 6l1 1.5L8 9l2 1.5L9 12l-3.5-2.5v-1Zm13 0L15 6l-1 1.5L16 9l-2 1.5L15 12l3.5-2.5v-1ZM7 14h10a5 5 0 0 1-10 0Z" />
       <path d="M3 11S0 14 0 16a2 2 0 0 0 4 0c0-2-1-5-1-5Zm18 0s3 3 3 5a2 2 0 0 1-4 0c0-2 1-5 1-5Z" />
+      {muted && <line x1="1" y1="1" x2="23" y2="23" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" />}
     </svg>
   );
 }
@@ -262,6 +264,14 @@ export function SortIcon({ className }: IconProps) {
       <line x1="4" y1="6" x2="20" y2="6" />
       <line x1="4" y1="12" x2="16" y2="12" />
       <line x1="4" y1="18" x2="12" y2="18" />
+    </svg>
+  );
+}
+
+export function HomeIcon({ className }: IconProps) {
+  return (
+    <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor" className={className} aria-hidden="true">
+      <path d="M11.4 2.7a1 1 0 0 1 1.2 0l9 7a1 1 0 0 1-.6 1.8h-2V20a1 1 0 0 1-1 1h-4v-7h-4v7H6a1 1 0 0 1-1-1v-8.5H3a1 1 0 0 1-.6-1.8l9-7Z" />
     </svg>
   );
 }

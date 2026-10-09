@@ -1,3 +1,5 @@
+import { useEspaces } from "./hooks/useEspaces";
+import { GestionEspaces } from "./components/sidebar/GestionEspaces";
 import { RailServeurs } from "./components/layout/RailServeurs";
 import { Suspense, lazy, useEffect, useState, useCallback, useRef } from "react";
 import { Sidebar } from "./components/layout/Sidebar";
@@ -78,6 +80,7 @@ import { enregistrerRejoindre } from "./services/reconnexionVocale";
 import { CarteReconnexion } from "./components/sidebar/CarteReconnexion";
 
 export default function App() {
+  useEspaces();
   const { t } = useTranslation();
   const showAdmin = useAppStore((s) => s.showAdmin);
   const showSettings = useAppStore((s) => s.showSettings);
@@ -331,8 +334,7 @@ export default function App() {
   // the persisted setting by the dock store (`sion-layout`).
   useEffect(() => {
     const layout = useLayoutStore.getState();
-    const soundboardOpen =
-      layout.panneau === "soundboard";
+    const soundboardOpen = layout.panneaux.includes("soundboard");
     if (useSettingsStore.getState().soundboardOpenAtLaunch && !soundboardOpen) {
       layout.ouvrirPanneau("soundboard");
     }
@@ -479,6 +481,7 @@ export default function App() {
     }>
       <div className={`app-root${isMobile ? "" : " app-root--desktop"}`}>
         {!isMobile && <RailServeurs />}
+        <GestionEspaces />
         {/* Mobile: show sidebar OR chat based on mobileView */}
         {/* Desktop: always show sidebar */}
         {(!isMobile || mobileView === "sidebar") && sidebarSide === "left" && <Sidebar />}

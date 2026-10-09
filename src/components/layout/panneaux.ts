@@ -1,8 +1,10 @@
+import { useEspacesStore } from "../../stores/useEspacesStore";
+import { useMatrixStore } from "../../stores/useMatrixStore";
 /**
  * Panneaux de la dock : composants (chargés à la demande) et titres. Partagés
  * par la dock du bureau et la feuille du téléphone (`MobilePanelSheet`).
  */
-import { lazy, type ComponentType } from "react";
+import { lazy, createElement, type ComponentType } from "react";
 import { useLayoutStore, type PanneauId } from "../../stores/useLayoutStore";
 export { PANNEAU_COMPTEURS } from "./panneauxCompteurs";
 
@@ -37,16 +39,15 @@ export const PANNEAU_TITRES: Record<PanneauId, string> = {
 
 export const PANNEAU_CORPS: Record<PanneauId, ComponentType> = {
   members: MemberPanel,
-  soundboard: SoundboardPanel,
-  memeboard: MemeboardPanel,
+  soundboard: SoundboardEspace,
+  memeboard: MemeboardEspace,
   transcript: TranscriptPanel,
   pinned: PinnedPanel,
 };
 
 /** Panneau actif, partagé avec le retour d'Android. */
 export function panneauxOuverts(): PanneauId[] {
-  const panneau = useLayoutStore.getState().panneau;
-  return panneau ? [panneau] : [];
+  return useLayoutStore.getState().panneaux;
 }
 
 export function fermerFeuilleMobile(): boolean {
@@ -54,3 +55,11 @@ export function fermerFeuilleMobile(): boolean {
   useLayoutStore.getState().fermerPanneau();
   return true;
 }
+
+function useCleBibliotheque() {
+  const espace = useEspacesStore((s) => s.espaceActif);
+  const board = useMatrixStore((s) => s.channels.find((c) => c.id === espace)?.boardRoomId);
+  return `${espace ?? "serveur"}:${board ?? ""}`;
+}
+function SoundboardEspace() { return createElement(SoundboardPanel, { key: useCleBibliotheque() }); }
+function MemeboardEspace() { return createElement(MemeboardPanel, { key: useCleBibliotheque() }); }

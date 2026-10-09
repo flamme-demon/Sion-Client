@@ -1,12 +1,15 @@
 import { RecherchePanneau } from "./RecherchePanneau";
 import { useCompteurPanneau } from "../layout/panneauxCompteurs";
+import { MemeboardIcon } from "../icons";
+import { ActionsCarteBoard } from "./ActionsCarteBoard";
+import { ConfirmationSuppressionBoard } from "./ConfirmationSuppressionBoard";
 // Memeboard : la grille des memes du salon, et leur import.
 //
 // Un clic fait surgir le meme par-dessus l'écran de tout le salon vocal — jeux
 // compris — dans une fenêtre native (`meme_pop.rs`). Le panneau ne montre que
 // des aperçus : des WebP animés, que la vue web anime sans GStreamer, là où
 // une balise vidéo échouerait selon la machine.
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useSettingsStore } from "../../stores/useSettingsStore";
 import {
@@ -38,6 +41,9 @@ import { EmojiGridPanel } from "./EmojiGridPanel";
 import { definirLecteurActif, libererLecteurActif } from "../../services/lecteurActif";
 import { adresseDeReprise } from "../../services/repriseImages";
 import { SUR_ANDROID } from "../../utils/plateforme";
+import { buildTree, findNode, sortedChildren, parentPath, normaliserCategorie } from "../../utils/categories";
+import { FiltreBoardCompact } from "./FiltreBoardCompact";
+import "./BoardPanel.css";
 
 /** Identifiant de l'essai dans le registre du lecteur unique : une vidéo du
  *  fil en cours de lecture rend la main, comme quand on en lance une autre. */
@@ -165,20 +171,33 @@ function ChampsNomEmoji({ nom, onNom, emoji, onEmoji }: {
 
 /** Édition d'un meme du salon : son nom et son emoji. La vidéo ne bouge pas,
  *  l'identifiant non plus — un `m.replace`, comme pour un son. */
-function MemeEditModal({ meme, onClose, onModifie }: { meme: MemeEntry; onClose: () => void; onModifie: () => void }) {
+function ChampCategorie({ valeur, onChange, categories }: { valeur: string; onChange: (v: string) => void; categories: string[] }) {
+  const { t } = useTranslation();
+  const suggestions = useId();
+  return <label style={{ display: 'block', fontSize: 12 }}>
+    {t("memeboard.category", { defaultValue: "Catégorie" })}
+    <input value={valeur} onChange={(e) => onChange(e.target.value)} list={suggestions}
+      placeholder={t("memeboard.categoryPlaceholder", { defaultValue: "Films/Kaamelott" })}
+      style={{ ...CHAMP, marginTop: 4 }} />
+    <datalist id={suggestions}>{categories.map((cat) => <option key={cat} value={cat} />)}</datalist>
+  </label>;
+}
+
+function MemeEditModal({ meme, categories, onClose, onModifie }: { meme: MemeEntry; categories: string[]; onClose: () => void; onModifie: () => void }) {
   const { t } = useTranslation();
   const [nom, setNom] = useState(meme.label);
   const [emoji, setEmoji] = useState(meme.emoji ?? "");
+  const [categorie, setCategorie] = useState(meme.category);
   const [occupe, setOccupe] = useState(false);
   const [erreur, setErreur] = useState<string | null>(null);
-  const change = nom.trim() !== meme.label || (emoji || null) !== meme.emoji;
+  const change = nom.trim() !== meme.label || (emoji || null) !== meme.emoji || normaliserCategorie(categorie) !== meme.category;
   const pret = !!nom.trim() && change && !occupe;
 
   const enregistrer = async () => {
     setOccupe(true);
     setErreur(null);
     try {
-      await modifierMeme(meme.eventId, nom.trim(), emoji.trim() || null);
+      await modifierMeme(meme.eventId, nom.trim(), emoji.trim() || null, normaliserCategorie(categorie));
       onModifie();
     } catch (err) {
       setErreur(`${t("memeboard.editError")} — ${String(err)}`);
@@ -189,8 +208,9 @@ function MemeEditModal({ meme, onClose, onModifie }: { meme: MemeEntry; onClose:
   return (
     <div style={FOND}>
       <div style={{ ...CARTE, width: 420 }}>
-        <div style={{ fontSize: 16, fontWeight: 700 }}>{t("memeboard.editTitle")}</div>
+        <div className="sion-titre" style={{ fontSize: 16, fontWeight: 700 }}>{t("memeboard.editTitle")}</div>
         <ChampsNomEmoji nom={nom} onNom={setNom} emoji={emoji} onEmoji={setEmoji} />
+        <ChampCategorie valeur={categorie} onChange={setCategorie} categories={categories} />
         {erreur && <div style={{ fontSize: 12, color: 'var(--color-error)' }}>{erreur}</div>}
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
           <button type="button" style={styleBouton(false)} onClick={onClose}>{t("memeboard.cancel")}</button>
@@ -286,11 +306,18 @@ export function MemeboardPanel() {
   const [recherche, setRecherche] = useState("");
   const [import_, setImport] = useState(false);
   const [aModifier, setAModifier] = useState<MemeEntry | null>(null);
+  const [aSupprimer, setASupprimer] = useState<MemeEntry | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const actif = useSettingsStore((s) => s.memeboardEnabled);
   const setActif = useSettingsStore((s) => s.setMemeboardEnabled);
   const volume = useSettingsStore((s) => s.memeboardVolume);
   const setVolume = useSettingsStore((s) => s.setMemeboardVolume);
+  const vue = useSettingsStore((s) => s.memeboardView);
+  const setVue = useSettingsStore((s) => s.setMemeboardView);
+  const compteurs = useSettingsStore((s) => s.memeboardPlayCounts);
+  const incrementerLecture = useSettingsStore((s) => s.incrementMemeboardPlay);
+  const categorie = useSettingsStore((s) => s.memeboardCategory);
+  const setCategorie = useSettingsStore((s) => s.setMemeboardCategory);
   const rafraichirRef = useRef<() => void>(() => {});
 
   const annoncer = useCallback((texte: string) => {
@@ -304,12 +331,24 @@ export function MemeboardPanel() {
     let annule = false;
     let minuterie: ReturnType<typeof setTimeout> | null = null;
     let salon: string | null = null;
+    let chargement = false;
+    let demande = false;
     const rafraichir = async () => {
-      salon = await findSoundboardRoom();
       if (annule) return;
-      setRoomId(salon);
-      const liste = await listMemes();
-      if (!annule) setMemes(liste);
+      if (chargement) { demande = true; return; }
+      chargement = true;
+      try {
+        salon = await findSoundboardRoom();
+        if (annule) return;
+        setRoomId(salon);
+        const liste = await listMemes();
+        if (!annule) setMemes(liste);
+      } catch (err) {
+        if (!annule) console.warn("[Sion][memeboard] rafraîchissement impossible", err);
+      } finally {
+        chargement = false;
+        if (demande && !annule) { demande = false; void rafraichir(); }
+      }
     };
     rafraichirRef.current = () => { void rafraichir(); };
     void rafraichir();
@@ -332,7 +371,7 @@ export function MemeboardPanel() {
       };
     }
     const client = getMatrixClient();
-    if (!client) return;
+    if (!client) return () => { annule = true; };
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const surEvenement = (ev: any, room: any) => {
       const id = room?.roomId ?? ev?.getRoomId?.();
@@ -385,16 +424,31 @@ export function MemeboardPanel() {
   // le cœur Rust seul sait éditer un meme.
   const peutModifier = peutEnvoyer && moteurRust();
 
+  const categories = useMemo(() => Array.from(new Set(memes.map((m) => m.category))).sort((a, b) => a.localeCompare(b)), [memes]);
+  const arbre = useMemo(() => buildTree(categories), [categories]);
+  const racines = sortedChildren(arbre);
+  const noeud = vue === "all" ? findNode(arbre, categorie) : null;
+  const ancre = !categorie ? null : noeud && noeud.children.size > 0 ? noeud : findNode(arbre, parentPath(categorie));
+  const enfants = sortedChildren(ancre);
+  const montrerSousCategories = vue === "all" && ancre && ancre.name !== "" && enfants.length > 0;
+  const choisirCategorie = (cat: string | null) => { setVue("all"); setCategorie(cat); };
+
   const visibles = useMemo(() => {
     const q = recherche.trim().toLowerCase();
-    return q ? memes.filter((m) => m.label.toLowerCase().includes(q)) : memes;
-  }, [memes, recherche]);
+    const correspondants = q ? memes.filter((m) => m.label.toLowerCase().includes(q) || m.category.toLowerCase().includes(q)) : memes;
+    if (vue !== "top") return correspondants.filter((m) => !categorie || m.category === categorie || m.category.startsWith(categorie + "/"));
+    return correspondants
+      .filter((m) => (compteurs[m.eventId] || 0) > 0)
+      .sort((a, b) => (compteurs[b.eventId] || 0) - (compteurs[a.eventId] || 0) || a.label.localeCompare(b.label));
+  }, [memes, recherche, vue, compteurs, categorie]);
 
   const lancer = async (meme: MemeEntry) => {
     if (!actif) return;
     try {
       if (!(await declencherMeme(meme))) {
         annoncer(t("memeboard.tooSoon", { s: Math.ceil(delaiRestantMs() / 1000) }));
+      } else {
+        incrementerLecture(meme.eventId);
       }
     } catch (err) {
       console.warn("[Sion][meme] lecture impossible", err);
@@ -403,32 +457,23 @@ export function MemeboardPanel() {
   };
 
   const supprimer = async (meme: MemeEntry) => {
-    if (!window.confirm(t("memeboard.deleteConfirm", { label: meme.label }))) return;
-    try {
-      await supprimerMeme(meme.eventId);
-      rafraichirRef.current();
-    } catch (err) {
-      console.error("[Sion][meme] suppression impossible", err);
-      annoncer(t("memeboard.deleteError"));
-    }
+    await supprimerMeme(meme.eventId);
+    rafraichirRef.current();
   };
 
   const bascule = (
     <button
       type="button"
       onClick={() => setActif(!actif)}
+      aria-pressed={actif}
+      aria-label={actif ? t("memeboard.disable") : t("memeboard.enable")}
       title={actif ? t("memeboard.disable") : t("memeboard.enable")}
       style={{
         flexShrink: 0, border: 'none', background: 'transparent', cursor: 'pointer', padding: 4,
         borderRadius: 8, display: 'flex', color: actif ? 'var(--color-on-surface)' : 'var(--color-error)',
       }}
     >
-      <svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        <rect x="2" y="4" width="20" height="16" rx="3" />
-        {actif
-          ? <polygon points="10 9 15 12 10 15 10 9" fill="currentColor" />
-          : <line x1="4" y1="4" x2="20" y2="20" />}
-      </svg>
+      <MemeboardIcon muted={!actif} size={18} />
     </button>
   );
 
@@ -440,9 +485,10 @@ export function MemeboardPanel() {
         className="sion-range"
         disabled={!actif}
         onChange={(e) => setVolume(parseFloat(e.target.value))}
+        aria-label={t("memeboard.volume")}
         title={t("memeboard.volume")}
         style={{
-          width: undefined, flex: 1,
+          minWidth: 0, flex: 1,
           opacity: actif ? 1 : 0.4, cursor: actif ? 'pointer' : 'not-allowed',
           '--sion-range-progress': `${Math.round(volume * 100)}%`,
         } as React.CSSProperties}
@@ -457,39 +503,64 @@ export function MemeboardPanel() {
   const champRecherche = <RecherchePanneau valeur={recherche} onChange={setRecherche} libelle={t("memeboard.search")}
     ajout={peutEnvoyer && !SUR_ANDROID ? { libelle: t("memeboard.add"), onClick: () => setImport(true) } : undefined} />;
 
+  const filtre = (cle: string, texte: React.ReactNode, selectionne: boolean, onClick: () => void, titre?: string) =>
+    <button key={cle} type="button" data-filter={cle} aria-pressed={selectionne} onClick={onClick} title={titre}
+      style={{
+        display: 'flex', alignItems: 'center', gap: 5, flexShrink: 0,
+        padding: '5px 12px', borderRadius: 999, cursor: 'pointer',
+        fontSize: 12, fontWeight: 600, fontFamily: 'inherit', whiteSpace: 'nowrap',
+        border: selectionne ? '1px solid var(--color-primary)' : '1px solid var(--color-border)',
+        background: selectionne ? 'var(--color-primary)' : 'transparent',
+        color: selectionne ? 'var(--color-on-primary)' : 'var(--color-on-surface-variant)',
+      }}>{texte}</button>;
+  const ligneFiltres = { display: 'flex', gap: 8, padding: '0 16px 8px', flexShrink: 0, overflowX: 'auto' } as const;
+  const defilerFiltres = (e: React.WheelEvent<HTMLDivElement>) => { if (e.deltaY !== 0) e.currentTarget.scrollLeft += e.deltaY; };
+
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, overflow: 'hidden' }}>
-      <style>{`.meme-tuile:hover .meme-suppr, .meme-tuile:hover .meme-modif { display: flex !important; }`}</style>
-      {(
-        <>
-          {roomId && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 10, padding: '0 16px 12px' }}>
-              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                {champRecherche}
-              </div>
-              {reglageVolume}
-            </div>
-          )}
-        </>
+    <div className="memeboard-panel sion-board" data-prete={!!roomId}>
+      <div className="sion-board-outils" onWheel={defilerFiltres}>
+      {roomId && (
+        <div className="sion-board-recherche">
+          {champRecherche}
+        </div>
       )}
 
+      {roomId && (
+        <div className="sb-pills sion-board-filtres-larges" style={ligneFiltres} onWheel={defilerFiltres}>
+          {filtre("top", <><span aria-hidden="true">🔥</span>{t("memeboard.top", { defaultValue: "Top" })}</>, vue === "top",
+            () => { setVue("top"); setCategorie(null); }, t("memeboard.topHint", { defaultValue: "Les mèmes que tu lances le plus" }))}
+          {filtre("all", t("memeboard.all", { defaultValue: "Tous" }), vue === "all" && categorie === null, () => choisirCategorie(null))}
+          {racines.map((cat) => filtre(cat.fullPath, cat.name, vue === "all" && !!categorie && (categorie === cat.fullPath || categorie.startsWith(cat.fullPath + "/")), () => choisirCategorie(cat.fullPath)))}
+        </div>
+      )}
+      {roomId && montrerSousCategories && <div className="sb-pills sion-board-filtres-larges" style={ligneFiltres} onWheel={defilerFiltres}>
+        {filtre("back", "‹", false, () => choisirCategorie(parentPath(ancre.fullPath)), t("soundboard.back", { defaultValue: "Retour" }))}
+        {filtre("category-all", t("memeboard.allOf", { defaultValue: "Tout {{name}}", name: ancre.name }), categorie === ancre.fullPath, () => choisirCategorie(ancre.fullPath))}
+        {enfants.map((cat) => filtre(cat.fullPath, cat.name, categorie === cat.fullPath, () => choisirCategorie(cat.fullPath)))}
+      </div>}
+      {roomId && <FiltreBoardCompact arbre={arbre} mode={vue} categorie={categorie}
+        toutes={t("memeboard.all")} libelle={t("memeboard.category")}
+        onChange={(mode, cat) => { setVue(mode); setCategorie(cat); }} />}
+      </div>
+
       {message && (
-        <div style={{ margin: '0 16px 8px', padding: '6px 10px', borderRadius: 8, fontSize: 12, background: 'var(--color-surface-container-high)', color: 'var(--color-on-surface)' }}>
+        <div className="sion-board-message">
           {message}
         </div>
       )}
 
       {!roomId ? (
-        <div style={{ padding: 20, fontSize: 12, color: 'var(--color-outline)', textAlign: 'center' }}>{t("memeboard.noRoom")}</div>
+        <div className="sion-board-vide" style={{ padding: 20, fontSize: 12, color: 'var(--color-outline)', textAlign: 'center' }}>{t("memeboard.noRoom")}</div>
       ) : visibles.length === 0 ? (
-        <div style={{ padding: 20, fontSize: 12, color: 'var(--color-outline)', textAlign: 'center' }}>
-          {memes.length === 0 ? t("memeboard.empty") : t("memeboard.noMatch")}
+        <div className="sion-board-vide" style={{ padding: 20, fontSize: 12, color: 'var(--color-outline)', textAlign: 'center' }}>
+          {memes.length === 0 ? t("memeboard.empty")
+            : vue === "top" && !recherche.trim()
+              ? t("memeboard.noTop", { defaultValue: "Ton TOP se remplira avec les mèmes que tu lances." })
+              : t("memeboard.noMatch")}
         </div>
       ) : (
-        <div style={{
-          flex: 1, minHeight: 0, overflowY: 'auto', padding: '4px 16px 16px',
-          display: 'grid', gap: 10, alignContent: 'start',
-          gridTemplateColumns: 'repeat(auto-fill, minmax(112px, 1fr))',
+        <div className="sion-board-contenu memeboard-grid" onWheel={(e) => {
+          if (getComputedStyle(e.currentTarget).overflowY === "hidden") defilerFiltres(e);
         }}>
           {visibles.map((m) => {
             const apercu = m.apercuMxc ? (moteurRust() ? (apercusRust[m.apercuMxc] ?? null) : mxcToHttp(m.apercuMxc)) : null;
@@ -497,13 +568,12 @@ export function MemeboardPanel() {
             return (
               <div
                 key={m.eventId}
-                className="meme-tuile"
+                className="meme-tuile sion-carte-board"
                 onClick={() => void lancer(m)}
                 title={actif ? m.label : t("memeboard.disabledHint")}
                 style={{
-                  position: 'relative', display: 'flex', flexDirection: 'column', gap: 6,
-                  padding: 6, borderRadius: 12, cursor: actif ? 'pointer' : 'not-allowed',
-                  border: 'none', background: 'var(--color-surface-container)',
+                  position: 'relative', cursor: actif ? 'pointer' : 'not-allowed',
+                  border: 'none', background: 'var(--sion-fond-carte-board)',
                   opacity: actif ? 1 : 0.45, transition: 'background 120ms',
                 }}
                 onMouseEnter={(e) => {
@@ -511,55 +581,55 @@ export function MemeboardPanel() {
                   setSurvolee(m.eventId);
                 }}
                 onMouseLeave={(e) => {
-                  e.currentTarget.style.background = 'var(--color-surface-container)';
+                  e.currentTarget.style.background = 'var(--sion-fond-carte-board)';
                   setSurvolee((id) => (id === m.eventId ? null : id));
                 }}
               >
-                <div style={{
-                  aspectRatio: '1 / 1', borderRadius: 8, overflow: 'hidden',
-                  display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 28,
-                }}>
+                <div className="sion-board-visuel">
                   {apercu
                     ? <ApercuMeme src={apercu} anime={survolee === m.eventId} />
                     : (m.emoji || '🎬')}
                 </div>
-                <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-on-surface)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                <div className="sion-board-description">
+                <div className="sion-carte-board-nom">
                   {m.emoji ? `${m.emoji} ` : ''}{m.label}
                 </div>
-                {peutSupprimer && (
-                  <button
-                    type="button"
-                    className="meme-suppr"
-                    onClick={(e) => { e.stopPropagation(); void supprimer(m); }}
-                    title={t("memeboard.delete")}
-                    style={{
-                      display: 'none', position: 'absolute', top: 10, right: 10, width: 24, height: 24,
-                      borderRadius: 999, border: 'none', cursor: 'pointer', alignItems: 'center', justifyContent: 'center',
-                      background: 'var(--color-error)', color: 'var(--color-on-error)', fontSize: 14, lineHeight: 1,
-                    }}
-                  >×</button>
-                )}
-                {peutModifier && (
-                  <button
-                    type="button"
-                    className="meme-modif"
-                    onClick={(e) => { e.stopPropagation(); setAModifier(m); }}
-                    title={t("memeboard.edit")}
-                    style={{
-                      display: 'none', position: 'absolute', top: 10, left: 10, width: 24, height: 24,
-                      borderRadius: 999, border: 'none', cursor: 'pointer', alignItems: 'center', justifyContent: 'center',
-                      background: 'var(--color-secondary-container)', color: 'var(--color-on-secondary-container)', fontSize: 12, lineHeight: 1,
-                    }}
-                  >✎</button>
-                )}
+                <div className="meme-categorie sion-carte-board-categorie">
+                  {m.category.replace(/\//g, " · ")}
+                </div>
+                </div>
+                <ActionsCarteBoard
+                  modifier={peutModifier ? { libelle: t("memeboard.edit"), onClick: () => setAModifier(m) } : undefined}
+                  supprimer={peutSupprimer ? { libelle: t("memeboard.delete"), onClick: () => setASupprimer(m) } : undefined}
+                />
               </div>
             );
           })}
         </div>
       )}
 
+      {roomId && (
+        <div className="sion-pied-panneau" style={{
+          padding: '8px 16px', marginTop: 'auto', flexShrink: 0,
+          display: 'flex', alignItems: 'center', gap: 8, fontSize: 11, color: 'var(--color-on-surface-variant)',
+        }}>
+          {reglageVolume}
+        </div>
+      )}
+
+      {aSupprimer && (
+        <ConfirmationSuppressionBoard
+          titre={t("memeboard.deleteTitle", { defaultValue: "Supprimer ce mème ?" })}
+          description={t("memeboard.deleteConfirm", { label: aSupprimer.label })}
+          messageErreur={t("memeboard.deleteError")}
+          onConfirmer={() => supprimer(aSupprimer)}
+          onFermer={() => setASupprimer(null)}
+        />
+      )}
+
       {import_ && (
         <MemeImportModal
+          categories={categories} categorieInitiale={categorie ?? "Autre"}
           onClose={() => setImport(false)}
           onEnvoye={() => { setImport(false); rafraichirRef.current(); }}
         />
@@ -567,6 +637,7 @@ export function MemeboardPanel() {
       {aModifier && (
         <MemeEditModal
           meme={aModifier}
+          categories={categories}
           onClose={() => setAModifier(null)}
           onModifie={() => { setAModifier(null); rafraichirRef.current(); }}
         />
@@ -577,7 +648,7 @@ export function MemeboardPanel() {
 
 /** Import d'un meme : une source, l'extrait choisi à l'œil et à l'oreille, un
  *  essai sur son propre écran, puis l'envoi. */
-function MemeImportModal({ onClose, onEnvoye }: { onClose: () => void; onEnvoye: () => void }) {
+function MemeImportModal({ categories, categorieInitiale, onClose, onEnvoye }: { categories: string[]; categorieInitiale: string; onClose: () => void; onEnvoye: () => void }) {
   const { t } = useTranslation();
   const [fichier, setFichier] = useState<File | null>(null);
   const [source, setSource] = useState<string | null>(null);
@@ -585,6 +656,7 @@ function MemeImportModal({ onClose, onEnvoye }: { onClose: () => void; onEnvoye:
   const [lien, setLien] = useState(false);
   const [nom, setNom] = useState("");
   const [emoji, setEmoji] = useState("");
+  const [categorie, setCategorie] = useState(categorieInitiale);
   const [region, setRegion] = useState({ debut: 0, fin: MEME_DUREE_MAX_MS });
   // Préparation gardée tant que l'extrait ne bouge pas : « Tester » puis
   // « Envoyer » ne réencodent qu'une fois.
@@ -654,7 +726,7 @@ function MemeImportModal({ onClose, onEnvoye }: { onClose: () => void; onEnvoye:
     setOccupe("envoyer");
     setErreur(null);
     try {
-      await envoyerMeme(await preparer(), nom, emoji.trim() || null);
+      await envoyerMeme(await preparer(), nom, emoji.trim() || null, normaliserCategorie(categorie));
       onEnvoye();
     } catch (err) {
       setErreur(`${t("memeboard.sendError")} — ${String(err)}`);
@@ -667,7 +739,7 @@ function MemeImportModal({ onClose, onEnvoye }: { onClose: () => void; onEnvoye:
   return (
     <div style={FOND}>
       <div style={{ ...CARTE, width: 560 }}>
-        <div style={{ fontSize: 16, fontWeight: 700 }}>{t("memeboard.importTitle")}</div>
+        <div className="sion-titre" style={{ fontSize: 16, fontWeight: 700 }}>{t("memeboard.importTitle")}</div>
         <div style={{ fontSize: 12, color: 'var(--color-on-surface-variant)' }}>{t("memeboard.limits")}</div>
 
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', minWidth: 0 }}>
@@ -688,6 +760,7 @@ function MemeImportModal({ onClose, onEnvoye }: { onClose: () => void; onEnvoye:
         </div>
 
         {fichier && <ChampsNomEmoji nom={nom} onNom={setNom} emoji={emoji} onEmoji={setEmoji} />}
+        {fichier && <ChampCategorie valeur={categorie} onChange={setCategorie} categories={categories} />}
 
         {occupe === "analyse" && (
           <div style={{ fontSize: 12, color: 'var(--color-outline)' }}>{t("memeboard.analysing")}</div>

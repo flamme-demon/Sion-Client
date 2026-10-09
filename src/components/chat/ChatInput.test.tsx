@@ -45,6 +45,8 @@ it("la saisie précède la rangée d'actions sur deux lignes", async () => {
   expect(envoyer.textContent).toBe("");
   expect(envoyer.querySelector("svg")).not.toBeNull();
   expect(vue.container.querySelector('.sion-saisie-ligne [aria-label="chat.attachFile"]')).toBeNull();
+  expect(vue.container.querySelector('.sion-saisie-ligne [aria-label="chat.gifTab"]')).toBeNull();
+  expect(vue.container.querySelector('.sion-saisie-ligne [aria-label="chat.emojiTab"]')).not.toBeNull();
   expect(actions.querySelector('[aria-label="extVideo.menuItem"]')).not.toBeNull();
   expect(actions.querySelector('[aria-label="poll.menuItem"]')).not.toBeNull();
   expect(vue.container.querySelector('[aria-label="chat.insertLink"]')).toBeNull();
@@ -57,6 +59,36 @@ it("Envoyer est désactivé à vide, envoie le texte puis revient à vide", asyn
   await vue.click('[aria-label="chat.send"]');
   expect(envoyer).toHaveBeenCalledWith("!salon", "Bonjour");
   expect(vue.container.querySelector("textarea")!.value).toBe("");
+});
+it("ajuste la hauteur aux retours à la ligne, la plafonne puis la réduit sans relire scrollHeight", async () => {
+  let redimensionner!: ResizeObserverCallback;
+  const observer = { observe: vi.fn(), disconnect: vi.fn(), unobserve: vi.fn() };
+  vi.stubGlobal("ResizeObserver", class {
+    constructor(callback: ResizeObserverCallback) { redimensionner = callback; }
+    observe = observer.observe;
+    disconnect = observer.disconnect;
+  });
+  await vue.render(<ChatInput />);
+  const textarea = vue.container.querySelector("textarea")!;
+  const lectureHauteur = vi.spyOn(textarea, "scrollHeight", "get");
+  const champ = vue.container.querySelector<HTMLElement>(".sion-saisie-champ")!;
+  const mesure = vue.container.querySelector(".sion-saisie-mesure")!;
+  expect(observer.observe).toHaveBeenCalledWith(mesure);
+  expect(mesure.getAttribute("aria-hidden")).toBe("true");
+  const hauteur = (blockSize: number) => redimensionner([
+    { borderBoxSize: [{ blockSize }], target: mesure } as unknown as ResizeObserverEntry,
+  ], observer);
+  await saisir("Première ligne\nDeuxième ligne\n");
+  hauteur(79);
+  expect(champ.style.getPropertyValue("--sion-saisie-hauteur")).toBe("79px");
+  hauteur(240);
+  expect(champ.style.getPropertyValue("--sion-saisie-hauteur")).toBe("120px");
+  await saisir("");
+  hauteur(37);
+  expect(champ.style.getPropertyValue("--sion-saisie-hauteur")).toBe("37px");
+  expect(lectureHauteur).not.toHaveBeenCalled();
+  await vue.render(null);
+  expect(observer.disconnect).toHaveBeenCalledOnce();
 });
 it("@ insère une mention et propose les membres", async () => {
   await vue.render(<ChatInput />);

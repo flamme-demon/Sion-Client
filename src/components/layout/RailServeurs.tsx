@@ -1,6 +1,7 @@
 import { useTranslation } from "react-i18next";
 import { Bulle } from "./Bulle";
 import { SettingsIcon, ServerIcon } from "../icons";
+import { NavigationEspaces } from "../sidebar/NavigationEspaces";
 import { UserAvatar } from "../sidebar/UserAvatar";
 import { AccountPopover } from "../sidebar/AccountPopover";
 import { useAppStore } from "../../stores/useAppStore";
@@ -17,7 +18,6 @@ export function RailServeurs() {
   const isAdmin = useAdminStore((s) => s.isAdmin);
   const pendingCount = usePendingUsersStore((s) => s.pendingCount);
   const mode = useLayoutStore((s) => s.sidebarMode);
-  const showAccount = useAppStore((s) => s.showAccountPanel);
   const showAdmin = useAppStore((s) => s.showAdmin);
   const showSettings = useAppStore((s) => s.showSettings);
   const etroite = useFenetreEtroite();
@@ -25,29 +25,30 @@ export function RailServeurs() {
   return (
     <>
       <Bulle as="nav" className="sion-rail" aria-label={t("layout.navigation")}>
-        <button className="sion-rail-bouton" aria-label={t("layout.toggleSidebar")} title={t("layout.toggleSidebar")} aria-pressed={mode === "full"}
+        <NavigationEspaces rail />
+        <div style={{ flex: 1 }} />
+        <hr className="sion-rail-separation" />
+        <button className="sion-rail-bouton" aria-label={t("layout.toggleSidebar")} title={t("layout.toggleSidebar")} aria-expanded={mode === "full"}
           onClick={() => useLayoutStore.getState().toggleSidebar()}>
           <svg width="28" height="28" viewBox="0 0 32 32" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
             <path d="M3 16h6V8h7v16h7v-8h6" />
           </svg>
         </button>
-        <button className="sion-rail-bouton" data-panel-toggle aria-label={t("settings.account")} title={nom} aria-pressed={showAccount}
-          onClick={() => useAppStore.getState().toggleAccountPanel()}>
+        {mode === "hidden" && <button type="button" className="sion-rail-bouton" data-panel-toggle
+          aria-label={t("settings.account")} title={nom} onClick={() => useAppStore.getState().toggleAccountPanel()}>
           <UserAvatar name={nom} speaking={false} size="md" avatarUrl={credentials?.avatarUrl} />
-        </button>
+        </button>}
         {isAdmin === true && <button className="sion-rail-bouton" data-panel-toggle aria-label={t("admin.title")} title={t("admin.title")} aria-pressed={showAdmin}
           onClick={() => useAppStore.getState().toggleAdmin()}>
           <ServerIcon />
           {pendingCount > 0 && <span className="sion-rail-compteur">{pendingCount}</span>}
         </button>}
-        <div style={{ flex: 1 }} />
-        {(mode !== "full" || etroite) && <>
-          <hr style={{ width: 32, border: 0, borderTop: "1px solid var(--color-border)" }} />
+        {(mode !== "full" || etroite) && (
           <button className="sion-rail-bouton" data-panel-toggle aria-label={t("settings.title")} title={t("settings.title")} aria-pressed={showSettings}
             onPointerEnter={() => preloadHeavyScreens(0)} onClick={() => useAppStore.getState().toggleSettings()}>
             <SettingsIcon />
           </button>
-        </>}
+        )}
       </Bulle>
       <AccountPopover compact />
     </>

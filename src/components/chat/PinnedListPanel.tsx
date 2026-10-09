@@ -6,6 +6,8 @@ import * as matrixService from "../../services/matrixService";
 import { plainPreview } from "../../utils/plainPreview";
 import { allerAuMessage } from "../../services/allerAuMessage";
 import type { PinnedSummary } from "../../services/matrixService";
+import { useCompteurPanneau } from "../layout/panneauxCompteurs";
+import "./TextPanel.css";
 
 /**
  * Liste complète des messages épinglés d'un salon.
@@ -28,6 +30,7 @@ export function PinnedListPanel() {
   // Re-lire quand les épingles changent pendant que le panneau est ouvert.
   const pinnedVersion = useMatrixStore((s) => s.pinnedVersion);
   const [pins, setPins] = useState<PinnedSummary[] | null>(null);
+  useCompteurPanneau("pinned", pins?.length ?? null);
 
   useEffect(() => {
     if (!activeChannel) return;
@@ -44,16 +47,10 @@ export function PinnedListPanel() {
     : "";
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
-      <div style={{
-        fontSize: 11, fontWeight: 600, color: 'var(--color-on-surface-variant)',
-        padding: '6px 8px', flex: '0 0 auto',
+    <div className="sion-epingles">
+      <div className="sion-epingles-liste" onWheel={(e) => {
+        if (getComputedStyle(e.currentTarget).overflowY === "hidden") e.currentTarget.scrollLeft += e.deltaY;
       }}>
-        {t("chat.pinnedList")}
-        {pins ? ` (${pins.length})` : ""}
-      </div>
-
-      <div style={{ flex: '1 1 auto', overflowY: 'auto', minHeight: 0, padding: '0 6px 6px' }}>
         {pins === null && (
           <div style={{ padding: '10px 8px', fontSize: 12, color: 'var(--color-outline)' }}>
             {t("chat.loading")}
@@ -71,14 +68,8 @@ export function PinnedListPanel() {
             key={pin.eventId}
             type="button"
             onClick={() => allerAuMessage(pin.eventId)}
-            style={{
-                display: 'flex', gap: 8, width: '100%', textAlign: 'left',
-                border: 'none', background: 'transparent', cursor: 'pointer',
-                padding: '8px', borderRadius: 8, fontFamily: 'inherit',
-                alignItems: 'flex-start',
-              }}
-            onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--color-surface-container-highest)'; }}
-            onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
+            className="sion-epingle"
+            title={plainPreview(pin.text) || t("chat.attachedFile", { defaultValue: "Fichier joint" })}
           >
             {/* Vignette du média : une image et une vidéo se reconnaissent d'un
                 coup d'œil, là où le libellé « Fichier joint » ne disait rien de
@@ -88,31 +79,23 @@ export function PinnedListPanel() {
                 src={pin.mediaUrl}
                 alt=""
                 loading="lazy"
-                style={{
-                  width: 56, height: 56,
-                  flex: '0 0 auto', objectFit: 'cover',
-                  borderRadius: 6, background: 'var(--color-surface-container)',
-                }}
+                className="sion-epingle-media"
               />
             )}
             {pin.mediaUrl && pin.media === "video" && (
-              <AfficheVideo pin={pin} largeur={56} hauteur={56} />
+              <AfficheVideo pin={pin} />
             )}
 
             <div style={{ minWidth: 0, flex: '1 1 auto' }}>
-              <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
-                <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--color-primary)' }}>
+              <div className="sion-epingle-auteur">
+                <span title={pin.sender} style={{ fontSize: 11, fontWeight: 600, color: 'var(--color-primary)' }}>
                   {pin.sender}
                 </span>
                 <span style={{ fontSize: 10, color: 'var(--color-outline)' }}>
                   {dateCourte(pin.ts)}
                 </span>
               </div>
-              <div style={{
-                fontSize: 12, color: 'var(--color-on-surface-variant)', marginTop: 2,
-                display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical',
-                overflow: 'hidden',
-              }}>
+              <div className="sion-epingle-texte">
                 {plainPreview(pin.text) || t("chat.attachedFile", { defaultValue: "Fichier joint" })}
               </div>
             </div>
@@ -131,7 +114,7 @@ export function PinnedListPanel() {
  * `mediaUrl` la désigne déjà ; sinon ffmpeg extrait une image du média, comme
  * pour les cartes du fil, mise en cache côté Rust.
  */
-function AfficheVideo({ pin, largeur, hauteur }: { pin: PinnedSummary; largeur: number | string; hauteur: number }) {
+function AfficheVideo({ pin }: { pin: PinnedSummary }) {
   const vignette = pin.mediaUrl && pin.mediaUrl !== pin.sourceUrl ? pin.mediaUrl : null;
   const [extraite, setExtraite] = useState<string | null>(null);
   // Extraire une affiche télécharge le début de la vidéo — jusqu'à 12 Mo — et
@@ -166,10 +149,7 @@ function AfficheVideo({ pin, largeur, hauteur }: { pin: PinnedSummary; largeur: 
   }, [vignette, visible, pin.sourceUrl]);
   const image = vignette ?? extraite;
   return (
-    <div ref={cadreRef} style={{
-      position: 'relative', width: largeur, height: hauteur, flex: '0 0 auto',
-      borderRadius: 6, overflow: 'hidden', background: 'var(--color-surface-container-highest)',
-    }}>
+    <div ref={cadreRef} className="sion-epingle-media" style={{ position: 'relative', overflow: 'hidden' }}>
       {image && (
         <img src={image} alt="" loading="lazy" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
       )}

@@ -306,7 +306,7 @@ function getJoinedRooms(client: MatrixClient): ReturnType<MatrixClient["getRooms
       const userId = client.getUserId();
       if (!userId) return true;
       const member = room.getMember(userId);
-      return member?.membership === "join";
+      return member?.membership === "join" || (member?.membership === "invite" && room.currentState.getStateEvents("m.room.create", "")?.getContent()?.type === "m.space");
     });
 }
 
@@ -433,7 +433,12 @@ export function mapRoomToChannel(room: any, client: MatrixClient | null = null):
   // dedicated panel in the chat input. Detected by canonical alias starting
   // with #soundboard:
   const canonicalAlias: string = room.getCanonicalAlias?.() || "";
-  const isSoundboard = canonicalAlias.startsWith("#soundboard:");
+  const isSoundboard = canonicalAlias.startsWith("#soundboard:") || customType === "com.sion.board";
+  const isSpace = roomType === "m.space";
+  const enfants = room.currentState?.getStateEvents?.("m.space.child") ?? [];
+  const spaceChildren = enfants.filter((e: { getContent: () => { via?: string[] } }) => e.getContent().via?.length).map((e: { getStateKey: () => string }) => e.getStateKey());
+  const commonRoomIds = enfants.filter((e: { getContent: () => { via?: string[]; suggested?: boolean } }) => e.getContent().via?.length && e.getContent().suggested).map((e: { getStateKey: () => string }) => e.getStateKey());
+  const boardRoomId = room.currentState?.getStateEvents?.("com.sion.space", "")?.getContent?.()?.board_room_id;
 
   return {
     id: room.roomId,
@@ -446,7 +451,8 @@ export function mapRoomToChannel(room: any, client: MatrixClient | null = null):
     lastActivity,
     isDM,
     dmUserId,
-    isSoundboard,
+    isSoundboard, isSpace, spaceChildren, commonRoomIds, boardRoomId,
+    membership: room.getMyMembership?.() === "invite" ? "invite" : "join",
   };
 }
 
@@ -797,7 +803,7 @@ export const useMatrixStore = create<MatrixState>((set, get) => ({
         // with the joined room but no m.direct entry, so the next call to
         // createOrGetDMRoom() creates a duplicate DM.
         const invitedRooms = client.getRooms().filter((r) =>
-          r.getMyMembership() === "invite"
+          r.getMyMembership() === "invite" && r.currentState.getStateEvents("m.room.create", "")?.getContent()?.type !== "m.space"
         );
         for (const room of invitedRooms) {
           const myUserId = client.getUserId();
@@ -1590,6 +1596,7 @@ export const useMatrixStore = create<MatrixState>((set, get) => ({
       ) {
         const roomId = event.getRoomId();
         if (!roomId) return;
+        if (client.getRoom(roomId)?.currentState.getStateEvents("m.room.create", "")?.getContent()?.type === "m.space") return;
         try {
           await client.joinRoom(roomId);
 

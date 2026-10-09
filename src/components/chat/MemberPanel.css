@@ -1,0 +1,93 @@
+.sion-membres { display: flex; flex-direction: column; flex: 1; min-height: 0; overflow: hidden; container: membres / size; }
+.sion-membres-groupes { overflow-y: auto; flex: 1; padding: 6px 6px 12px; }
+.sion-membres-groupe { min-width: 0; }
+.sion-membres-groupe-titre { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; color: var(--color-outline); padding: 10px 10px 4px; }
+.sion-membre { display: flex; align-items: center; gap: 10px; padding: 7px 10px; border-radius: 12px; cursor: default; min-width: 0; }
+.sion-membre:hover { background: var(--color-surface-container); }
+.sion-membre-nom { font-size: 14px; }
+.sion-membre-presence-inconnue { display: block; font-size: 10px; color: var(--color-on-surface-variant); }
+.sion-carte-panneau[data-panneau="members"] { container: carte-membres / size; }
+/* Les rangées larges présentent les états en colonnes ; chaque groupe
+   défile séparément pour garder les quatre titres visibles. */
+:is(.sion-panneau--top, .sion-panneau--bottom) .sion-membres-groupes {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(210px, 1fr);
+  gap: 10px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 0 12px 12px;
+}
+:is(.sion-panneau--top, .sion-panneau--bottom) .sion-membres-groupe { display: flex; flex-direction: column; min-height: 0; }
+:is(.sion-panneau--top, .sion-panneau--bottom) .sion-membres-groupe + .sion-membres-groupe { border-left: 1px solid var(--color-border); padding-left: 10px; }
+:is(.sion-panneau--top, .sion-panneau--bottom) .sion-membres-groupe-titre { flex-shrink: 0; padding-top: 4px; padding-bottom: 6px; }
+:is(.sion-panneau--top, .sion-panneau--bottom) .sion-membres-liste { overflow-y: auto; min-height: 0; scrollbar-width: thin; }
+:is(.sion-panneau--top, .sion-panneau--bottom) .sion-membre { padding: 5px 8px; }
+:is(.sion-panneau--top, .sion-panneau--bottom) .sion-membre-nom { line-height: 1.25; }
+:is(.sion-panneau--top, .sion-panneau--bottom) .sion-membre-salon { margin-top: 2px; }
+/* Une bande basse devient une rangée de petites cartes. Le passage dépend
+   de la hauteur de la carte, sans redessiner les membres à chaque pixel. */
+@container carte-membres (max-height: 160px) {
+  :is(.sion-panneau--top, .sion-panneau--bottom) .sion-panneau-entete { padding: 4px 10px; }
+  :is(.sion-panneau--top, .sion-panneau--bottom) .sion-membres-groupes { grid-template-columns: var(--sion-membres-colonnes); gap: 8px; padding: 0 10px 4px; }
+  :is(.sion-panneau--top, .sion-panneau--bottom) .sion-membres-groupe + .sion-membres-groupe { padding-left: 8px; }
+  :is(.sion-panneau--top, .sion-panneau--bottom) .sion-membres-groupe-titre { padding: 2px 4px; font-size: 9px; line-height: 1.3; white-space: nowrap; }
+  :is(.sion-panneau--top, .sion-panneau--bottom) .sion-membres-liste { display: flex; align-items: flex-start; gap: 4px; overflow-x: auto; overflow-y: hidden; }
+  :is(.sion-panneau--top, .sion-panneau--bottom) .sion-membre { flex: 0 0 auto; width: 124px; gap: 6px; padding: 2px 4px; border-radius: 8px; }
+  :is(.sion-panneau--top, .sion-panneau--bottom) .sion-membre-avatar { --sion-avatar-taille: 24px; --sion-avatar-police: 10px; --sion-avatar-presence: 8px; }
+  :is(.sion-panneau--top, .sion-panneau--bottom) .sion-membre-nom { font-size: 12px; line-height: 1.25; }
+  :is(.sion-panneau--top, .sion-panneau--bottom) .sion-membre-salon { font-size: 9px; line-height: 1.25; margin-top: 0; }
+  :is(.sion-panneau--top, .sion-panneau--bottom) .sion-membre-presence-inconnue { font-size: 9px; }
+  :is(.sion-panneau--top, .sion-panneau--bottom) .sion-membre-onde { width: 12px; gap: 1px; }
+  :is(.sion-panneau--top, .sion-panneau--bottom) .sion-membre-afk svg { width: 12px; height: 12px; }
+}
+
+.sion-membre-salon {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-top: 3px;
+  font-size: 11px;
+  line-height: 1.3;
+  color: var(--color-on-surface-variant);
+}
+
+.sion-membre-afk {
+  display: inline-flex;
+  flex-shrink: 0;
+  opacity: 0.85;
+}
+.sion-membre-afk svg { width: 15px; height: 15px; }
+
+.sion-membre-onde {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  color: var(--color-green);
+}
+.sion-membre-onde i {
+  width: 2px;
+  height: 6px;
+  border-radius: 2px;
+  background: currentColor;
+  transform-origin: center;
+}
+.sion-membre-onde i:nth-child(2) { height: 12px; }
+.sion-membre-onde i:nth-child(3) { height: 15px; }
+.sion-membre-onde i:nth-child(4) { height: 9px; }
+.sion-membre-onde--parle i { animation: sion-onde-vocale 850ms ease-in-out infinite; }
+.sion-membre-onde--parle i:nth-child(2) { animation-delay: -200ms; }
+.sion-membre-onde--parle i:nth-child(3) { animation-delay: -400ms; }
+.sion-membre-onde--parle i:nth-child(4) { animation-delay: -600ms; }
+@keyframes sion-onde-vocale {
+  0%, 100% { transform: scaleY(0.4); }
+  50% { transform: scaleY(1); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .sion-membre-onde--parle i { animation: none; }
+}

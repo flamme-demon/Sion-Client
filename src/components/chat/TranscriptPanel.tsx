@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import { useAppStore } from "../../stores/useAppStore";
 import { useMatrixStore } from "../../stores/useMatrixStore";
@@ -6,6 +7,7 @@ import { useTranscriptStore } from "../../stores/useTranscriptStore";
 import { armTranscription, disarmTranscription, endSessionForAll, summarizeMeeting } from "../../services/transcriptionService";
 import { backfillTranscript } from "../../services/matrixService";
 import { scopeTranscriptEntries } from "../../utils/transcriptScope";
+import "./TextPanel.css";
 
 /** Stable per-identity hue (same trick as the cursor overlay) so each
  *  speaker keeps a recognizable color in the transcript. */
@@ -56,6 +58,28 @@ export function TranscriptPanel() {
   const [summaryError, setSummaryError] = useState<string | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const pinnedToBottom = useRef(true);
+  const actionsRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  // Le menu doit sortir du module : une bande de 100 px ne peut pas le contenir.
+  useLayoutEffect(() => {
+    const menu = menuRef.current, bouton = actionsRef.current;
+    if (!menuOpen || !menu || !bouton) return;
+    const r = bouton.getBoundingClientRect();
+    const largeur = menu.offsetWidth, hauteur = menu.offsetHeight;
+    menu.style.left = `${Math.max(8, Math.min(r.right - largeur, window.innerWidth - largeur - 8))}px`;
+    menu.style.top = `${Math.max(8, Math.min(r.bottom + 4 + hauteur <= window.innerHeight - 8 ? r.bottom + 4 : r.top - hauteur - 4, window.innerHeight - hauteur - 8))}px`;
+    menu.querySelector<HTMLButtonElement>("button")?.focus();
+    const fermer = () => setMenuOpen(false);
+    window.addEventListener("resize", fermer);
+    const defilement = (e: Event) => { if (!(e.target instanceof Node) || !menu.contains(e.target)) fermer(); };
+    window.addEventListener("scroll", defilement, true);
+    return () => {
+      window.removeEventListener("resize", fermer);
+      window.removeEventListener("scroll", defilement, true);
+      if (bouton.isConnected && (menu.contains(document.activeElement) || document.activeElement === document.body)) bouton.focus();
+    };
+  }, [menuOpen]);
 
   const viewedSession = viewedId ? history.find((h) => h.id === viewedId) || null : null;
   // One pass over the entries instead of one filter per listed session.
@@ -76,6 +100,18 @@ export function TranscriptPanel() {
     const el = listRef.current;
     if (el && pinnedToBottom.current && tab === "live") el.scrollTop = el.scrollHeight;
   }, [entries.length, tab]);
+
+  // Suivre le direct quand la hauteur du module change, sans rendu React
+  // à chaque pixel et sans déplacer quelqu'un qui relit un ancien passage.
+  useEffect(() => {
+    const el = listRef.current;
+    if (!el || tab !== "live" || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => {
+      if (pinnedToBottom.current) el.scrollTop = el.scrollHeight;
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [tab, connectedVoice]);
 
   // Reload the transcript from the room history: a page reload wipes the
   // in-memory store and a late joiner has nothing — but every segment and
@@ -183,9 +219,10 @@ export function TranscriptPanel() {
     >{label}</button>
   );
 
-  const smallBtn = (label: string, onClick: () => void, opts?: { danger?: boolean; disabled?: boolean; title?: string; grow?: boolean }) => (
+  const smallBtn = (label: string, onClick: () => void, opts?: { danger?: boolean; disabled?: boolean; title?: string; grow?: boolean; menu?: boolean }) => (
     <button
       type="button"
+      role={opts?.menu ? "menuitem" : undefined}
       onClick={onClick}
       disabled={opts?.disabled}
       title={opts?.title}
@@ -203,23 +240,9 @@ export function TranscriptPanel() {
     >{label}</button>
   );
 
-  const tabBtn = (key: "live" | "history", label: string, onClick: () => void) => (
-    <button
-      type="button"
-      onClick={onClick}
-      style={{
-        flex: 1, padding: '6px 0', border: 'none', cursor: 'pointer',
-        fontSize: 12, fontWeight: 600, fontFamily: 'inherit',
-        borderRadius: 8,
-        background: tab === key ? 'var(--color-surface-container-highest)' : 'transparent',
-        color: tab === key ? 'var(--color-on-surface)' : 'var(--color-on-surface-variant)',
-      }}
-    >{label}</button>
-  );
-
   /** Summary / export actions — surfaced once there is something to act on. */
   const artifactsFooter = (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 6, padding: '10px 12px', borderTop: '1px solid var(--color-outline-variant)' }}>
+    <div className="sion-transcript-artefacts">
       {!viewedSession && session?.endedAt != null && (
         <div style={{ fontSize: 11, color: 'var(--color-on-surface-variant)' }}>
           ✓ {t("transcript.sessionEnded", { time: fmtTime(session.endedAt), defaultValue: "Session terminée à {{time}}" })}
@@ -256,18 +279,14 @@ export function TranscriptPanel() {
   const transcriptList = (
     <div
       ref={listRef}
+      className="sion-transcript-liste"
       onScroll={(e) => {
         const el = e.currentTarget;
         pinnedToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
       }}
-      style={{ overflowY: 'auto', flex: 1, padding: '8px 12px 12px', fontSize: 13, color: 'var(--color-on-surface)' }}
     >
       {showSummary && linkedSummary && (
-        <div style={{
-          marginBottom: 10, padding: '8px 10px', borderRadius: 10,
-          background: 'var(--color-surface-container-high)',
-          fontSize: 12, lineHeight: 1.5, whiteSpace: 'pre-wrap', overflowWrap: 'break-word',
-        }}>
+        <div className="sion-transcript-resume">
           {linkedSummary.text}
         </div>
       )}
@@ -279,12 +298,12 @@ export function TranscriptPanel() {
         </div>
       ) : (
         entries.map((e) => (
-          <div key={e.id} style={{ marginBottom: 8, lineHeight: 1.4 }}>
+          <div key={e.id} className="sion-transcript-segment">
             <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
               <span style={{ color: colorForIdentity(e.senderId), fontWeight: 600, fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{e.senderName}</span>
               <span style={{ color: 'var(--color-outline)', fontSize: 10, flexShrink: 0 }}>{fmtTime(e.t0)}</span>
             </div>
-            <div style={{ overflowWrap: 'break-word' }}>{e.text}</div>
+            <div className="sion-transcript-texte">{e.text}</div>
           </div>
         ))
       )}
@@ -292,22 +311,26 @@ export function TranscriptPanel() {
   );
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, overflow: 'hidden' }}>
+    <div className="sion-transcript">
+      <div className="sion-transcript-outils">
       {/* Header */}
-      <div style={{ padding: '10px 12px 8px', borderBottom: '1px solid var(--color-outline-variant)' }}>
+      <div className="sion-transcript-entete">
         {/* Tabs */}
-        <div style={{ display: 'flex', gap: 4, background: 'var(--color-surface-container)', borderRadius: 10, padding: 3 }}>
-          {tabBtn("live", t("transcript.tabLive", { defaultValue: "Direct" }), () => { setTab("live"); setViewedId(null); })}
-          {tabBtn("history", t("transcript.tabHistory", { defaultValue: "Historique" }), openHistoryTab)}
+        <div className="sion-transcript-onglets">
+          <button type="button" aria-pressed={tab === "live"} onClick={() => { pinnedToBottom.current = true; setTab("live"); setViewedId(null); }}>
+            {t("transcript.tabLive", { defaultValue: "Direct" })}
+          </button>
+          <button type="button" aria-pressed={tab === "history"} onClick={openHistoryTab}>
+            {t("transcript.tabHistory", { defaultValue: "Historique" })}
+          </button>
         </div>
       </div>
 
       {tab === "live" ? (
-        <>
-          {/* State zone — one primary action per lifecycle state. */}
-          <div style={{ padding: '10px 12px', borderBottom: '1px solid var(--color-outline-variant)', display: 'flex', flexDirection: 'column', gap: 8 }}>
+          /* State zone — one primary action per lifecycle state. */
+          <div className="sion-transcript-etat">
             {sessionActive ? (
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, position: 'relative' }}>
+              <div className="sion-transcript-session-active" style={{ display: 'flex', alignItems: 'center', gap: 8, position: 'relative' }}>
                 <span style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--color-error)', flexShrink: 0 }} />
                 <span style={{ fontSize: 12, color: 'var(--color-on-surface)', flex: 1, minWidth: 0 }}>
                   {t("transcript.sessionSince", { time: fmtTime(session!.ts), defaultValue: "Session depuis {{time}}" })}
@@ -319,16 +342,29 @@ export function TranscriptPanel() {
                 {canTranscribe && (
                   <button
                     type="button"
+                    ref={actionsRef}
+                    aria-haspopup="menu"
+                    aria-expanded={menuOpen}
                     onClick={() => setMenuOpen((v) => !v)}
                     title={t("transcript.sessionActions", { defaultValue: "Actions de session" })}
                     style={{ border: 'none', background: 'transparent', color: 'var(--color-on-surface-variant)', cursor: 'pointer', fontSize: 16, padding: '0 4px', lineHeight: 1 }}
                   >⋯</button>
                 )}
                 {menuOpen && (
-                  <>
-                    <div style={{ position: 'fixed', inset: 0, zIndex: 40 }} onClick={() => setMenuOpen(false)} />
-                    <div style={{
-                      position: 'absolute', right: 0, top: '100%', zIndex: 41, marginTop: 4,
+                  createPortal(<>
+                    <div style={{ position: 'fixed', inset: 0, zIndex: 1000 }} onClick={() => setMenuOpen(false)} />
+                    <div ref={menuRef} role="menu" aria-label={t("transcript.sessionActions", { defaultValue: "Actions de session" })}
+                      onKeyDown={(e) => {
+                        if (e.key === "Escape") { e.stopPropagation(); setMenuOpen(false); }
+                        if (e.key === "Tab") setMenuOpen(false);
+                        if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+                          e.preventDefault();
+                          const boutons = Array.from(e.currentTarget.querySelectorAll<HTMLButtonElement>('button:not(:disabled)'));
+                          const index = boutons.indexOf(document.activeElement as HTMLButtonElement);
+                          boutons[(index + (e.key === "ArrowDown" ? 1 : -1) + boutons.length) % boutons.length]?.focus();
+                        }
+                      }} style={{
+                      position: 'fixed', zIndex: 1001,
                       background: 'var(--color-surface-container-high)', borderRadius: 10,
                       boxShadow: '0 4px 16px rgba(0,0,0,0.35)', padding: 4, minWidth: 180,
                       display: 'flex', flexDirection: 'column', gap: 2,
@@ -338,15 +374,15 @@ export function TranscriptPanel() {
                           ? t("transcript.stopMine", { defaultValue: "Arrêter mon micro" })
                           : t("transcript.startMine", { defaultValue: "Transcrire mon micro" }),
                         () => { setMenuOpen(false); if (running) handleStopMine(); else handleArm(); },
-                        { disabled: busy },
+                        { disabled: busy, menu: true },
                       )}
                       {smallBtn(
                         t("transcript.endForAll", { defaultValue: "Terminer pour tous" }),
                         () => { setMenuOpen(false); handleEndForAll(); },
-                        { danger: true, title: t("transcript.endForAllHint", { defaultValue: "Met fin à la session de transcription pour tous les participants" }) },
+                        { danger: true, menu: true, title: t("transcript.endForAllHint", { defaultValue: "Met fin à la session de transcription pour tous les participants" }) },
                       )}
                     </div>
-                  </>
+                  </>, document.body)
                 )}
               </div>
             ) : armed ? (
@@ -393,28 +429,26 @@ export function TranscriptPanel() {
             )}
           </div>
 
-          {transcriptList}
-
-          {/* Artifacts appear once the meeting is over (or for leftover
-              segments outside any active session). */}
-          {entries.length > 0 && !sessionActive && artifactsFooter}
-        </>
       ) : viewedSession ? (
-        <>
-          {/* One past session */}
-          <div style={{ padding: '8px 12px', borderBottom: '1px solid var(--color-outline-variant)', display: 'flex', flexDirection: 'column', gap: 6 }}>
+          /* One past session */
+          <div className="sion-transcript-etat">
             {smallBtn(`← ${t("transcript.backToSessions", { defaultValue: "Toutes les sessions" })}`, () => setViewedId(null))}
             <div style={{ fontSize: 11, color: 'var(--color-on-surface-variant)' }}>
               {new Date(viewedSession.ts).toLocaleDateString()} · {fmtTime(viewedSession.ts)}
               {viewedSession.endedAt != null ? `–${fmtTime(viewedSession.endedAt)}` : ""}
             </div>
           </div>
-          {transcriptList}
-          {artifactsFooter}
-        </>
-      ) : (
+      ) : null}
+      {/* Les artefacts restent en pied dans une colonne et rejoignent les
+          commandes quand le module occupe une bande horizontale. */}
+      {(viewedSession || (tab === "live" && entries.length > 0 && !sessionActive)) && artifactsFooter}
+      </div>
+
+      {tab === "live" || viewedSession ? transcriptList : (
         /* Session list */
-        <div style={{ overflowY: 'auto', flex: 1, padding: '8px 12px 12px' }}>
+        <div className="sion-transcript-historique" onWheel={(e) => {
+          if (getComputedStyle(e.currentTarget).overflowY === "hidden") e.currentTarget.scrollLeft += e.deltaY;
+        }}>
           {histLoading && (
             <div style={{ padding: '6px 0', fontSize: 12, color: 'var(--color-on-surface-variant)' }}>
               {t("transcript.historyLoading", { defaultValue: "Recherche des sessions…" })}
@@ -433,13 +467,7 @@ export function TranscriptPanel() {
                   key={h.id}
                   type="button"
                   onClick={() => setViewedId(h.id)}
-                  style={{
-                    display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8,
-                    width: '100%', textAlign: 'left', marginBottom: 6,
-                    padding: '8px 10px', borderRadius: 10, border: 'none', cursor: 'pointer',
-                    background: 'var(--color-surface-container-high)', color: 'var(--color-on-surface)',
-                    fontFamily: 'inherit',
-                  }}
+                  className="sion-transcript-session"
                 >
                   <div style={{ minWidth: 0 }}>
                     <div style={{ fontSize: 12, fontWeight: 600 }}>

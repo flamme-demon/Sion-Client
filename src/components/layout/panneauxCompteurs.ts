@@ -2,10 +2,10 @@ import { useEffect } from "react";
 import { create } from "zustand";
 import type { PanneauId } from "../../stores/useLayoutStore";
 
-const useCompteurs = create<{ valeurs: Partial<Record<PanneauId, number>> }>(() => ({ valeurs: {} }));
+const useCompteurs = create<{ valeurs: Partial<Record<PanneauId, number | null>> }>(() => ({ valeurs: {} }));
 
 /** Le corps publie son total ; aucun chargement supplémentaire pour le titre. */
-export function useCompteurPanneau(id: PanneauId, total: number) {
+export function useCompteurPanneau(id: PanneauId, total: number | null) {
   useEffect(() => {
     useCompteurs.setState((s) => ({ valeurs: { ...s.valeurs, [id]: total } }));
     return () => useCompteurs.setState((s) => {
@@ -19,9 +19,11 @@ export function useCompteurPanneau(id: PanneauId, total: number) {
 function useNombreSons() { return useCompteurs((s) => s.valeurs.soundboard ?? null); }
 function useNombreMemes() { return useCompteurs((s) => s.valeurs.memeboard ?? null); }
 function useNombreMembres() { return useCompteurs((s) => s.valeurs.members ?? null); }
+function useNombreEpingles() { return useCompteurs((s) => s.valeurs.pinned ?? null); }
 
 export const PANNEAU_COMPTEURS: Partial<Record<PanneauId, () => number | null>> = {
   soundboard: useNombreSons,
   memeboard: useNombreMemes,
   members: useNombreMembres,
+  pinned: useNombreEpingles,
 };

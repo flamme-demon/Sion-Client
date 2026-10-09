@@ -9,7 +9,8 @@ import { ApercuMessage } from "../chat/ApercuMessage";
 import { DropZone } from "../chat/DropZone";
 import { MobilePanelSheet } from "../mobile/MobilePanelSheet";
 import { Bulle } from "./Bulle";
-import { PanneauLateral } from "./PanneauLateral";
+import { PanneauLateral, CiblesModules } from "./PanneauLateral";
+import { MIME_PANNEAU, useLayoutStore } from "../../stores/useLayoutStore";
 import { PanelBackgroundLayer } from "./PanelBackground";
 import { useAppStore } from "../../stores/useAppStore";
 import { useLiveKitStore } from "../../stores/useLiveKitStore";
@@ -30,6 +31,10 @@ export function MainArea() {
   const addPendingFile = useAppStore((s) => s.addPendingFile);
   const connectedVoice = useAppStore((s) => s.connectedVoiceChannel);
   const isMobile = useIsMobile();
+  const panneauxDesDeuxCotes = useLayoutStore((s) =>
+    s.panneaux.some((id) => s.positionsPanneaux[id] === "left")
+    && s.panneaux.some((id) => (s.positionsPanneaux[id] ?? "right") === "right"),
+  );
   // Portail du chunk paresseux, **collant** : on monte la vue dès qu'un
   // partage est vu et on la garde montée (son early-return gère l'absence de
   // partage, comme avant le chargement paresseux). Sans ce latch, un
@@ -43,17 +48,20 @@ export function MainArea() {
   // Les fonds du chat et des panneaux se règlent dans l'apparence.
 
   const handleDragOver = useCallback((e: DragEvent) => {
+    if (e.dataTransfer.types.includes(MIME_PANNEAU) || useLayoutStore.getState().panneauEnDeplacement) return;
     e.preventDefault();
     setDraggingOver(true);
   }, [setDraggingOver]);
 
   const handleDragLeave = useCallback((e: DragEvent) => {
+    if (useLayoutStore.getState().panneauEnDeplacement) return;
     if (e.currentTarget === e.target || !e.currentTarget.contains(e.relatedTarget as Node)) {
       setDraggingOver(false);
     }
   }, [setDraggingOver]);
 
   const handleDrop = useCallback((e: DragEvent) => {
+    if (e.dataTransfer.types.includes(MIME_PANNEAU) || useLayoutStore.getState().panneauEnDeplacement) return;
     e.preventDefault();
     setDraggingOver(false);
     const files = e.dataTransfer.files;
@@ -128,9 +136,15 @@ export function MainArea() {
           {conversation}
         </div>
       ) : (
-        <div className="sion-main-area" style={{ display: "flex", gap: "var(--sion-bulle-ecart)", flex: 1, minHeight: 0, minWidth: 0, position: "relative" }}>
-          <Bulle as="main" scope="chat" className="sion-conversation" style={{ flex: 1 }}>{conversation}</Bulle>
-          <PanneauLateral />
+        <div className="sion-main-area" style={{ display: "flex", flexDirection: "column", gap: "var(--sion-bulle-ecart)", flex: 1, minHeight: 0, minWidth: 0, position: "relative" }}>
+          <PanneauLateral zone="top" />
+          <div className={`sion-conversation-et-panneaux${panneauxDesDeuxCotes ? " sion-panneaux-deux-cotes" : ""}`}>
+            <PanneauLateral zone="left" />
+            <Bulle as="main" scope="chat" className="sion-conversation" style={{ flex: 1 }}>{conversation}</Bulle>
+            <PanneauLateral zone="right" />
+          </div>
+          <PanneauLateral zone="bottom" />
+          <CiblesModules />
         </div>
       )}
       {isMobile && <MobilePanelSheet />}
