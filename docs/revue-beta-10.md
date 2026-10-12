@@ -18,6 +18,10 @@ Vérifications effectuées les 11 et 12 octobre 2026 sur la branche
   et chemins de comptes locaux n'a produit aucune détection.
 - Les empreintes des deux modèles ONNX correspondent aux attributions fournies.
   Leurs licences sont distribuées avec les ressources, y compris dans l'AppImage.
+- Le contrôle visuel des commandes PiP vérifie l'absence d'occultation quand
+  elles sont masquées, leur apparition au survol et au clavier, et leur accès
+  tactile. La sélection des flux, la grille, le déplacement et le retour au
+  chat passent aussi sur les vues de 1100 et 390 pixels.
 
 Les notes de version décrivent la nécessité d'une extension Continuwuity
 compatible pour appliquer la conservation. La publication du client ne déploie

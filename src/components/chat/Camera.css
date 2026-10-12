@@ -33,8 +33,10 @@
 .sion-camera-expanded header { padding: 10px 16px; }
 .sion-camera-expanded header > strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sion-camera-expanded-actions { display: flex; flex-shrink: 0; gap: 4px; }
-.sion-camera-pip-actions { position: absolute; top: 7px; right: 7px; z-index: 1; display: flex; gap: 4px; opacity: 0; transition: opacity 120ms ease; }
-.sion-camera-tile:hover .sion-camera-pip-actions, .sion-camera-pip-actions:focus-within { opacity: 1; }
+/* Masqués, les contrôles ne participent pas au hit-test : la surface native
+   reste pleine. Le clavier peut encore les révéler avec focus-within. */
+.sion-camera-pip-actions { position: absolute; top: 7px; right: 7px; z-index: 1; display: flex; gap: 4px; opacity: 0; pointer-events: none; transition: opacity 120ms ease; }
+.sion-camera-tile:hover .sion-camera-pip-actions, .sion-camera-pip-actions:focus-within { opacity: 1; pointer-events: auto; }
 .sion-camera-pip-actions button { display: grid; place-items: center; width: 28px; height: 28px; padding: 0; border: 1px solid var(--color-outline-variant); border-radius: 8px; background: var(--color-surface-container-high); color: var(--color-on-surface); cursor: pointer; }
 .sion-camera-pip-actions button:hover, .sion-camera-expanded-actions button:hover { color: var(--color-primary); }
 .sion-camera-pip-actions button:disabled { opacity: .5; cursor: default; }
@@ -53,7 +55,7 @@
 .sion-camera-floating button:focus-visible, .sion-camera-pip-actions button:focus-visible, .sion-camera-detached:focus-visible { outline: 2px solid var(--color-primary); outline-offset: -2px; }
 .sion-camera-expanded .sion-camera-stream { max-height: 75dvh; }
 @media (hover: none) {
-  .sion-camera-pip-actions { opacity: 1; }
+  .sion-camera-pip-actions { opacity: 1; pointer-events: auto; }
   .sion-camera-pip-actions button { width: 34px; height: 34px; }
 }
 @media (max-width: 767px) {

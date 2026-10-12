@@ -13,6 +13,8 @@ et les photos du chat évoluent aussi.
   Les effets sont calculés localement, avec un traitement adapté à la fluidité.
 - Retrouvez les webcams et les partages d’écran dans une même fenêtre de
   diffusion, à l’intérieur de Sion ou dans une fenêtre du système sur ordinateur.
+- Les boutons de diffusion masqués ne laissent plus de carré noir sur les
+  aperçus webcam ; ils restent accessibles au survol, au clavier et sur mobile.
 - Gardez tous les flux ou choisissez les participants à afficher. Passez de la
   grille à une vue principale avec les autres flux sur le côté. La fermeture
   d’un flux conserve les autres ; les nouveaux flux rejoignent la vue commune.
