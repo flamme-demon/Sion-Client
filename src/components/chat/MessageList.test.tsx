@@ -1,4 +1,5 @@
 import { act } from "react";
+import type { ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
@@ -16,8 +17,13 @@ vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (cle: string) => c
 
 // Le rendu des messages n'est pas l'objet du test : seule compte la logique
 // de lecture de la liste.
-vi.mock("./Message", () => ({ Message: () => null }));
+vi.mock("./Message", () => ({
+  Message: ({ children, enMosaique }: { children?: ReactNode; enMosaique?: boolean }) => <div data-case-image={enMosaique || undefined}>{children}</div>,
+  GalerieImagesProvider: ({ children }: { children: ReactNode }) => <>{children}</>,
+}));
 vi.mock("./LecteursMessage", () => ({ LecteursMessage: () => null }));
+const affichage = vi.hoisted(() => ({ mobile: false }));
+vi.mock("../../hooks/useIsMobile", () => ({ useIsMobile: () => affichage.mobile }));
 
 import { MessageList } from "./MessageList";
 import { reinitialiserPresence } from "../../services/premierPlan";
@@ -41,6 +47,7 @@ let conteneur: HTMLDivElement;
 let racine: Root;
 
 beforeEach(() => {
+  affichage.mobile = false;
   vi.useFakeTimers();
   // Présence commune (premierPlan) : chaque test part d'un utilisateur là.
   reinitialiserPresence();
@@ -65,11 +72,30 @@ beforeEach(() => {
     roomHasMore: { [SALON]: false },
     roomLoadingHistory: {},
   });
-  useAppStore.setState({ activeChannel: SALON, lastReadMessageId: {} });
+  useAppStore.setState({ activeChannel: SALON, lastReadMessageId: {}, mobileView: "chat" });
   conteneur = document.createElement("div");
   document.body.appendChild(conteneur);
   racine = createRoot(conteneur);
   act(() => racine.render(<MessageList />));
+});
+
+it("le chat conservé derrière la navigation mobile ne lit pas les messages masqués", () => {
+  affichage.mobile = true;
+  act(() => racine.render(<MessageList />));
+  act(() => vi.advanceTimersByTime(6000));
+  const fil = conteneur.querySelector(".sion-messages");
+  for (const mobileView of ["channels", "sidebar"] as const) {
+    act(() => useAppStore.setState({ mobileView }));
+    act(() => vi.advanceTimersByTime(10));
+    ajouter(message(`$${mobileView}`, "@narkow:sion.test", Date.now()));
+    act(() => vi.advanceTimersByTime(100));
+    expect(useAppStore.getState().lastReadMessageId[SALON]).toBe("$1");
+  }
+  act(() => useAppStore.setState({ mobileView: "chat" }));
+  act(() => vi.advanceTimersByTime(100));
+  defiler(600);
+  expect(useAppStore.getState().lastReadMessageId[SALON]).toBe("$sidebar");
+  expect(conteneur.querySelector(".sion-messages")).toBe(fil);
 });
 
 afterEach(() => {
@@ -78,6 +104,20 @@ afterEach(() => {
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
   vi.useRealTimers();
+});
+
+it("la mosaïque conserve les identifiants de tous les événements et s'arrête aux non-lus", () => {
+  const photos = [1, 2, 3, 4].map((id) => ({ ...message(`$photo${id}`, "@element:matrix.org", Date.now() + id), text: "",
+    attachments: [{ id: String(id), name: "photo.png", mimeType: "image/png", size: 0, url: "https://media.invalid/photo" }] }));
+  const AUTRE = "!photos:sion.test";
+  act(() => {
+    useMatrixStore.setState((s) => ({ messages: { ...s.messages, [AUTRE]: photos }, roomHasMore: { [AUTRE]: false } }));
+    useAppStore.setState({ lastReadMessageId: { [AUTRE]: "$photo2" }, activeChannel: AUTRE });
+  });
+  expect(Array.from(conteneur.querySelectorAll('[data-event-id]')).map((e) => e.getAttribute("data-event-id"))).toEqual(photos.map((p) => p.eventId));
+  expect(conteneur.querySelectorAll(".sion-mosaique")).toHaveLength(2);
+  expect(conteneur.querySelectorAll('[data-case-image="true"]')).toHaveLength(4);
+  expect(conteneur.querySelector('[data-unread-sep]')?.closest('.sion-mosaique')).toBeNull();
 });
 
 it("un message reçu en bas du fil est lu, même si le fil a bougé juste après l'ouverture du salon", () => {

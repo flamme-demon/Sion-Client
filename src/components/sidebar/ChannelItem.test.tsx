@@ -10,7 +10,11 @@ import type { Channel } from "../../types/matrix";
 vi.mock("../../i18n", () => ({ default: { t: (key: string) => key, changeLanguage: vi.fn() } }));
 const depart = vi.hoisted(() => ({ quitter: vi.fn(), vocal: vi.fn() }));
 vi.mock("../../services/quitterSalon", () => ({ quitterSalon: depart.quitter }));
-vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (cle: string, options?: { defaultValue?: string }) => options?.defaultValue ?? cle }) }));
+vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (cle: string, options?: { defaultValue?: string }) => options?.defaultValue ?? cle,
+  i18n: { exists: () => true, language: "fr" } }) }));
+vi.mock("../../services/conservationService", async (original) => ({ ...await original<typeof import("../../services/conservationService")>(),
+  lireConservation: async (id: string) => ({ available: false, applying: false, lastRun: null, rooms: [],
+    scope: { id, name: "Vocal", isSpace: false, policy: { mode: "unlimited" }, effectiveDays: null, parentId: null, parentName: null, editable: false, protected: false } }) }));
 vi.mock("../../hooks/useVoiceChannel", () => ({ useVoiceChannel: () => ({ joinVoiceChannel: vi.fn(), leaveVoiceChannel: depart.vocal, hasLiveKitConfig: false }) }));
 vi.mock("../../hooks/useIsMobile", () => ({ useIsMobile: () => false }));
 vi.mock("../../services/adminCommandService", () => ({ findAdminRoom: () => null }));
@@ -66,6 +70,50 @@ it("le clic droit d'un occupant ouvre toujours son menu depuis la carte", async 
   expect(useAppStore.getState().userContextMenu).toEqual({ userId: "@alice:sion.test", userName: "Alice", x: 180, y: 120 });
 });
 
+it("déplie automatiquement les participants quand on rejoint le vocal sur ordinateur, y compris après l'ouverture du salon", async () => {
+  await vue.render(<ChannelItem channel={salon} />);
+  expect(vue.container.textContent).not.toContain("Alice");
+  await act(async () => useAppStore.setState({ connectedVoiceChannel: salon.id }));
+  const bouton = vue.container.querySelector('button')!;
+  expect(bouton.getAttribute("aria-expanded")).toBe("true");
+  const liste = document.getElementById(bouton.getAttribute("aria-controls")!);
+  expect(liste?.textContent).toContain("Alice");
+  // Lire le chat d'un autre salon ne replie pas le vocal rejoint.
+  await act(async () => useAppStore.setState({ activeChannel: "!texte" }));
+  expect(liste?.textContent).toContain("Alice");
+  await act(async () => useAppStore.setState({ connectedVoiceChannel: null }));
+  expect(vue.container.textContent).not.toContain("Alice");
+});
+
+it("affiche la liste dès le montage si l'appel est déjà connecté", async () => {
+  useAppStore.setState({ connectedVoiceChannel: salon.id });
+  await vue.render(<ChannelItem channel={salon} />);
+  expect(vue.container.textContent).toContain("Alice");
+  expect(vue.container.querySelector('button')?.getAttribute("aria-expanded")).toBe("true");
+});
+
+it("un clic sur le nom du salon ouvre et replie les participants des autres vocaux", async () => {
+  await vue.render(<ChannelItem channel={salon} />);
+  const nom = Array.from(vue.container.querySelectorAll('span')).find((e) => e.textContent === "Vocal")!;
+  await act(async () => nom.click());
+  expect(vue.container.textContent).toContain("Alice");
+  expect(useAppStore.getState().activeChannel).toBe(salon.id);
+  expect(useAppStore.getState().connectedVoiceChannel).toBeNull();
+  await act(async () => nom.click());
+  expect(vue.container.textContent).not.toContain("Alice");
+  expect(vue.container.querySelector('button')?.getAttribute("aria-expanded")).toBe("false");
+});
+
+it("la liste reste accessible par le survol en mode réduit même pendant l'appel", async () => {
+  useAppStore.setState({ connectedVoiceChannel: salon.id });
+  await vue.render(<ChannelItem channel={salon} compact />);
+  expect(vue.container.textContent).not.toContain("Alice");
+  expect(vue.container.querySelector('button')?.hasAttribute("aria-expanded")).toBe(false);
+  await survol(vue.container.querySelector('button')!, "mouseover");
+  await attendre(140);
+  expect(document.querySelector('.sion-survol-salon')?.textContent).toContain("Alice");
+});
+
 const menuSalon = async () => {
   await attendre(1000);
   await act(async () => vue.container.querySelector("button")!.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, clientX: 180, clientY: 120 })));
@@ -76,6 +124,23 @@ const ouvrirConfirmation = async () => {
   await act(async () => menu.querySelector<HTMLButtonElement>("button")!.click());
   return document.querySelector<HTMLElement>('[role="alertdialog"]')!;
 };
+
+it("ouvre la conservation du salon dans une fenêtre au-dessus des modules et la ferme avec Échap", async () => {
+  await vue.render(<nav style={{ isolation: "isolate", overflow: "hidden" }}><ChannelItem channel={salon} compact /></nav>);
+  const menu = await menuSalon();
+  const conservation = Array.from(menu.querySelectorAll<HTMLButtonElement>("button")).find((b) => b.textContent?.includes("conservation.title"))!;
+  expect(conservation).toBeDefined();
+  await act(async () => conservation.click());
+  const dialogue = document.querySelector('[role="dialog"]')!;
+  expect(vue.container.contains(dialogue)).toBe(false);
+  expect(dialogue.textContent).toContain("conservation.unavailable");
+  await act(async () => dialogue.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+  expect(document.querySelector('[role="dialog"]')).toBeNull();
+});
+it.each([{ ...salon, isDM: true }, { ...salon, isSoundboard: true }])("n'expose pas la conservation dans le menu d'un MP ou d'une bibliothèque (%j)", async (channel) => {
+  await vue.render(<ChannelItem channel={channel} />);
+  expect((await menuSalon()).textContent).not.toContain("conservation.title");
+});
 
 it.each([
   { ...salon, hasVoice: false, voiceUsers: [] },

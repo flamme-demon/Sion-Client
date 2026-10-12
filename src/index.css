@@ -587,11 +587,13 @@ select option {
 .sion-panneau--top > .panel-resize-handle { left: 0; right: 0; top: auto; bottom: -10px; height: 8px; width: 100%; }
 /* Garder une conversation visible quand les deux rangées sont occupées.
    Le miroir de placement applique exactement la même limite. */
-:is(.sion-main-area, .sion-apercu-implantation):has(> .sion-panneau--top):has(> .sion-panneau--bottom) > :is(.sion-panneau--top, .sion-panneau--bottom) { max-height: 35%; }
+:is(.sion-main-area, .sion-apercu-implantation, .sion-apercu-contenu):has(> .sion-panneau--top):has(> .sion-panneau--bottom) > :is(.sion-panneau--top, .sion-panneau--bottom) { max-height: 35%; }
 .sion-zone-panneaux { display: grid; grid-auto-rows: minmax(180px, 1fr); gap: var(--sion-bulle-ecart); height: 100%; overflow-y: auto; min-height: 0; scrollbar-width: thin; }
 .sion-panneau--top .sion-zone-panneaux, .sion-panneau--bottom .sion-zone-panneaux { grid-auto-flow: column; grid-auto-columns: minmax(300px, 1fr); grid-template-rows: minmax(0, 1fr); overflow-x: auto; overflow-y: hidden; }
 .sion-carte-panneau { min-width: 0; min-height: 0; contain: strict; }
 .sion-panneau-entete { display: flex; align-items: center; gap: 6px; padding: 10px 12px 8px; flex-shrink: 0; }
+.sion-contexte-board { display: block; min-width: 0; flex-shrink: 0; padding: 0 12px 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; color: var(--color-on-surface-variant); }
+.sion-mobile-panel-sheet > .sion-contexte-board { padding-inline: 16px; }
 .sion-panneau-titre { display: flex; align-items: center; gap: 5px; flex: 0 1 auto; min-width: 0; font-size: 13px; font-weight: 700; cursor: grab; }
 .sion-panneau-titre:active { cursor: grabbing; }
 .sion-panneau-titre { touch-action: none; user-select: none; -webkit-user-select: none; }

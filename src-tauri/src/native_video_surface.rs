@@ -4060,6 +4060,7 @@ mod imp {
             return;
         }
         let sender = (*context).sender.clone();
+        if sender.starts_with("camera:") { return; }
         if let Some(app) = APP.get() {
             #[cfg(feature = "native-voice")]
             crate::voice_native::publier_clic_local(app, &sender, x, y);
@@ -4086,6 +4087,7 @@ mod imp {
                     .lock()
                     .unwrap_or_else(|err| err.into_inner())
                     .values()
+                    .filter(|f| !f.sender.starts_with("camera:"))
                     .map(|f| (f.hwnd, f.sender.clone()))
                     .collect();
                 if fenetres.is_empty() {

@@ -60,6 +60,10 @@ mod notifications_bureau;
 mod native_video_transport;
 #[cfg(feature = "native-voice")]
 mod voice_engine;
+#[cfg(feature = "native-voice")]
+mod camera_capture;
+#[cfg(feature = "native-voice")]
+mod camera_effects;
 #[cfg(not(target_os = "android"))]
 use serde::Deserialize;
 use serde::Serialize;
@@ -3855,6 +3859,7 @@ pub fn run() {
         matrix_pont::commandes::matrix_envoyer_image_url,
         matrix_pont::commandes::matrix_taille_max_envoi,
         matrix_pont::commandes::matrix_details_salon,
+        matrix_pont::commandes::matrix_rechercher_utilisateurs,
         matrix_pont::commandes::matrix_admins_serveur,
         matrix_pont::commandes::matrix_nom_utilisateur,
         matrix_pont::commandes::matrix_avatar_utilisateur,
@@ -4012,6 +4017,9 @@ pub fn run() {
         pip_window::pip_native_open,
         pip_window::pip_native_close,
         pip_window::pip_native_status,
+        pip_window::pip_native_source,
+            pip_window::pip_native_sources,
+            pip_window::pip_native_open_streams,
         transcribe::transcribe_start,
         transcribe::transcribe_start_native,
         transcribe::transcribe_stop,
@@ -4058,6 +4066,19 @@ pub fn run() {
         voice_native::voice_native_get_screenshare_audio_state,
         voice_native::voice_native_video_port,
         voice_native::voice_native_set_screensharing,
+        voice_native::voice_native_camera_available,
+        voice_native::voice_native_camera_devices,
+        voice_native::voice_native_camera_preview,
+        voice_native::voice_native_camera_set_enabled,
+        voice_native::voice_native_camera_state,
+        #[cfg(feature = "native-voice")]
+        camera_effects::voice_native_camera_effects_available,
+        #[cfg(feature = "native-voice")]
+        camera_effects::voice_native_camera_effects_status,
+        #[cfg(feature = "native-voice")]
+        camera_effects::voice_native_camera_effects_set,
+        #[cfg(feature = "native-voice")]
+        camera_effects::voice_native_camera_background_import,
         voice_native::voice_native_capture_maintenue,
         voice_native::voice_native_set_screenshare_video_visible
     ]);
@@ -4093,6 +4114,7 @@ pub fn run() {
         matrix_pont::commandes::matrix_envoyer_image_url,
         matrix_pont::commandes::matrix_taille_max_envoi,
         matrix_pont::commandes::matrix_details_salon,
+        matrix_pont::commandes::matrix_rechercher_utilisateurs,
         matrix_pont::commandes::matrix_admins_serveur,
         matrix_pont::commandes::matrix_nom_utilisateur,
         matrix_pont::commandes::matrix_avatar_utilisateur,
@@ -4227,6 +4249,19 @@ pub fn run() {
         voice_native::voice_native_get_screenshare_audio_state,
         voice_native::voice_native_video_port,
         voice_native::voice_native_set_screensharing,
+        voice_native::voice_native_camera_available,
+        voice_native::voice_native_camera_devices,
+        voice_native::voice_native_camera_preview,
+        voice_native::voice_native_camera_set_enabled,
+        voice_native::voice_native_camera_state,
+        #[cfg(feature = "native-voice")]
+        camera_effects::voice_native_camera_effects_available,
+        #[cfg(feature = "native-voice")]
+        camera_effects::voice_native_camera_effects_status,
+        #[cfg(feature = "native-voice")]
+        camera_effects::voice_native_camera_effects_set,
+        #[cfg(feature = "native-voice")]
+        camera_effects::voice_native_camera_background_import,
         voice_native::voice_native_capture_maintenue,
         voice_native::voice_native_set_screenshare_video_visible
     ]);

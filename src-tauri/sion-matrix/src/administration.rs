@@ -168,6 +168,7 @@ pub(crate) fn chemin_admin_autorise(chemin: &str) -> bool {
 pub(crate) struct Niveaux {
     pub etat: i64,
     pub invitation: i64,
+    pub suppression: i64,
     pub message: i64,
     pub utilisateurs: HashMap<String, i64>,
     pub par_defaut: i64,
@@ -176,12 +177,13 @@ pub(crate) struct Niveaux {
 pub(crate) fn niveaux(contenu: Option<&Value>) -> Niveaux {
     let entier = |v: Option<&Value>| v.and_then(Value::as_i64);
     let Some(c) = contenu else {
-        return Niveaux { etat: 50, invitation: 0, message: 0, utilisateurs: HashMap::new(), par_defaut: 0 };
+        return Niveaux { etat: 50, invitation: 0, suppression: 50, message: 0, utilisateurs: HashMap::new(), par_defaut: 0 };
     };
     Niveaux {
         // `getStatePowerLevel` / `getInvitePowerLevel` / `canSendMessage`
         etat: entier(c.get("state_default")).unwrap_or(50),
         invitation: entier(c.get("invite")).unwrap_or(0),
+        suppression: entier(c.get("redact")).unwrap_or(50),
         message: entier(c.pointer("/events/m.room.message")).or(entier(c.get("events_default"))).unwrap_or(0),
         utilisateurs: c
             .get("users")
@@ -253,5 +255,7 @@ mod tests {
         let n = niveaux(Some(&json!({ "events_default": 10, "events": { "m.room.message": 20 }, "invite": 50, "users": { "@a:hs": 100 } })));
         assert_eq!((n.etat, n.invitation, n.message, n.utilisateurs["@a:hs"]), (50, 50, 20, 100));
         assert_eq!(niveaux(Some(&json!({ "events_default": 10 }))).message, 10);
+        assert_eq!(niveaux(None).suppression, 50);
+        assert_eq!(niveaux(Some(&json!({ "state_default": 50, "redact": 75 }))).suppression, 75);
     }
 }

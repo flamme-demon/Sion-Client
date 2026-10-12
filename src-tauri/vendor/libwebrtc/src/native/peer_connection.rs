@@ -263,74 +263,27 @@ impl PeerConnection {
         rx.await.unwrap()
     }
 
-    /// Le SFU LiveKit envoie parfois `sprop-stereo=1` sur certaines m-lines
-    /// opus seulement (pistes stéréo) alors que d'autres ne l'ont pas, avec
-    /// le même payload type 111. libwebrtc valide le BUNDLE RFC 8843 et
-    /// rejette alors la description distante :
-    /// `A BUNDLE group contains a codec collision ... (INVALID_PARAMETER)`.
-    ///
-    /// On aligne toutes les m-lines opus sur le fmtp stéréo (`sprop-stereo=1`)
-    /// avant de la transmettre : l'offre redevient cohérente, et nos
-    /// réponses conservent `stereo=1`. Sans effet audible sur les pistes
-    /// mono (sprop-stereo n'est qu'une indication d'encodeur).
-    fn normalize_opus_sprop_stereo(desc: SessionDescription) -> SessionDescription {
-        let text = desc.to_string();
-        if !text.contains("sprop-stereo=1") {
+    /// LiveKit peut réutiliser un payload Opus dans le BUNDLE avec des
+    /// paramètres stéréo différents. Aligner ces seuls paramètres avant
+    /// la validation native, sans modifier les transports indépendants.
+    fn normalize_opus_stereo(desc: SessionDescription) -> SessionDescription {
+        let Some(out) = super::opus_sdp::normalize_opus_stereo(&desc.to_string()) else {
             return desc;
-        }
-        let eol = if text.contains("\r\n") { "\r\n" } else { "\n" };
-        let mut opus_pts: Vec<String> = Vec::new();
-        for line in text.split(eol) {
-            if let Some(rest) = line.trim().strip_prefix("a=rtpmap:") {
-                let mut it = rest.split_whitespace();
-                let pt = it.next().unwrap_or("");
-                let codec = it.next().unwrap_or("");
-                if !pt.is_empty() && codec.to_ascii_lowercase().starts_with("opus/") {
-                    opus_pts.push(pt.to_string());
-                }
-            }
-        }
-        if opus_pts.is_empty() {
-            return desc;
-        }
-        let mut changed = false;
-        let mut out = String::with_capacity(text.len() + 16);
-        for (i, line) in text.split(eol).enumerate() {
-            if i > 0 {
-                out.push_str(eol);
-            }
-            let mut normalized = false;
-            if let Some(rest) = line.strip_prefix("a=fmtp:") {
-                if let Some((pt, params)) = rest.split_once(' ') {
-                    let has_sprop = params
-                        .split(';')
-                        .any(|p| p.trim_start().starts_with("sprop-stereo"));
-                    if !has_sprop && opus_pts.iter().any(|p| p == pt) {
-                        out.push_str(line);
-                        out.push_str(";sprop-stereo=1");
-                        normalized = true;
-                        changed = true;
-                    }
-                }
-            }
-            if !normalized {
-                out.push_str(line);
-            }
-        }
-        if !changed {
-            return desc;
-        }
+        };
         match SessionDescription::parse(&out, desc.sdp_type()) {
-            Ok(parsed) => parsed,
+            Ok(parsed) => {
+                log::info!("[Sion][webrtc] paramètres stéréo Opus harmonisés dans le BUNDLE distant");
+                parsed
+            }
             Err(e) => {
-                log::warn!("[Sion] normalize_opus_sprop_stereo: parse échoué: {e}");
+                log::warn!("[Sion] normalize_opus_stereo: parse échoué: {e}");
                 desc
             }
         }
     }
 
     pub async fn set_remote_description(&self, desc: SessionDescription) -> Result<(), RtcError> {
-        let desc = Self::normalize_opus_sprop_stereo(desc);
+        let desc = Self::normalize_opus_stereo(desc);
         let (tx, rx) = oneshot::channel::<Result<(), RtcError>>();
         let ctx = Box::new(sys_pc::PeerContext(Box::new(tx)));
 

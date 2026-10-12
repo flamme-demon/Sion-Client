@@ -1,0 +1,59 @@
+.sion-salons-hors-espace {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  position: relative;
+  width: 100%;
+  min-height: 36px;
+  margin-bottom: 6px;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--color-on-surface-variant);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.sion-salons-hors-espace:hover {
+  background: var(--color-surface-container-high);
+  color: var(--color-on-surface);
+}
+
+.sion-salons-hors-espace[aria-pressed="true"] {
+  background: color-mix(in srgb, var(--color-primary) 12%, transparent);
+  color: var(--color-primary);
+}
+
+.sion-salons-hors-espace:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: -2px;
+}
+
+.sion-salons-hors-espace > svg {
+  flex-shrink: 0;
+}
+
+.sion-salons-hors-espace--compact {
+  justify-content: center;
+  min-height: 40px;
+  padding: 8px 4px;
+}
+
+.sion-salons-hors-espace-compteur {
+  margin-left: auto;
+  padding: 1px 5px;
+  border-radius: 8px;
+  background: var(--color-primary);
+  color: var(--color-on-primary);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.sion-salons-hors-espace--compact .sion-salons-hors-espace-compteur {
+  position: absolute;
+  top: 0;
+  right: 0;
+}

@@ -9,7 +9,9 @@
 //! authentifiés — constaté le 20/09).
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex, Weak};
+use std::time::{Duration, Instant};
+use tokio::sync::Mutex as VerrouAsync;
 
 use matrix_sdk::media::{MediaFormat, MediaRequestParameters, MediaThumbnailSettings};
 use matrix_sdk::ruma::events::room::{EncryptedFile, MediaSource};
@@ -94,7 +96,7 @@ pub fn plage_http(entete: &str, total: u64, morceau_max: u64) -> Option<(u64, u6
 }
 
 /// Ce qu'on demande d'un média.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum FormatMedia {
     Original,
     /// Miniature 600×400 du serveur (`mxcToThumbnail`), pour le fil.
@@ -120,6 +122,61 @@ impl FormatMedia {
 pub(crate) struct Medias {
     prefixe: String,
     sources: Mutex<HashMap<String, SourceMedia>>,
+    telechargements: Telechargements,
+}
+
+type CleRequete = (String, FormatMedia);
+#[derive(Default)]
+struct Telechargements {
+    verrous: Mutex<HashMap<CleRequete, Weak<VerrouAsync<()>>>>,
+    echecs: Mutex<HashMap<CleRequete, (Instant, String)>>,
+}
+const FRAICHEUR_ECHEC: Duration = Duration::from_secs(30);
+const ECHECS_MAX: usize = 256;
+
+impl Telechargements {
+    /// Un avatar apparaît à plusieurs endroits. Les requêtes de reprise
+    /// WebKit ont des URLs distinctes, mais demandent le même média : ne
+    /// pas multiplier les appels au serveur lorsqu'il refuse sa miniature.
+    async fn obtenir<F, Fut>(&self, cle: CleRequete, charger: F) -> Resultat<Vec<u8>>
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = Resultat<Vec<u8>>>,
+    {
+        let verrou = {
+            let mut verrous = self.verrous.lock().unwrap();
+            verrous.retain(|_, v| v.strong_count() > 0);
+            if let Some(verrou) = verrous.get(&cle).and_then(Weak::upgrade) {
+                verrou
+            } else {
+                let verrou = Arc::new(VerrouAsync::new(()));
+                verrous.insert(cle.clone(), Arc::downgrade(&verrou));
+                verrou
+            }
+        };
+        let _garde = verrou.lock().await;
+        {
+            let mut echecs = self.echecs.lock().unwrap();
+            echecs.retain(|_, (date, _)| date.elapsed() < FRAICHEUR_ECHEC);
+            if let Some((_, erreur)) = echecs.get(&cle) {
+                return Err(Erreur::Autre(erreur.clone()));
+            }
+        }
+        match charger().await {
+            Ok(octets) => Ok(octets),
+            Err(e) => {
+                let erreur = e.to_string();
+                log::warn!("[Sion][matrix] média {} ({:?}) indisponible : {erreur}", cle.0, cle.1);
+                let mut echecs = self.echecs.lock().unwrap();
+                if echecs.len() >= ECHECS_MAX {
+                    let plus_ancien = echecs.iter().min_by_key(|(_, (date, _))| date).map(|(cle, _)| cle.clone());
+                    if let Some(cle) = plus_ancien { echecs.remove(&cle); }
+                }
+                echecs.insert(cle, (Instant::now(), erreur));
+                Err(e)
+            }
+        }
+    }
 }
 
 /// Clé d'un média dans son URL. En clair (`mxc://`) : l'adresse elle-même,
@@ -155,7 +212,7 @@ const ATTENTE_INSCRIPTION: std::time::Duration = std::time::Duration::from_secs(
 
 impl Medias {
     pub fn nouveau(prefixe: impl Into<String>) -> Self {
-        Self { prefixe: prefixe.into(), sources: Mutex::new(HashMap::new()) }
+        Self { prefixe: prefixe.into(), sources: Mutex::new(HashMap::new()), telechargements: Telechargements::default() }
     }
 
     /// URL `sion-media` d'un média, `None` si la source est inexploitable.
@@ -212,6 +269,10 @@ impl Medias {
 
     pub async fn contenu(&self, client: &Client, cle: &str, format: FormatMedia) -> Resultat<Vec<u8>> {
         let source = self.source(cle).await?;
+        self.telechargements.obtenir((cle.to_owned(), format), || Self::telecharger(client, source, format)).await
+    }
+
+    async fn telecharger(client: &Client, source: SourceMedia, format: FormatMedia) -> Resultat<Vec<u8>> {
         let (source, format) = match source {
             SourceMedia::Mxc(m) => {
                 let format = match format {
@@ -235,6 +296,40 @@ impl Medias {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn un_media_indisponible_ne_relance_pas_les_requetes_concurrentes() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let cache = super::Telechargements::default();
+        let appels = AtomicUsize::new(0);
+        let cle = ("avatar".to_owned(), super::FormatMedia::Avatar);
+        let charger = || async {
+            appels.fetch_add(1, Ordering::SeqCst);
+            tokio::task::yield_now().await;
+            Err(super::Erreur::Autre("miniature distante indisponible".into()))
+        };
+        let (a, b, c) = tokio::join!(cache.obtenir(cle.clone(), charger), cache.obtenir(cle.clone(), charger), cache.obtenir(cle.clone(), charger));
+        for resultat in [a, b, c] { assert_eq!(resultat.unwrap_err().to_string(), "miniature distante indisponible"); }
+        assert_eq!(appels.load(Ordering::SeqCst), 1);
+        // L'original reste accessible, même si sa miniature échoue.
+        assert_eq!(cache.obtenir((cle.0.clone(), super::FormatMedia::Original), || async { Ok(vec![1, 2]) }).await.unwrap(), vec![1, 2]);
+        // Après le délai, la récupération peut fonctionner de nouveau.
+        cache.echecs.lock().unwrap().get_mut(&cle).unwrap().0 = std::time::Instant::now() - super::FRAICHEUR_ECHEC;
+        assert_eq!(cache.obtenir(cle.clone(), || async { Ok(vec![3]) }).await.unwrap(), vec![3]);
+        assert!(cache.echecs.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn les_echecs_et_les_verrous_ne_saccumulent_pas_sans_limite() {
+        let cache = super::Telechargements::default();
+        for i in 0..super::ECHECS_MAX + 10 {
+            let _ = cache.obtenir((i.to_string(), super::FormatMedia::Avatar), || async {
+                Err(super::Erreur::Autre("indisponible".into()))
+            }).await;
+        }
+        assert_eq!(cache.echecs.lock().unwrap().len(), super::ECHECS_MAX);
+        assert_eq!(cache.verrous.lock().unwrap().len(), 1);
+    }
+
     #[test]
     fn plages_http() {
         assert_eq!(plage_http("bytes=0-", 1000, 10_000), Some((0, 999)));

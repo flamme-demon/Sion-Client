@@ -44,6 +44,22 @@ pub struct MembreSalon {
     pub presence: Option<String>,
 }
 
+/// Profil proposé par l'annuaire du serveur, sans information de session.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UtilisateurAnnuaire {
+    pub user_id: String,
+    pub display_name: String,
+    pub avatar_url: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResultatAnnuaire {
+    pub utilisateurs: Vec<UtilisateurAnnuaire>,
+    pub limite: bool,
+}
+
 /// Ce que l'interface lit d'un salon pour ses écrans de gestion.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -55,6 +71,8 @@ pub struct DetailsSalon {
     pub niveau_etat: i64,
     /// Niveau requis pour inviter (`getInvitePowerLevel`, 0 par défaut).
     pub niveau_invitation: i64,
+    /// Niveau requis pour supprimer le message d'un autre membre.
+    pub niveau_suppression: i64,
     /// Puis-je écrire (`canSendMessage`) ?
     pub peut_ecrire: bool,
     /// « public », « invite »…
@@ -215,6 +233,30 @@ impl CoeurMatrix {
 
     // ── Lecture ──────────────────────────────────────────────────────────────
 
+    /// Recherche par pseudo dans l'annuaire Matrix. Le jeton reste dans le cœur.
+    pub async fn rechercher_utilisateurs(&self, terme: &str) -> Resultat<ResultatAnnuaire> {
+        Box::pin(self.rechercher_utilisateurs_(terme)).await
+    }
+
+    async fn rechercher_utilisateurs_(&self, terme: &str) -> Resultat<ResultatAnnuaire> {
+        let terme = terme.trim();
+        if terme.is_empty() {
+            return Ok(ResultatAnnuaire { utilisateurs: Vec::new(), limite: false });
+        }
+        if terme.chars().count() > 255 {
+            return Err(Erreur::Autre("Recherche trop longue".into()));
+        }
+        let client = self.client_actif().await?;
+        let reponse = client.search_users(terme, 50).await.map_err(matrix_sdk::Error::from)?;
+        let limite = reponse.limited || reponse.results.len() > 50;
+        let utilisateurs = reponse.results.into_iter().take(50).map(|u| UtilisateurAnnuaire {
+            display_name: u.display_name.filter(|n| !n.trim().is_empty()).unwrap_or_else(|| u.user_id.localpart().to_owned()),
+            avatar_url: u.avatar_url.and_then(|url| self.medias().url_avatar(url.as_str())),
+            user_id: u.user_id.to_string(),
+        }).collect();
+        Ok(ResultatAnnuaire { utilisateurs, limite })
+    }
+
     /// Membres et niveaux d'un salon, pour les écrans de gestion.
     pub async fn details_salon(&self, salon: &str) -> Resultat<DetailsSalon> {
         Box::pin(self.details_salon_(salon)).await
@@ -258,6 +300,7 @@ impl CoeurMatrix {
             moi: niveau(&moi),
             niveau_etat: niveaux.etat,
             niveau_invitation: niveaux.invitation,
+            niveau_suppression: niveaux.suppression,
             peut_ecrire: niveau(&moi) >= niveaux.message,
             regle_acces: regle.and_then(|r| r.get("join_rule").and_then(Value::as_str).map(str::to_owned)),
         })
@@ -887,6 +930,16 @@ fn administration_etapes(r: ReponseServeur) -> EtapesInscription {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn annuaire_vide_sans_requete_et_recherche_authentifiee() {
+        let dossier = tempfile::tempdir().unwrap();
+        let coeur = CoeurMatrix::nouveau(dossier.path().into(), "Annuaire (test)", std::sync::Arc::new(crate::CoffreMemoire::default()));
+        let vide = coeur.rechercher_utilisateurs("  ").await.unwrap();
+        assert!(vide.utilisateurs.is_empty());
+        assert!(!vide.limite);
+        assert!(matches!(coeur.rechercher_utilisateurs("Alice").await, Err(Erreur::PasDeSession)));
+    }
 
     #[test]
     fn presence_matrix_sans_deduire_offline_des_absences() {

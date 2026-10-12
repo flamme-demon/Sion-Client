@@ -126,6 +126,33 @@ export function stripMxReply(html: string): string {
   return html.replace(/<mx-reply>[\s\S]*?<\/mx-reply>/gi, "");
 }
 
+interface CorpsMedia {
+  body?: string;
+  filename?: string;
+  format?: string;
+  formatted_body?: string;
+  "m.relates_to"?: { "m.in_reply_to"?: { event_id?: string } };
+}
+
+/** Matrix v1.10 : `body` est une légende quand il diffère de `filename`.
+ * Les anciens clients ne fournissent que `body`, qui reste le nom du fichier. */
+function contenuMedia(content: CorpsMedia, messages: ChatMessage[]) {
+  const cible = content["m.relates_to"]?.["m.in_reply_to"]?.event_id;
+  const origine = cible ? messages.find((m) => m.eventId === cible || m.id === cible) : undefined;
+  const replyTo: ChatMessage["replyTo"] = cible ? {
+    eventId: cible, senderId: origine?.senderId, user: origine?.user,
+    text: origine?.text || extractReplyQuoteBody(content.body || ""),
+    msgtype: origine?.msgtype, attachmentName: origine?.attachments?.[0]?.name,
+  } : undefined;
+  const corps = cible ? stripReplyFallback(content.body || "") : content.body || "";
+  const text = content.filename && corps !== content.filename ? corps : "";
+  const html = text && content.format === "org.matrix.custom.html" ? content.formatted_body : undefined;
+  return {
+    nom: content.filename || corps || "fichier", text, replyTo,
+    formattedBody: html && cible ? stripMxReply(html) : html,
+  };
+}
+
 // Get display name from user ID, fallback to user ID without @ prefix
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function getDisplayName(sender: string, room: any, client: MatrixClient | null): string {
@@ -610,9 +637,10 @@ export function extractMessagesFromEvents(events: any[], room: any, client: any)
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const info: Record<string, any> = content.info || {};
       const mimeType = info.mimetype || (({ "m.image": "image/jpeg", "m.video": "video/mp4", "m.audio": "audio/mpeg" } as Record<string, string>)[msgtype] || "application/octet-stream");
+      const media = contenuMedia(content, msgs);
       const attachment: FileAttachment = {
         id: evtId,
-        name: content.body || "fichier",
+        name: media.nom,
         size: info.size || 0,
         mimeType,
         url: httpUrl,
@@ -622,7 +650,7 @@ export function extractMessagesFromEvents(events: any[], room: any, client: any)
         // Si chiffré E2EE (content.file présent), stocker les clés pour décryption au rendu
         encryptedFile: content.file ? { ...content.file } : undefined,
       };
-      msgs.push({ id: evtId, eventId: evtId, senderId, user: sender, role: "user", time, ts, text: "", attachments: [attachment], avatarUrl });
+      msgs.push({ id: evtId, eventId: evtId, senderId, user: sender, role: "user", time, ts, text: media.text, formattedBody: media.formattedBody, replyTo: media.replyTo, msgtype, attachments: [attachment], avatarUrl });
     }
   }
   // Parse reactions (m.annotation) and attach to messages
@@ -1386,9 +1414,10 @@ export const useMatrixStore = create<MatrixState>((set, get) => ({
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const info: Record<string, any> = content.info || {};
         const mimeType = info.mimetype || (({ "m.image": "image/jpeg", "m.video": "video/mp4", "m.audio": "audio/mpeg" } as Record<string, string>)[msgtype] || "application/octet-stream");
+        const media = contenuMedia(content, get().messages[room.roomId] || []);
         const attachment: FileAttachment = {
           id: evtId,
-          name: content.body || "fichier",
+          name: media.nom,
           size: info.size || 0,
           mimeType,
           url: httpUrl,
@@ -1397,7 +1426,7 @@ export const useMatrixStore = create<MatrixState>((set, get) => ({
           height: info.h,
           encryptedFile: content.file ? { ...content.file } : undefined,
         };
-        msg = { id: evtId, eventId: evtId, senderId, user: sender, role: "user", time, ts, text: "", attachments: [attachment], avatarUrl };
+        msg = { id: evtId, eventId: evtId, senderId, user: sender, role: "user", time, ts, text: media.text, formattedBody: media.formattedBody, replyTo: media.replyTo, msgtype, attachments: [attachment], avatarUrl };
       }
 
       if (!msg) return;

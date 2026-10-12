@@ -4,10 +4,15 @@ const invoke = vi.fn();
 vi.mock("@tauri-apps/api/core", () => ({ invoke: (...args: unknown[]) => invoke(...args) }));
 
 import {
-  moteurMatrix, connecter, fils, chargerHistorique, urlLecture, creerSondage, envoyerFichier, requeteAdmin, ErreurApiAdmin, appareils, detailsSalon, amorcer, modifierSon, modifierMeme,
+  moteurMatrix, connecter, fils, chargerHistorique, urlLecture, creerSondage, envoyerFichier, requeteAdmin, ErreurApiAdmin, appareils, detailsSalon, amorcer, modifierSon, modifierMeme, rechercherUtilisateurs,
 } from "./matrixCore";
 
 describe("matrixCore", () => {
+  it("transmet le pseudo à la commande d'annuaire du cœur Rust", async () => {
+    invoke.mockResolvedValue({ utilisateurs: [], limite: false });
+    expect(await rechercherUtilisateurs("Alice")).toEqual({ utilisateurs: [], limite: false });
+    expect(invoke).toHaveBeenLastCalledWith("matrix_rechercher_utilisateurs", { terme: "Alice" });
+  });
   it("retombe sur le moteur JS si le pont ne répond pas (hors Tauri)", async () => {
     invoke.mockImplementation(() => Promise.reject(new Error("pas de Tauri")));
     expect(await moteurMatrix()).toBe("js");

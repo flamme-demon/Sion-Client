@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { useLayoutStore, type PanneauId, type ZonePanneau } from "../../stores/useLayoutStore";
+import { useLayoutStore, type ModuleId, type PanneauId, type ZonePanneau } from "../../stores/useLayoutStore";
 
 export interface PlacementModule {
   zone: ZonePanneau;
@@ -12,9 +12,9 @@ export const LIBELLES_PLACEMENT: Record<ZonePanneau, string> = {
 
 /** État du geste uniquement : déplacer la souris ne modifie pas les préférences. */
 export const useApercuPlacementModule = create<{
-  saisie: { id: PanneauId; x: number; y: number } | null;
+  saisie: { id: ModuleId; x: number; y: number } | null;
   cible: PlacementModule | null;
-  saisir: (id: PanneauId, x: number, y: number) => void;
+  saisir: (id: ModuleId, x: number, y: number) => void;
   suivre: (x: number, y: number) => void;
   liberer: () => void;
   viser: (cible: PlacementModule | null) => void;
@@ -28,15 +28,19 @@ export const useApercuPlacementModule = create<{
 }));
 
 /** Les quatre bords restent des destinations, sans cadres permanents. */
-export function placementSousPointeur(source: HTMLElement, id: PanneauId, x: number, y: number): PlacementModule | null {
-  const racine = source.closest<HTMLElement>(".sion-main-area");
+export function placementSousPointeur(source: HTMLElement, id: ModuleId, x: number, y: number): PlacementModule | null {
+  const racine = (id === "espaces" ? source.closest<HTMLElement>(".app-root--desktop") : null)
+    ?? source.closest<HTMLElement>(".sion-main-area");
   if (!racine) return null;
   const rect = racine.getBoundingClientRect();
   if (x < rect.left || x >= rect.right || y < rect.top || y >= rect.bottom) return null;
   const calques = document.elementsFromPoint(x, y).filter((e) => !e.closest(".sion-apercu-deplacement, .sion-module-en-main"));
   const colonne = calques.map((e) => e.closest<HTMLElement>("[data-zone-panneaux]"))
     .find((e) => e && racine.contains(e));
-  let zone = colonne?.dataset.zonePanneaux as ZonePanneau | undefined;
+  // La barre des espaces se place au bord complet, pas entre deux panneaux.
+  const navigation = id === "espaces" ? calques.map((e) => e.closest<HTMLElement>("[data-zone-espaces]"))
+    .find((e) => e && racine.contains(e)) : undefined;
+  let zone = (id === "espaces" ? navigation?.dataset.zoneEspaces : colonne?.dataset.zonePanneaux) as ZonePanneau | undefined;
   if (!zone) {
     if (y >= rect.bottom - rect.height * .26) zone = "bottom";
     else if (y < rect.top + rect.height * .26) zone = "top";
@@ -44,6 +48,7 @@ export function placementSousPointeur(source: HTMLElement, id: PanneauId, x: num
     else if (x >= rect.right - rect.width * .24) zone = "right";
     else return null;
   }
+  if (id === "espaces") return { zone };
   const surSoi = calques.some((e) => e.closest<HTMLElement>("[data-panneau]")?.dataset.panneau === id);
   if (surSoi && (useLayoutStore.getState().positionsPanneaux[id] ?? "right") === zone) return { zone, avant: id };
   const cartes = racine.querySelectorAll<HTMLElement>(`[data-zone-panneaux="${zone}"] [data-panneau]`);

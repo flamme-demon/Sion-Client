@@ -5,6 +5,7 @@ import { describe, it, expect, vi } from "vitest";
 // useMatrixStore pulls in for its (untested here) side-effectful paths.
 vi.mock("../services/matrixService", () => ({
   mxcToHttp: (mxc: string) => (mxc ? `https://hs.test/media/${mxc.slice("mxc://".length)}` : null),
+  mxcToThumbnail: () => null,
 }));
 vi.mock("../services/soundService", () => ({ playMessageReceived: vi.fn() }));
 vi.mock("../services/voiceChannelSounds", () => ({
@@ -158,6 +159,20 @@ describe("extractMessagesFromEvents — réactions (m.annotation)", () => {
 });
 
 describe("extractMessagesFromEvents — médias", () => {
+  it("conserve la légende et la réponse d'une image reçue d'Element", () => {
+    const msgs = extract([
+      ev("m.room.message", { msgtype: "m.text", body: "Le paysage ?" }, { id: "$origine" }),
+      ev("m.room.message", { msgtype: "m.image", filename: "photo.png", body: "> <@alice:hs> Le paysage ?\n\nLa montagne",
+        format: "org.matrix.custom.html", formatted_body: "<mx-reply>citation</mx-reply><b>La montagne</b>",
+        url: "mxc://hs/photo", "m.relates_to": { "m.in_reply_to": { event_id: "$origine" } } }),
+    ]);
+    expect(msgs[1]).toMatchObject({ text: "La montagne", formattedBody: "<b>La montagne</b>", msgtype: "m.image",
+      replyTo: { eventId: "$origine", text: "Le paysage ?" }, attachments: [{ name: "photo.png" }] });
+  });
+  it.each([{ body: "photo.png" }, { body: "photo.png", filename: "photo.png" }])("n'affiche pas le nom du fichier comme légende : %j", (content) => {
+    const msgs = extract([ev("m.room.message", { msgtype: "m.image", url: "mxc://hs/photo", ...content })]);
+    expect(msgs[0].text).toBe(""); expect(msgs[0].attachments![0].name).toBe("photo.png");
+  });
   it("mappe un fichier E2EE (content.file) en gardant les clés de déchiffrement", () => {
     const msgs = extract([
       ev("m.room.message", {

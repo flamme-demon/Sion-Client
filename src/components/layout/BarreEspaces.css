@@ -1,0 +1,245 @@
+.sion-barre-espaces {
+  flex-shrink: 0;
+  min-width: 0;
+  min-height: 0;
+  position: relative;
+}
+
+.sion-barre-espaces--top,
+.sion-barre-espaces--bottom {
+  height: 64px;
+  container-type: inline-size;
+}
+
+.sion-barre-espaces--left,
+.sion-barre-espaces--right {
+  width: 64px;
+}
+
+.app-root--desktop > .sion-barre-espaces--left {
+  order: -1;
+}
+
+.app-root--desktop > .sion-barre-espaces--right {
+  order: 1;
+}
+
+.sion-apercu-deplacement > .sion-apercu-implantation--espaces {
+  flex-direction: row;
+}
+
+.sion-apercu-contenu {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  gap: var(--sion-bulle-ecart);
+}
+
+.sion-apercu-menu {
+  display: none;
+}
+
+.sion-apercu-deplacement--bureau .sion-apercu-menu {
+  display: block;
+  flex-shrink: 0;
+  width: var(--sion-largeur-menu);
+}
+
+.sion-barre-espaces > .sion-rail {
+  width: 100%;
+  height: 100%;
+  padding: 10px 6px;
+  gap: 10px;
+}
+
+:is(.sion-barre-espaces--top, .sion-barre-espaces--bottom) > .sion-rail {
+  display: grid;
+  grid-template-columns: var(--sion-largeur-outils) minmax(0, 1fr) var(--sion-largeur-outils);
+  align-items: center;
+  padding: 8px 10px;
+  gap: 12px;
+}
+
+.sion-barre-espaces .sion-rail-bouton {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+}
+
+.sion-barre-espaces .sion-rail-bouton > svg {
+  width: 24px;
+  height: 24px;
+}
+
+.sion-barre-espaces .sion-espace-logo {
+  width: 100%;
+  height: 100%;
+  flex-basis: 100%;
+  border-radius: inherit;
+  overflow: hidden;
+}
+
+.sion-barre-espaces .sion-espace-logo img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.sion-barre-espaces .sion-navigation-espaces {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+
+.sion-barre-espaces .sion-espaces-rail-liste {
+  max-height: none;
+  scrollbar-width: thin;
+}
+
+.sion-barre-espaces .sion-navigation-espaces--horizontal {
+  display: contents;
+}
+
+.sion-navigation-espaces--horizontal > [data-espace="dm"] {
+  grid-area: 1 / 1;
+  justify-self: start;
+  margin-left: 30px;
+}
+
+.sion-navigation-espaces--horizontal .sion-espaces-rail-liste {
+  grid-area: 1 / 2;
+  justify-self: center;
+  flex-direction: row;
+  align-items: center;
+  gap: 12px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  min-width: 0;
+  max-width: 100%;
+  padding: 6px 4px 7px;
+  margin: 0;
+  scrollbar-width: none;
+}
+
+.sion-barre-espaces-outils {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  flex-shrink: 0;
+  gap: 10px;
+}
+
+:is(.sion-barre-espaces--top, .sion-barre-espaces--bottom) .sion-barre-espaces-outils {
+  grid-area: 1 / 3;
+  justify-self: end;
+  flex-direction: row;
+  gap: 12px;
+}
+
+:is(.sion-barre-espaces--top, .sion-barre-espaces--bottom) .sion-barre-espaces-poignee {
+  grid-area: 1 / 1;
+  justify-self: start;
+  width: 18px;
+}
+
+/* Sur une petite fenêtre, les commandes gardent leur place et les espaces défilent. */
+@container (max-width: 500px) {
+  :is(.sion-barre-espaces--top, .sion-barre-espaces--bottom) > .sion-rail {
+    grid-template-columns: 70px minmax(0, 1fr) auto;
+    gap: 8px;
+  }
+
+  :is(.sion-barre-espaces--top, .sion-barre-espaces--bottom) .sion-barre-espaces-outils {
+    gap: 8px;
+  }
+}
+
+.sion-barre-espaces .sion-navigation-espaces--horizontal .sion-rail-bouton[aria-pressed="true"]::before {
+  left: calc(50% - 8px);
+  top: auto;
+  bottom: -5px;
+  width: 16px;
+  height: 3px;
+}
+
+.sion-barre-espaces .sion-navigation-espaces--rail .sion-espace-ajouter {
+  border: 1px dashed var(--color-outline);
+  background: transparent;
+}
+
+.sion-barre-espaces-poignee {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  align-self: stretch;
+  flex-shrink: 0;
+  min-width: 18px;
+  min-height: 18px;
+  border-radius: 6px;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+
+.sion-barre-espaces-poignee:hover {
+  background: var(--color-surface-container-high);
+}
+
+.sion-barre-espaces-poignee:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
+.sion-barre-espaces-poignee:active {
+  cursor: grabbing;
+}
+
+.sion-barre-espaces .sion-rail-separation {
+  flex-shrink: 0;
+  margin: 0;
+}
+
+:is(.sion-barre-espaces--top, .sion-barre-espaces--bottom) .sion-rail-separation {
+  width: 1px;
+  height: 24px;
+  border-top: 0;
+  border-left: 1px solid var(--color-border);
+}
+
+/* Le rectangle annoncé garde le format compact de la navigation. */
+.sion-apercu-module[data-apercu-module="espaces"] {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+}
+
+.sion-apercu-module[data-apercu-module="espaces"] .sion-panneau-entete {
+  padding: 0;
+  border: 0;
+}
+
+.sion-apercu-module[data-apercu-module="espaces"] .sion-apercu-destination {
+  position: static;
+  inset: auto;
+  flex: 0 1 auto;
+  padding: 0;
+  gap: 2px;
+}
+
+.sion-apercu-module[data-apercu-module="espaces"]:is([data-apercu-zone="left"], [data-apercu-zone="right"]) {
+  flex-direction: column;
+  padding: 8px;
+  text-align: center;
+}
+
+.sion-apercu-module[data-apercu-module="espaces"]:is([data-apercu-zone="left"], [data-apercu-zone="right"]) .sion-panneau-entete {
+  flex-direction: column;
+}
+
+.sion-apercu-module[data-apercu-module="espaces"] .sion-apercu-destination strong,
+.sion-apercu-module[data-apercu-module="espaces"] .sion-apercu-destination span {
+  font-size: 11px;
+}

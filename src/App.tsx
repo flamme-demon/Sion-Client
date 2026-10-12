@@ -1,9 +1,16 @@
 import { useEspaces } from "./hooks/useEspaces";
 import { GestionEspaces } from "./components/sidebar/GestionEspaces";
-import { RailServeurs } from "./components/layout/RailServeurs";
 import { Suspense, lazy, useEffect, useState, useCallback, useRef } from "react";
 import { Sidebar } from "./components/layout/Sidebar";
 import { MainArea } from "./components/layout/MainArea";
+import { NavigationMobile } from "./components/mobile/NavigationMobile";
+import { useRetourMobile } from "./hooks/useRetourMobile";
+import { terminerDemarrage } from "./services/demarrage";
+
+function InterfacePrete() {
+  useEffect(terminerDemarrage, []);
+  return null;
+}
 
 // Écrans lourds hors du chunk de démarrage (perf mémoire, 2026-09-12) : le
 // chat n'en a pas besoin pour peindre ; chacun rejoint son propre chunk au
@@ -75,7 +82,6 @@ import { updateVoiceService } from "./services/androidVoiceService";
 import { useTranslation } from "react-i18next";
 import * as matrixService from "./services/matrixService";
 import { moteurRust } from "./services/moteur";
-import { fermerFeuilleMobile } from "./components/layout/panneaux";
 import { enregistrerRejoindre } from "./services/reconnexionVocale";
 import { CarteReconnexion } from "./components/sidebar/CarteReconnexion";
 
@@ -88,7 +94,6 @@ export default function App() {
   const sidebarSide = useLayoutStore((s) => s.sidebarSide);
   const userContextMenu = useAppStore((s) => s.userContextMenu);
   const closeUserContextMenu = useAppStore((s) => s.closeUserContextMenu);
-  const mobileView = useAppStore((s) => s.mobileView);
   const connectedVoice = useAppStore((s) => s.connectedVoiceChannel);
   const credentials = useAuthStore((s) => s.credentials);
   const isLoading = useAuthStore((s) => s.isLoading);
@@ -119,16 +124,12 @@ export default function App() {
   const stopAdminCheck = useAdminStore((s) => s.stopAdminCheck);
   const startPendingListener = usePendingUsersStore((s) => s.startListening);
   const stopPendingListener = usePendingUsersStore((s) => s.stopListening);
-  const toggleAccountPanel = useAppStore((s) => s.toggleAccountPanel);
-  const toggleSettings = useAppStore((s) => s.toggleSettings);
-  const toggleAdmin = useAppStore((s) => s.toggleAdmin);
-  const setMobileView = useAppStore((s) => s.setMobileView);
   const [sessionChecked, setSessionChecked] = useState(false);
   const [mutedSpeakWarning, setMutedSpeakWarning] = useState(false);
-  const [backToast, setBackToast] = useState(false);
   const isMobile = useIsMobile();
 
   const { joinVoiceChannel, leaveVoiceChannel } = useVoiceChannel();
+  const backToast = useRetourMobile(isMobile, leaveVoiceChannel);
   const joinVoiceRef = useRef(joinVoiceChannel);
   joinVoiceRef.current = joinVoiceChannel;
   // Reconnexion après une session perdue : même chemin qu'un clic.
@@ -252,63 +253,7 @@ export default function App() {
     return unsub;
   }, []);
 
-  // Mobile back button handler via Tauri plugin (Android)
-  useEffect(() => {
-    if (!isMobile) return;
 
-    let wantsToQuit = false;
-    let quitTimer: ReturnType<typeof setTimeout> | null = null;
-    let unlisten: { unregister: () => Promise<void> } | null = null;
-
-    import("@tauri-apps/api/app").then(({ onBackButtonPress }) => {
-      onBackButtonPress((_payload) => {
-        if (document.fullscreenElement) {
-          void document.exitFullscreen().catch(() => {});
-          return;
-        }
-        const appState = useAppStore.getState();
-
-        // Close panels first (most specific → least specific)
-        if (appState.showAccountPanel) { toggleAccountPanel(); return; }
-        if (appState.showSettings) { toggleSettings(); return; }
-        if (appState.showAdmin) { toggleAdmin(); return; }
-        // Feuille de panneau (épinglés, membres…) ouverte par-dessus le chat.
-        if (fermerFeuilleMobile()) return;
-
-        // If viewing chat, go back to sidebar
-        if (appState.mobileView === "chat") { setMobileView("sidebar"); return; }
-
-        // Already on sidebar — double-tap to quit
-        if (wantsToQuit) {
-          if (quitTimer) clearTimeout(quitTimer);
-          wantsToQuit = false;
-          setBackToast(false);
-          // Disconnect voice cleanly before exiting
-          const voiceChannel = useAppStore.getState().connectedVoiceChannel;
-          if (voiceChannel) {
-            leaveVoiceRef.current(voiceChannel).finally(() => {
-              import("@tauri-apps/api/core").then(({ invoke }) => invoke("exit_app"));
-            });
-          } else {
-            import("@tauri-apps/api/core").then(({ invoke }) => invoke("exit_app"));
-          }
-          return;
-        }
-
-        wantsToQuit = true;
-        setBackToast(true);
-        quitTimer = setTimeout(() => {
-          wantsToQuit = false;
-          setBackToast(false);
-        }, 2500);
-      }).then((listener) => { unlisten = listener; });
-    }).catch(() => { /* Not in Tauri context */ });
-
-    return () => {
-      unlisten?.unregister();
-      if (quitTimer) clearTimeout(quitTimer);
-    };
-  }, [isMobile, toggleAccountPanel, toggleSettings, toggleAdmin, setMobileView]);
 
   // Restore session on mount
   useEffect(() => {
@@ -418,6 +363,7 @@ export default function App() {
         fontFamily: 'inherit', padding: 16,
         position: 'relative', overflow: 'hidden',
       }}>
+        <InterfacePrete />
         <div style={{ position: 'absolute', inset: 0 }}>
           <MatrixRain width={window.innerWidth} height={window.innerHeight} />
         </div>
@@ -480,13 +426,13 @@ export default function App() {
       <div className="app-loading">Loading...</div>
     }>
       <div className={`app-root${isMobile ? "" : " app-root--desktop"}`}>
-        {!isMobile && <RailServeurs />}
+        <InterfacePrete />
         <GestionEspaces />
-        {/* Mobile: show sidebar OR chat based on mobileView */}
-        {/* Desktop: always show sidebar */}
-        {(!isMobile || mobileView === "sidebar") && sidebarSide === "left" && <Sidebar />}
-        {(!isMobile || mobileView === "chat") && <MainArea />}
-        {(!isMobile || mobileView === "sidebar") && sidebarSide === "right" && <Sidebar />}
+        {isMobile ? <NavigationMobile /> : <>
+          {sidebarSide === "left" && <Sidebar />}
+          <MainArea />
+          {sidebarSide === "right" && <Sidebar />}
+        </>}
 
         {/* Panels: overlay on mobile, side panel on desktop */}
         {/* Chaque overlay paresseux a SON Suspense (fallback null) : sans ça,

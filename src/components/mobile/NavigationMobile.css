@@ -1,0 +1,182 @@
+.sion-mobile-navigation {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  touch-action: pan-y;
+  isolation: isolate;
+  background: var(--color-surface);
+}
+
+.sion-mobile-menu, .sion-mobile-chat {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  transition: transform 220ms cubic-bezier(.2, .8, .2, 1);
+}
+
+.sion-mobile-menu {
+  transform: translate3d(-100%, 0, 0);
+  background: var(--color-surface);
+}
+
+.sion-mobile-chat {
+  z-index: 1;
+  transform: translate3d(0, 0, 0);
+  background: var(--color-surface-container-low);
+  box-shadow: -6px 0 24px rgb(0 0 0 / 15%);
+}
+
+.sion-mobile-navigation[data-mobile-view="sidebar"] .sion-mobile-menu { transform: translate3d(0, 0, 0); }
+.sion-mobile-navigation[data-mobile-view="sidebar"] .sion-mobile-chat { transform: translate3d(100%, 0, 0); }
+.sion-mobile-navigation[data-mobile-view="channels"] .sion-mobile-menu { transform: translate3d(-68px, 0, 0); }
+.sion-mobile-navigation[data-mobile-view="channels"] .sion-mobile-chat { transform: translate3d(calc(100% - 68px), 0, 0); }
+
+.sion-mobile-navigation--geste :is(.sion-mobile-menu, .sion-mobile-chat) {
+  transition: none;
+  user-select: none;
+}
+
+/* Le navigateur arrête la recherche de touch-action au premier conteneur
+   défilant : ces listes gardent le scroll vertical et cèdent le geste horizontal. */
+.sion-mobile-navigation :is(.sion-liste-salons, .sion-espaces-rail-liste, .sion-messages) {
+  touch-action: pan-y;
+}
+
+.sion-mobile-espaces {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  flex: 0 0 68px;
+  min-height: 0;
+  padding: 12px 8px max(12px, env(safe-area-inset-bottom));
+  gap: 16px;
+}
+
+.sion-mobile-espaces .sion-navigation-espaces {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  gap: 12px;
+}
+
+.sion-mobile-espaces .sion-espaces-rail-liste {
+  max-height: none;
+  gap: 12px;
+  padding: 4px 0 4px 8px;
+  scrollbar-width: none;
+}
+
+.sion-mobile-espaces .sion-rail-bouton {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+}
+
+.sion-mobile-espaces .sion-espace-logo {
+  width: 100%;
+  height: 100%;
+  flex-basis: 100%;
+  border-radius: inherit;
+  overflow: hidden;
+}
+
+.sion-mobile-espaces .sion-espace-logo img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.sion-mobile-espaces .sion-espace-ajouter {
+  border: 1px dashed var(--color-outline);
+  background: transparent;
+}
+
+.sion-mobile-espaces-outils {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.sion-mobile-canaux {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  margin: 8px 8px 8px 0;
+  padding-bottom: env(safe-area-inset-bottom);
+  border-radius: 20px;
+  background: var(--color-surface-container-low);
+  border: 1px solid var(--color-border);
+  overflow: hidden;
+}
+
+.sion-mobile-canaux-entete {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 10px;
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.sion-mobile-canaux-entete button {
+  border: 0;
+  background: transparent;
+  color: var(--color-on-surface);
+  cursor: pointer;
+}
+
+.sion-mobile-ouvrir-espaces, .sion-mobile-compte {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 40px;
+  flex-shrink: 0;
+  padding: 0;
+}
+
+.sion-mobile-ouvrir-espaces img {
+  width: 28px;
+  height: 28px;
+  border-radius: 9px;
+  object-fit: cover;
+}
+
+.sion-mobile-nom-espace {
+  flex: 1;
+  min-width: 0;
+  padding: 8px 0;
+  font-size: 16px;
+  font-weight: 600;
+  text-align: left;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.sion-mobile-retour-chat {
+  position: absolute;
+  z-index: 2;
+  inset: 0;
+  transform: translate3d(calc(100% - 68px), 0, 0);
+  border: 0;
+  background: rgb(0 0 0 / 25%);
+  cursor: pointer;
+}
+
+.sion-mobile-navigation button:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: -2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sion-mobile-menu, .sion-mobile-chat { transition: none; }
+}

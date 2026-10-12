@@ -68,6 +68,7 @@ pub struct VoiceNativeStatus {
     /// L'avertissement « partage sans son » était calculé au démarrage du
     /// partage et perdu à tout rechargement de webview.
     pub screenshare_audio_published: bool,
+    pub camera_published: bool,
     /// Identité LiveKit locale (`@user:serveur:deviceID`), si connue.
     pub identity: Option<String>,
 }
@@ -102,6 +103,7 @@ fn snapshot(inner: &VoiceNativeInner) -> VoiceNativeStatus {
         mic_published: holder_mic_published(),
         screenshare_published: holder_screenshare_published(),
         screenshare_audio_published: holder_screenshare_audio_published(),
+        camera_published: holder_camera_published(),
         identity: inner.identity.clone(),
     }
 }
@@ -199,6 +201,19 @@ fn holder_screenshare_audio_published() -> bool {
     {
         false
     }
+}
+
+fn holder_camera_published() -> bool {
+    #[cfg(feature = "native-voice")]
+    { engine_holder().lock().map(|g| g.as_ref().is_some_and(|e| e.camera_state().published)).unwrap_or(false) }
+    #[cfg(not(feature = "native-voice"))]
+    { false }
+}
+
+#[cfg(feature = "native-voice")]
+pub(crate) fn camera_failed(token: u64) {
+    let guard = engine_holder().lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(engine) = guard.as_ref() { engine.stop_failed_camera(token); }
 }
 
 fn emit_status(app: &tauri::AppHandle<TauriRuntime>, status: &VoiceNativeStatus) {
@@ -314,6 +329,8 @@ pub struct NativeParticipant {
     pub is_muted: bool,
     #[serde(default)]
     pub is_screen_sharing: bool,
+    #[serde(default)]
+    pub is_camera_enabled: bool,
     /// L'expéditeur publie aussi le son de son partage (`ScreenshareAudio`).
     /// Affiche le contrôle 🔊/🔇 (coupure locale uniquement).
     #[serde(default)]
@@ -373,6 +390,7 @@ impl NativeParticipant {
             is_speaking: false,
             is_muted: false,
             is_screen_sharing: false,
+            is_camera_enabled: false,
             is_screen_sharing_audio: false,
             is_deafened: false,
             audio_level: 0.0,
@@ -868,6 +886,10 @@ fn apply_engine_event(map: &mut HashMap<String, NativeParticipant>, ev: &VoiceEn
         }
         VoiceEngineEvent::VideoPresence { sender, sharing } => {
             upsert_participant(map, sender).is_screen_sharing = *sharing;
+            true
+        }
+        VoiceEngineEvent::CameraPresence { sender, active } => {
+            upsert_participant(map, sender).is_camera_enabled = *active;
             true
         }
         VoiceEngineEvent::ShareAudioPresence { sender, has_audio } => {
@@ -2869,6 +2891,61 @@ pub async fn voice_native_set_screensharing(
     }
 }
 
+#[tauri::command]
+pub fn voice_native_camera_available() -> bool { cfg!(feature = "native-voice") }
+
+#[tauri::command]
+pub async fn voice_native_camera_devices(app: tauri::AppHandle<TauriRuntime>, ffmpeg_path: Option<String>) -> Result<serde_json::Value, String> {
+    #[cfg(feature = "native-voice")]
+    { return tauri::async_runtime::spawn_blocking(move || {
+        #[cfg(not(target_os = "android"))]
+        let ffmpeg = crate::resolve_ffmpeg(ffmpeg_path.as_deref(), crate::managed_ffmpeg_path(&app).as_ref().and_then(|p| p.to_str()));
+        #[cfg(target_os = "android")]
+        let ffmpeg = String::new();
+        let _ = (&app, &ffmpeg_path);
+        serde_json::to_value(crate::camera_capture::devices(&ffmpeg)?).map_err(|e| e.to_string())
+    }).await.map_err(|e| e.to_string())?; }
+    #[allow(unreachable_code)]
+    { let _ = (app, ffmpeg_path); Err("Caméra native indisponible.".into()) }
+}
+
+#[tauri::command]
+pub async fn voice_native_camera_preview(app: tauri::AppHandle<TauriRuntime>, device_id: String, ffmpeg_path: Option<String>) -> Result<serde_json::Value, String> {
+    #[cfg(feature = "native-voice")]
+    { return tauri::async_runtime::spawn_blocking(move || {
+        #[cfg(not(target_os = "android"))]
+        let ffmpeg = crate::resolve_ffmpeg(ffmpeg_path.as_deref(), crate::managed_ffmpeg_path(&app).as_ref().and_then(|p| p.to_str()));
+        #[cfg(target_os = "android")]
+        let ffmpeg = String::new();
+        let _ = &ffmpeg_path;
+        let device = crate::camera_capture::devices(&ffmpeg)?.into_iter().find(|d| d.id == device_id).ok_or("Cette caméra n'est plus disponible.")?;
+        with_engine_shared(&app, "aperçu caméra", |e| serde_json::to_value(e.preview_camera(device, &ffmpeg)?).map_err(|e| e.to_string()))
+    }).await.map_err(|e| e.to_string())?; }
+    #[allow(unreachable_code)]
+    { let _ = (app, device_id, ffmpeg_path); Err("Caméra native indisponible.".into()) }
+}
+
+#[tauri::command]
+pub async fn voice_native_camera_set_enabled(app: tauri::AppHandle<TauriRuntime>, enabled: bool) -> Result<serde_json::Value, String> {
+    #[cfg(feature = "native-voice")]
+    { return tauri::async_runtime::spawn_blocking(move || {
+        with_engine_shared(&app, "caméra", |e| {
+            if enabled { e.publish_camera()?; } else { e.stop_camera()?; }
+            serde_json::to_value(e.camera_state()).map_err(|e| e.to_string())
+        })
+    }).await.map_err(|e| e.to_string())?; }
+    #[allow(unreachable_code)]
+    { let _ = (app, enabled); Err("Caméra native indisponible.".into()) }
+}
+
+#[tauri::command]
+pub fn voice_native_camera_state() -> serde_json::Value {
+    #[cfg(feature = "native-voice")]
+    { return engine_holder().lock().ok().and_then(|g| g.as_ref().map(|e| serde_json::to_value(e.camera_state()).unwrap_or_default())).unwrap_or_else(|| serde_json::to_value(crate::voice_engine::CameraState::default()).unwrap_or_default()); }
+    #[allow(unreachable_code)]
+    { serde_json::json!({ "previewing": false, "published": false, "ready": false, "deviceId": null, "error": null }) }
+}
+
 /// Envoie un paquet data-channel sur la session native (soundboard, AFK,
 /// curseurs…). Payload base64 (binaire arbitraire). Miroir de `publishData`
 /// JS — `reliable: false` pour le curseur (60 Hz, la perte se répare toute
@@ -3674,6 +3751,18 @@ mod tests {
                 &enc(r#"{"muted":true}"#)
             ));
             assert!(!map["@p:h"].is_deafened);
+        }
+
+        #[test]
+        fn webcam_et_partage_restent_independants_du_micro() {
+            let mut map = HashMap::new();
+            let id = "@p:h".to_string();
+            apply_engine_event(&mut map, &VoiceEngineEvent::TrackMutedChanged { identity: id.clone(), muted: true });
+            apply_engine_event(&mut map, &VoiceEngineEvent::VideoPresence { sender: id.clone(), sharing: true });
+            apply_engine_event(&mut map, &VoiceEngineEvent::CameraPresence { sender: id.clone(), active: true });
+            assert!(map[&id].is_muted && map[&id].is_screen_sharing && map[&id].is_camera_enabled);
+            apply_engine_event(&mut map, &VoiceEngineEvent::CameraPresence { sender: id.clone(), active: false });
+            assert!(map[&id].is_muted && map[&id].is_screen_sharing && !map[&id].is_camera_enabled);
         }
 
         #[test]

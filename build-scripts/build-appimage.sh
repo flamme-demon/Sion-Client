@@ -133,6 +133,10 @@ cp "$PROJECT_DIR/src-tauri/resources/ffmpeg" "$APPDIR/usr/lib/sion-client/resour
 chmod +x "$APPDIR/usr/lib/sion-client/resources/ffmpeg"
 echo "  ffmpeg embarque ($(du -h "$APPDIR/usr/lib/sion-client/resources/ffmpeg" | cut -f1))"
 
+# Les modèles des effets webcam sont inclus dans le binaire Rust. Distribuer
+# leurs licences et attributions à côté des ressources de l'application.
+cp "$PROJECT_DIR/src-tauri/resources/camera-NOTICES.txt" "$APPDIR/usr/lib/sion-client/resources/"
+
 # Decodeur AV1 pour le moteur web.
 #
 # WebKitGTK ne decode rien lui-meme : il delegue a GStreamer et construit sa

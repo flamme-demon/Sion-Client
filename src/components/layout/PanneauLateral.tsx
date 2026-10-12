@@ -10,6 +10,7 @@ import { CloseIcon } from "../icons";
 import { useDeplacementModule } from "./useDeplacementModule";
 import { LIBELLES_PLACEMENT, ordreApresPlacement, useApercuPlacementModule } from "./apercuPlacementModule";
 import { ModuleEnMain } from "./ModuleEnMain";
+import { ContexteBoard } from "../chat/ContexteBoard";
 
 const LIBELLES_COMPTEURS: Partial<Record<PanneauId, { cle: string; un: string; plusieurs: string }>> = {
   soundboard: { cle: "soundboard.soundCount", un: "{{count}} son", plusieurs: "{{count}} sons" },
@@ -70,6 +71,7 @@ function CartePanneau({ id, zone }: { id: PanneauId; zone: ZonePanneau }) {
         </select>
         <button type="button" data-fermer-panneau aria-label={t("chat.close")} title={t("chat.close")} onClick={fermer}><CloseIcon /></button>
       </div>
+      {(id === "soundboard" || id === "memeboard") && <ContexteBoard />}
       <Suspense fallback={<div style={{ padding: 16, fontSize: 12 }}>{t("chat.loading")}</div>}><Corps /></Suspense>
     </Bulle>
   </div>;
@@ -102,6 +104,8 @@ export function CiblesModules() {
   const panneaux = useLayoutStore((s) => s.panneaux);
   const positions = useLayoutStore((s) => s.positionsPanneaux);
   const gauche = useLayoutStore((s) => s.largeurPanneauGauche);
+  const positionEspaces = useLayoutStore((s) => s.positionEspaces);
+  const coteMenu = useLayoutStore((s) => s.sidebarSide);
   const droite = useLayoutStore((s) => s.largeurPanneau);
   const hauteurBas = useLayoutStore((s) => s.hauteurPanneauxBas);
   const hauteurHaut = useLayoutStore((s) => s.hauteurPanneauxHaut);
@@ -110,9 +114,21 @@ export function CiblesModules() {
 
   useLayoutEffect(() => {
     const calque = ref.current, bulle = apercu.current;
-    const racine = calque?.parentElement;
+    const contenu = calque?.parentElement;
+    const bureau = contenu?.closest<HTMLElement>(".app-root--desktop");
+    const racine = deplacement === "espaces" ? bureau ?? contenu : contenu;
     if (!calque || !bulle || !racine || !deplacement) return;
     const mesurer = () => {
+      if (deplacement === "espaces" && bureau) {
+        const r = bureau.getBoundingClientRect();
+        const menu = bureau.querySelector<HTMLElement>("[data-module-salons]");
+        Object.assign(calque.style, {
+          position: "fixed", inset: "auto", left: `${r.left}px`, top: `${r.top}px`,
+          width: `${r.width}px`, height: `${r.height}px`, padding: getComputedStyle(bureau).padding,
+        });
+        calque.classList.add("sion-apercu-deplacement--bureau");
+        calque.style.setProperty("--sion-largeur-menu", `${menu?.getBoundingClientRect().width ?? 0}px`);
+      }
       for (const zone of ["left", "right", "top", "bottom"]) {
         const origine = racine.querySelector<HTMLElement>(`[data-zone-panneaux="${zone}"] .sion-zone-panneaux`);
         const miroir = calque.querySelector<HTMLElement>(`[data-apercu-colonne="${zone}"] .sion-zone-panneaux`);
@@ -126,12 +142,18 @@ export function CiblesModules() {
     mesurer();
     const observateur = new ResizeObserver(mesurer);
     observateur.observe(calque);
+    observateur.observe(racine);
+    const menu = deplacement === "espaces" ? bureau?.querySelector<HTMLElement>("[data-module-salons]") : null;
+    if (menu) observateur.observe(menu);
     racine.addEventListener("scroll", mesurer, true);
     return () => { observateur.disconnect(); racine.removeEventListener("scroll", mesurer, true); };
-  }, [deplacement, cible, panneaux, positions, gauche, droite, hauteurBas, hauteurHaut]);
+  }, [deplacement, cible, panneaux, positions, gauche, droite, hauteurBas, hauteurHaut, positionEspaces, coteMenu]);
 
   if (!deplacement || !cible) return <ModuleEnMain />;
-  const ordre = ordreApresPlacement(panneaux, deplacement, cible);
+  const ordre = deplacement === "espaces" ? panneaux : ordreApresPlacement(panneaux, deplacement, cible);
+  const bordEspaces = deplacement === "espaces" ? cible.zone : positionEspaces;
+  const navigation = (zone: ZonePanneau) => bordEspaces === zone && <div
+    className={`sion-barre-espaces sion-barre-espaces--${zone}`} data-apercu-emplacement="espaces" />;
   const ids = (zone: ZonePanneau) => ordre.filter((id) => (id === deplacement ? cible.zone : positions[id] ?? "right") === zone);
   const colonne = (zone: ZonePanneau) => {
     const modules = ids(zone);
@@ -141,17 +163,28 @@ export function CiblesModules() {
       <div className="sion-zone-panneaux">{modules.map((id) => <div key={id} className="sion-carte-panneau" data-apercu-emplacement={id} />)}</div>
     </div>;
   };
-  return <><ModuleEnMain /><div className="sion-apercu-deplacement" ref={ref} aria-hidden="true">
-    <div className="sion-apercu-implantation">
+  const contenu = <>
+      {navigation("top")}
       {colonne("top")}
       <div className={`sion-conversation-et-panneaux${ids("left").length && ids("right").length ? " sion-panneaux-deux-cotes" : ""}`}>
         {colonne("left")}<div style={{ flex: 1, minWidth: 0 }} />{colonne("right")}
       </div>
       {colonne("bottom")}
+      {navigation("bottom")}
+  </>;
+  return <><ModuleEnMain /><div className="sion-apercu-deplacement" ref={ref} aria-hidden="true">
+    <div className={`sion-apercu-implantation${deplacement === "espaces" ? " sion-apercu-implantation--espaces" : ""}`}>
+      {deplacement === "espaces" ? <>
+        {navigation("left")}
+        {coteMenu === "left" && <div className="sion-apercu-menu" />}
+        <div className="sion-apercu-contenu">{contenu}</div>
+        {coteMenu === "right" && <div className="sion-apercu-menu" />}
+        {navigation("right")}
+      </> : contenu}
     </div>
     {/* Seul le rectangle visible est un calque au-dessus des vidéos natives. */}
     <div className="sion-apercu-module" ref={apercu} data-apercu-module={deplacement} data-apercu-zone={cible.zone} style={{ position: "absolute" }}>
-      <div className="sion-panneau-entete"><span aria-hidden="true" className="sion-poignee-module">⠿</span><span className="sion-panneau-titre">{t(PANNEAU_TITRES[deplacement])}</span></div>
+      <div className="sion-panneau-entete"><span aria-hidden="true" className="sion-poignee-module">⠿</span><span className="sion-panneau-titre">{t(deplacement === "espaces" ? "spaces.title" : PANNEAU_TITRES[deplacement])}</span></div>
       <div className="sion-apercu-destination"><strong>{t(LIBELLES_PLACEMENT[cible.zone])}</strong><span>{t("layout.dropPanelHere", { defaultValue: "Relâche pour placer" })}</span></div>
     </div>
   </div></>;

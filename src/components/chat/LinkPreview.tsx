@@ -11,6 +11,7 @@ interface LinkPreviewData {
 // Successful results — cached for the session, capped at 200 entries.
 const previewCache = new Map<string, LinkPreviewData>();
 const failureCache = new Map<string, number>();
+const pendingPreviews = new Map<string, Promise<LinkPreviewData | null>>();
 const MAX_CACHE_SIZE = 200;
 
 function trimCache<V>(cache: Map<string, V>) {
@@ -85,6 +86,16 @@ async function fetchPreview(url: string): Promise<LinkPreviewData | null> {
   const failAt = failureCache.get(url);
   if (failAt && Date.now() - failAt < FAILURE_TTL_MS) return null;
 
+  // Un même lien peut apparaître dans plusieurs messages, ou être remonté
+  // par React en dev. Tous attendent la même requête, y compris sa reprise.
+  const pending = pendingPreviews.get(url);
+  if (pending) return pending;
+  const request = fetchPreviewUncached(url).finally(() => pendingPreviews.delete(url));
+  pendingPreviews.set(url, request);
+  return request;
+}
+
+async function fetchPreviewUncached(url: string): Promise<LinkPreviewData | null> {
   await acquireSlot();
   try {
     const { invoke } = await import("@tauri-apps/api/core");
@@ -130,30 +141,23 @@ async function fetchPreview(url: string): Promise<LinkPreviewData | null> {
 
 export function LinkPreview({ url }: { url: string }) {
   const linkPreviews = useSettingsStore((s) => s.linkPreviews);
-  const [data, setData] = useState<LinkPreviewData | null>(
-    previewCache.get(url) ?? null,
+  const [result, setResult] = useState<{ url: string; data: LinkPreviewData | null }>(
+    () => ({ url, data: previewCache.get(url) ?? null }),
   );
-  const [loaded, setLoaded] = useState(previewCache.has(url));
+  const data = previewCache.get(url) ?? (result.url === url ? result.data : null);
 
   useEffect(() => {
-    if (!linkPreviews) return;
-    const hit = previewCache.get(url);
-    if (hit) {
-      setData(hit);
-      setLoaded(true);
-      return;
-    }
+    if (!linkPreviews || previewCache.has(url)) return;
     let cancelled = false;
     fetchPreview(url).then((result) => {
       if (!cancelled) {
-        setData(result);
-        setLoaded(true);
+        setResult({ url, data: result });
       }
     });
     return () => { cancelled = true; };
   }, [url, linkPreviews]);
 
-  if (!linkPreviews || !loaded || !data) return null;
+  if (!linkPreviews || !data) return null;
 
   return (
     <a

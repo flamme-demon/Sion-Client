@@ -1,0 +1,17 @@
+.sion-conservation { display: grid; gap: 0; min-width: 0; }
+.sion-conservation .sion-conservation-introduction { margin: 10px 0 16px; }
+.sion-conservation-statut, .sion-conservation-protection { display: flex; align-items: flex-start; gap: 12px; min-width: 0; }
+.sion-conservation-statut { padding: 14px; margin-bottom: 18px; border-radius: 14px; background: color-mix(in srgb, var(--color-primary) 7%, var(--color-surface-container-high)); }
+.sion-conservation-statut svg, .sion-conservation-protection svg { width: 20px; height: 20px; flex: 0 0 20px; color: var(--color-primary); }
+.sion-conservation strong { display: block; font-size: 13px; font-weight: 600; line-height: 1.5; }
+.sion-conservation-statut > div, .sion-conservation-protection > div { min-width: 0; }
+.sion-conservation-statut p, .sion-conservation-protection p { margin-top: 4px; }
+.sion-conservation-salons { display: grid; gap: 12px; }
+.sion-conservation-salon { padding: 12px; border: 1px solid var(--color-border); border-radius: 14px; }
+.sion-conservation-salon > p { margin-top: 8px; }
+.sion-conservation-choix { display: grid; grid-template-columns: minmax(0, 1fr) minmax(140px, 190px); align-items: center; gap: 12px; }
+.sion-conservation-choix > label:first-child { color: var(--color-on-surface); font-size: 13px; overflow-wrap: anywhere; }
+.sion-conservation-personnalise { grid-column: 1 / -1; }
+.sion-conservation-apercu { display: grid; gap: 8px; }
+.sion-conservation-apercu h3 { margin-bottom: 0; }
+@media (max-width: 560px) { .sion-conservation-choix { grid-template-columns: minmax(0, 1fr); gap: 8px; } }

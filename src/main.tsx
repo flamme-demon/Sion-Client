@@ -6,6 +6,7 @@ import { openExternalUrl } from "./utils/openExternal";
 import { hydrateSessionFromAppData, startSettingsMirror } from "./services/sessionPersist";
 import { attachConsole, error as journalErreur } from "@tauri-apps/plugin-log";
 import { installMemoryDiagnostics } from "./services/memoryDiagnostics";
+import { initialiserDemarrage, terminerDemarrage } from "./services/demarrage";
 // Suivi « Sion au premier plan » dès le démarrage (notifications système).
 import "./services/premierPlan";
 // Téléphone : vidéo des partages masquée en arrière-plan et, au besoin, en
@@ -13,6 +14,8 @@ import "./services/premierPlan";
 import "./stores/useVideoMasqueeStore";
 // Téléphone : memes préchargés en mémoire en entrant en vocal (Wi-Fi).
 import "./services/memeCache";
+
+initialiserDemarrage();
 
 // Route Rust `log::*` records into the webview console — the only way to see
 // them on the shipped Windows build (no terminal). Pairs with the Rust
@@ -118,6 +121,7 @@ async function bootstrap() {
         <MoteurRustApercu />
       </StrictMode>,
     );
+    terminerDemarrage();
     return;
   }
   const [{ default: App }, { installThemeSync }, { useSettingsStore }] = await Promise.all([

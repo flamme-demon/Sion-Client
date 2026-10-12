@@ -31,10 +31,20 @@ export function salonCommun(regle: Record<string, unknown> | undefined, espace: 
 }
 
 /** Sans Espace sélectionné, seuls les salons non rattachés restent dans l'accueil serveur. */
-export function salonsDansEspace(channels: Channel[], espace: string | null): Channel[] {
-  const enfants = espace
-    ? new Set(channels.find((c) => c.id === espace && c.isSpace)?.spaceChildren ?? [])
-    : new Set(channels.filter((c) => c.isSpace).flatMap((c) => c.spaceChildren ?? []));
+export function salonsDansEspace(channels: Channel[], espace: string | null, hierarchies: Record<string, string[]> = {}): Channel[] {
+  const espaces = new Map(channels.filter((c) => c.isSpace).map((c) => [c.id, c.spaceChildren ?? []]));
+  const enfants = new Set<string>();
+  const visites = new Set<string>();
+  const pile = espace ? [espace] : [...espaces.keys()];
+  while (pile.length) {
+    const id = pile.pop()!;
+    if (visites.has(id)) continue;
+    visites.add(id);
+    for (const enfant of espaces.get(id) ?? hierarchies[id] ?? []) {
+      enfants.add(enfant);
+      if (espaces.has(enfant) || hierarchies[enfant]) pile.push(enfant);
+    }
+  }
   return channels.filter((c) => !c.isSpace && !c.isDM && !c.isSoundboard
     && c.membership !== "invite" && (espace ? enfants.has(c.id) : !enfants.has(c.id)));
 }

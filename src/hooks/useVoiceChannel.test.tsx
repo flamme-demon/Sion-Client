@@ -1,7 +1,7 @@
 import { act, useEffect } from "react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { montage } from "../test/interface";
-import { useVoiceChannel } from "./useVoiceChannel";
+import { attendreConnexionsVocales, useVoiceChannel } from "./useVoiceChannel";
 import { useLiveKitStore } from "../stores/useLiveKitStore";
 import { useMatrixStore } from "../stores/useMatrixStore";
 import { useAppStore } from "../stores/useAppStore";
@@ -144,6 +144,26 @@ it("conserve la connexion, les événements de participants et le raccrochage na
   expect(services.disconnect).toHaveBeenCalled();
   expect(useAppStore.getState().connectedVoiceChannel).toBeNull();
   expect(vue.container.textContent).toBe("déconnecté");
+});
+
+it("un départ de salon attend une connexion vocale déjà engagée avant de raccrocher", async () => {
+  let terminer!: (connexion: { url: string; jeton: string; chiffre: boolean }) => void;
+  services.rejoindreVoix.mockImplementationOnce(() => new Promise((resolve) => { terminer = resolve; }));
+  await vue.render(<CommandesVocales />);
+  let joindre!: Promise<void>;
+  await act(async () => { joindre = commandes.joinVoiceChannel("!vocal:test"); });
+  await vi.waitFor(() => expect(services.rejoindreVoix).toHaveBeenCalledOnce());
+  let fini = false;
+  const attendre = attendreConnexionsVocales().then(() => { fini = true; });
+  await act(async () => { await Promise.resolve(); });
+  expect(fini).toBe(false);
+  await act(async () => {
+    terminer({ url: "wss://voice.test", jeton: "jeton-test", chiffre: false });
+    await joindre; await attendre;
+    await commandes.leaveVoiceChannel("!vocal:test");
+  });
+  expect(fini).toBe(true);
+  expect(useAppStore.getState().connectedVoiceChannel).toBeNull();
 });
 
 it("n'installe plus de heartbeat si la session ferme pendant la lecture tardive de son état", async () => {

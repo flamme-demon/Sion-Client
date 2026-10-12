@@ -11,7 +11,7 @@ const K = {
 const store = new Proxy({} as Record<string, string>, { get: (_, key) => localStorage.getItem(String(key)) });
 const reset = () => useLayoutStore.setState({
   sidebarWidth: K.DEFAULT, sidebarMode: "full", sidebarSide: "left",
-  panneau: null, panneaux: [], positionsPanneaux: {}, panneauEnDeplacement: null,
+  panneau: null, panneaux: [], positionsPanneaux: {}, panneauEnDeplacement: null, positionEspaces: "bottom",
   largeurPanneau: 360, largeurPanneauGauche: 360, hauteurPanneauxBas: 280, hauteurPanneauxHaut: 280, panelBackgrounds: {},
   shareViewMaxVh: K.SV_DEFAULT, shareDock: "inline", shareFloating: { x: -1, y: -1, w: 440, h: 300 },
 });
@@ -146,9 +146,9 @@ describe("useLayoutStore — modules indépendants", () => {
     useLayoutStore.getState().setLargeurPanneau(410);
     useLayoutStore.getState().setPanelBackground("chat", { path: "/fond.webp", opacity: 0.4 });
     const raw = JSON.parse(localStorage.getItem("sion-layout")!);
-    expect(raw.version).toBe(7);
+    expect(raw.version).toBe(8);
     expect(raw.state).toMatchObject({ panneau: "pinned", largeurPanneau: 410, panelBackgrounds: { chat: { path: "/fond.webp", opacity: 0.4 } } });
-    expect(Object.keys(raw.state).sort()).toEqual(["sidebarWidth", "sidebarMode", "sidebarSide", "panneau", "panneaux", "positionsPanneaux", "largeurPanneau", "largeurPanneauGauche", "hauteurPanneauxBas", "hauteurPanneauxHaut", "panelBackgrounds", "shareViewMaxVh", "shareDock", "shareFloating"].sort());
+    expect(Object.keys(raw.state).sort()).toEqual(["sidebarWidth", "sidebarMode", "sidebarSide", "panneau", "panneaux", "positionsPanneaux", "positionEspaces", "largeurPanneau", "largeurPanneauGauche", "hauteurPanneauxBas", "hauteurPanneauxHaut", "panelBackgrounds", "shareViewMaxVh", "shareDock", "shareFloating"].sort());
   });
   it("mémorise les positions et l'ordre, y compris après fermeture", () => {
     const s = () => useLayoutStore.getState();

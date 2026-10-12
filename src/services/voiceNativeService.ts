@@ -9,7 +9,7 @@
 
 import type { ConnectionQuality, ParticipantInfo } from "../types/livekit";
 import type { AudioQualityPreset } from "../stores/useSettingsStore";
-import { getMatrixClient } from "./matrixService";
+import { getMatrixClient, getRoomMemberInfo } from "./matrixService";
 import { appareilDeIdentite } from "../utils/identiteVocale";
 
 export type VoiceNativeState = "disconnected" | "connecting" | "connected" | "reconnecting";
@@ -30,6 +30,7 @@ export interface VoiceNativeStatus {
    *  L'avertissement « partage sans son » était calculé au démarrage et perdu
    *  à tout rechargement de webview. */
   screenshare_audio_published: boolean;
+  camera_published?: boolean;
   identity: string | null;
 }
 
@@ -415,6 +416,26 @@ export const VOICE_NATIVE_PIP_EVENT = "voice-native-pip";
 
 export interface VoiceNativePipState {
   open: boolean;
+  /** Flux affiché : identité du partage ou clé `camera:…` d'une webcam. */
+  sender?: string | null;
+  sources?: string[];
+}
+
+export interface NativePipStream { sender: string; name: string }
+
+export async function pipNativeOpenStreams(streams: NativePipStream[], focus: string | null): Promise<boolean> {
+  try {
+    await tauriInvoke("pip_native_open_streams", { streams: streams.map((s) => ({ ...s, name: [...s.name].slice(0, 256).join("") })), focus });
+    return true;
+  } catch (error) {
+    console.warn("[Sion][PIP] diffusion indisponible", error);
+    return false;
+  }
+}
+
+export async function pipNativeSources(): Promise<string[]> {
+  try { return await tauriInvoke<string[]>("pip_native_sources"); }
+  catch { return []; }
 }
 
 export async function onVoiceNativePip(
@@ -1107,11 +1128,13 @@ export function resolveNativeDisplayName(identity: string, roomId: string | null
   const userId = matrixUserIdOf(identity);
   try {
     const client = getMatrixClient();
+    if (roomId) {
+      const memberName = (client
+        ? client.getRoom(roomId)?.getMember?.(userId)?.name
+        : getRoomMemberInfo(roomId, userId).displayName)?.trim();
+      if (memberName && !/^@[^:]+:[^:]+(?::.+)?$/.test(memberName)) return memberName;
+    }
     if (client) {
-      if (roomId) {
-        const memberName = client.getRoom(roomId)?.getMember?.(userId)?.name;
-        if (memberName && !/^@[^:]+:[^:]+(?::.+)?$/.test(memberName)) return memberName;
-      }
       const globalName = client.getUser(userId)?.displayName;
       if (globalName && !/^@[^:]+:[^:]+(?::.+)?$/.test(globalName)) return globalName;
     }
@@ -1197,6 +1220,15 @@ export async function pipNativeStatus(): Promise<boolean> {
     return await tauriInvoke<boolean>("pip_native_status");
   } catch {
     return false;
+  }
+}
+
+/** Flux actuellement détaché, pour distinguer webcam et partage d'écran. */
+export async function pipNativeSource(): Promise<string | null> {
+  try {
+    return await tauriInvoke<string | null>("pip_native_source");
+  } catch {
+    return null;
   }
 }
 

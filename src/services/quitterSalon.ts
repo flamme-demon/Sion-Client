@@ -46,7 +46,7 @@ export async function quitterSalon(salon: Channel) {
   if (app.activeChannel === salon.id) {
     const visibles = useSettingsStore.getState().sidebarView === "dm"
       ? restants.filter((c) => c.isDM && !c.isSpace && !c.isSoundboard)
-      : salonsDansEspace(restants, useEspacesStore.getState().espaceActif);
+      : salonsDansEspace(restants, useEspacesStore.getState().espaceActif, useEspacesStore.getState().hierarchies);
     const prochain = visibles.find((c) => !c.hasVoice) ?? visibles[0];
     app.setActiveChannel(prochain?.id ?? "", prochain?.hasVoice ?? false);
   }

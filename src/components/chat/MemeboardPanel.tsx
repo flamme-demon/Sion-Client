@@ -338,7 +338,7 @@ export function MemeboardPanel() {
       if (chargement) { demande = true; return; }
       chargement = true;
       try {
-        salon = await findSoundboardRoom();
+        salon = await findSoundboardRoom("vocal");
         if (annule) return;
         setRoomId(salon);
         const liste = await listMemes();

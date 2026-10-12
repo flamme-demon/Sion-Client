@@ -15,8 +15,19 @@ const TOLERANCE_PX = 10;
 /** Dernier menu ouvert par appui long : le `contextmenu` que le WebView
  *  émet parfois juste après ne doit pas le rouvrir, ni le doigt relevé
  *  valoir toucher. Hors de toute ligne : un rendu peut tomber entre-temps. */
-let dernierAppuiLong = 0;
-const vientDUnAppuiLong = () => performance.now() - dernierAppuiLong < 800;
+let dernierAppuiLong = -Infinity;
+const vientDUnAppuiLong = () => {
+  const ecoule = performance.now() - dernierAppuiLong;
+  return ecoule >= 0 && ecoule < 800;
+};
+
+export const EVENEMENT_FERMER_MENU = "sion-fermer-menu-contextuel";
+/** Un Retour ferme le menu affiché avant de déplacer la navigation mobile. */
+export function fermerMenuContextuel(): boolean {
+  const event = new Event(EVENEMENT_FERMER_MENU, { cancelable: true });
+  window.dispatchEvent(event);
+  return event.defaultPrevented;
+}
 
 let minuteur: ReturnType<typeof setTimeout> | undefined;
 let depart: { x: number; y: number } | null = null;

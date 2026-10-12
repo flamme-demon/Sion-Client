@@ -47,6 +47,7 @@ export function MemberPanel() {
   const channels = useMatrixStore((s) => s.channels);
   const channel = channels.find((c) => c.id === activeChannel);
   const espaceActif = useEspacesStore((s) => s.espaceActif);
+  const hierarchies = useEspacesStore((s) => s.hierarchies);
   const salonMembres = channel?.isDM ? activeChannel : espaceActif ?? activeChannel;
   const [tick, setTick] = useState(0);
   // Moteur Rust : une réponse du cœur arrivée dans le cache fait redessiner.
@@ -68,7 +69,7 @@ export function MemberPanel() {
   // Les appels visibles dans tous les salons, même sans les rejoindre.
   const voiceMembers = useMemo(() => {
     const appareils = new Map<string, { sourdines: boolean[]; salons: Map<string, string> }>();
-    for (const c of (espaceActif ? salonsDansEspace(channels, espaceActif) : channels).filter((c) => c.hasVoice)) {
+    for (const c of (espaceActif ? salonsDansEspace(channels, espaceActif, hierarchies) : channels).filter((c) => c.hasVoice)) {
       for (const u of c.voiceUsers) {
         const sourdines = u.devices?.length ? u.devices.map((d) => d.deafened) : [u.deafened];
         const vocal = appareils.get(u.id) ?? { sourdines: [], salons: new Map<string, string>() };
@@ -83,7 +84,7 @@ export function MemberPanel() {
       group: vocal.sourdines.every(Boolean) ? "afk" as const : "voice" as const,
       salons: vocal.salons,
     }]));
-  }, [channels, espaceActif]);
+  }, [channels, espaceActif, hierarchies]);
 
   // Refresh list on Matrix state events (member joins/leaves, power level changes)
   useEffect(() => {

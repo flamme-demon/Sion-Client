@@ -1,0 +1,128 @@
+.sion-chat-camera { display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; width: 36px; height: 36px; border: 1px solid var(--color-outline-variant); border-radius: 12px; background: var(--color-surface-container-high); color: var(--color-on-surface-variant); cursor: pointer; }
+.sion-chat-camera[aria-pressed="true"] { border-color: var(--color-primary); background: var(--color-primary-container); color: var(--color-on-primary-container); }
+.sion-chat-camera:disabled { opacity: .5; cursor: default; }
+.sion-chat-camera:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; }
+.sion-camera-strip { display: flex; gap: 8px; flex-shrink: 0; min-width: 0; padding: 8px 12px; overflow-x: auto; scrollbar-width: thin; }
+.sion-camera-tile { flex: 0 0 200px; min-width: 0; overflow: hidden; padding: 0; border: 1px solid var(--color-outline-variant); border-radius: 12px; background: var(--color-surface-container); color: var(--color-on-surface); text-align: left; }
+.sion-camera-tile-preview, .sion-camera-expanded-preview { position: relative; }
+.sion-camera-enlarge { display: block; width: 100%; padding: 0; border: 0; background: transparent; cursor: pointer; }
+.sion-camera-enlarge:focus-visible { outline: 2px solid var(--color-primary); outline-offset: -2px; }
+.sion-camera-tile > span { display: block; padding: 5px 8px; font-size: 11px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.sion-camera-stream { display: block; width: 100%; min-width: 0; background: #000; } /* theme-exempt : pixels vidéo et letterbox */
+.sion-camera-backdrop { position: fixed; inset: 0; z-index: 1100; display: flex; align-items: center; justify-content: center; padding: 16px; background: var(--color-scrim, rgba(0,0,0,.6)); }
+.sion-camera-dialog, .sion-camera-expanded { width: 460px; max-width: 100%; max-height: calc(100dvh - 32px); overflow-y: auto; border: 1px solid var(--color-border); border-radius: var(--sion-bulle-rayon, 20px); background: var(--color-surface-container); color: var(--color-on-surface); box-shadow: 0 12px 40px rgb(0 0 0 / 35%); }
+.sion-camera-dialog { display: flex; flex-direction: column; padding: 24px; overflow: hidden; }
+.sion-camera-dialog > header, .sion-camera-dialog > p, .sion-camera-dialog > footer { flex-shrink: 0; }
+.sion-camera-modal-body { min-height: 0; overflow-y: auto; scrollbar-width: thin; padding: 3px; margin: -3px; overscroll-behavior: contain; }
+.sion-camera-dialog header, .sion-camera-expanded header { display: flex; gap: 12px; align-items: center; justify-content: space-between; }
+.sion-camera-dialog h2 { display: flex; gap: 8px; align-items: center; margin: 0; font-size: 17px; font-weight: 600; }
+.sion-camera-dialog header button, .sion-camera-expanded header button { display: flex; align-items: center; justify-content: center; width: 32px; height: 32px; border: 0; border-radius: 10px; color: var(--color-on-surface-variant); background: transparent; cursor: pointer; }
+.sion-camera-dialog header button:hover, .sion-camera-expanded header button:hover { color: var(--color-primary); background: var(--color-surface-container-high); }
+.sion-camera-dialog p { margin: 12px 0; font-size: 12px; color: var(--color-on-surface-variant); }
+.sion-camera-preview { position: relative; margin: 0 0 16px; border-radius: var(--sion-carte-rayon, 14px); overflow: hidden; }
+.sion-camera-preview-image { position: relative; }
+.sion-camera-preview-image > span { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 12px; color: #fff; pointer-events: none; } /* theme-exempt : indication sur le média */
+.sion-camera-dialog label { display: flex; flex-direction: column; gap: 6px; font-size: 12px; color: var(--color-on-surface-variant); }
+.sion-camera-dialog select { width: 100%; padding: 10px 12px; border: 1px solid var(--color-border); border-radius: 12px; background: var(--color-surface-container-high); color: var(--color-on-surface); font: inherit; font-size: 13px; }
+.sion-camera-dialog .sion-camera-error { color: var(--color-error); }
+.sion-camera-dialog footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--color-border); }
+.sion-camera-dialog footer button { padding: 9px 15px; border: 0; border-radius: 12px; background: var(--color-surface-container-high); color: var(--color-on-surface); font: inherit; font-size: 12px; cursor: pointer; }
+.sion-camera-dialog footer [data-camera-activate] { background: var(--color-primary); color: var(--color-on-primary); }
+.sion-camera-dialog footer button:disabled { opacity: .45; cursor: default; }
+.sion-camera-expanded { width: min(1000px, 100%); }
+.sion-camera-expanded header { padding: 10px 16px; }
+.sion-camera-expanded header > strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sion-camera-expanded-actions { display: flex; flex-shrink: 0; gap: 4px; }
+.sion-camera-pip-actions { position: absolute; top: 7px; right: 7px; z-index: 1; display: flex; gap: 4px; opacity: 0; transition: opacity 120ms ease; }
+.sion-camera-tile:hover .sion-camera-pip-actions, .sion-camera-pip-actions:focus-within { opacity: 1; }
+.sion-camera-pip-actions button { display: grid; place-items: center; width: 28px; height: 28px; padding: 0; border: 1px solid var(--color-outline-variant); border-radius: 8px; background: var(--color-surface-container-high); color: var(--color-on-surface); cursor: pointer; }
+.sion-camera-pip-actions button:hover, .sion-camera-expanded-actions button:hover { color: var(--color-primary); }
+.sion-camera-pip-actions button:disabled { opacity: .5; cursor: default; }
+.sion-camera-detached { width: 100%; aspect-ratio: 16 / 9; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 9px; padding: 8px; border: 0; background: var(--color-surface-container-high); color: var(--color-on-surface-variant); font: inherit; font-size: 11px; cursor: pointer; }
+.sion-camera-detached svg { color: var(--color-primary); }
+.sion-camera-pip-error { padding: 0 12px 6px; color: var(--color-error); font-size: 12px; }
+.sion-camera-floating { position: fixed; z-index: 900; display: flex; flex-direction: column; overflow: hidden; border: 1px solid var(--color-outline-variant); border-radius: 14px; background: var(--color-surface-container); color: var(--color-on-surface); box-shadow: 0 10px 30px rgb(0 0 0 / 25%); }
+.sion-camera-floating header { display: flex; flex-shrink: 0; align-items: center; gap: 4px; padding: 4px; }
+.sion-camera-floating header button { display: grid; place-items: center; flex-shrink: 0; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 8px; background: transparent; color: var(--color-on-surface-variant); cursor: pointer; }
+.sion-camera-floating header button:hover { background: var(--color-surface-container-high); color: var(--color-primary); }
+.sion-camera-floating header .sion-camera-floating-drag { display: block; flex: 1; min-width: 0; padding: 0 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; font: inherit; font-size: 12px; color: var(--color-on-surface); touch-action: none; cursor: grab; }
+.sion-camera-floating header .sion-camera-floating-drag:active { cursor: grabbing; }
+.sion-camera-floating-video { flex: 1; min-height: 0; }
+.sion-camera-floating-video .sion-camera-stream { height: 100%; aspect-ratio: auto !important; }
+.sion-camera-floating-resize { position: absolute; z-index: 1; bottom: 0; right: 0; display: grid; place-items: center; width: 24px; height: 24px; padding: 0; border: 0; border-top-left-radius: 8px; color: var(--color-on-surface-variant); background: var(--color-surface-container-high); touch-action: none; cursor: nwse-resize; }
+.sion-camera-floating button:focus-visible, .sion-camera-pip-actions button:focus-visible, .sion-camera-detached:focus-visible { outline: 2px solid var(--color-primary); outline-offset: -2px; }
+.sion-camera-expanded .sion-camera-stream { max-height: 75dvh; }
+@media (hover: none) {
+  .sion-camera-pip-actions { opacity: 1; }
+  .sion-camera-pip-actions button { width: 34px; height: 34px; }
+}
+@media (max-width: 767px) {
+  .sion-chat-camera { width: 32px; height: 32px; border-radius: 10px; }
+  .sion-camera-tile { flex-basis: 148px; }
+  .sion-camera-strip { padding: 6px 8px; gap: 6px; }
+}
+.sion-camera-video-action { position: absolute; bottom: 7px; right: 7px; z-index: 1; display: inline-flex; align-items: center; justify-content: center; gap: 5px; min-height: 30px; padding: 5px 9px; border: 1px solid var(--color-outline-variant); border-radius: 9px; background: var(--color-surface-container-high); color: var(--color-primary); font: inherit; font-size: 11px; font-weight: 500; cursor: pointer; }
+.sion-camera-video-action > span { font-size: 15px; line-height: 1; }
+.sion-camera-tile .sion-camera-video-action { width: 28px; height: 28px; min-height: 28px; padding: 0; border-radius: 8px; }
+.sion-camera-video-action:focus-visible { outline: 2px solid var(--color-primary); outline-offset: -3px; }
+.sion-camera-video-action:disabled { opacity: .5; cursor: default; }
+.sion-camera-dialog[data-effects-open="true"] { width: 840px; }
+.sion-camera-dialog[data-effects-open="true"] .sion-camera-preview-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr); gap: 24px; align-items: start; }
+.sion-camera-source { min-width: 0; }
+.sion-camera-import { border: 1px solid var(--color-border); border-radius: 12px; padding: 9px 12px; background: var(--color-surface-container-high); color: var(--color-on-surface); font: inherit; font-size: 12px; cursor: pointer; }
+.sion-camera-import:hover:not(:disabled) { background: var(--color-surface-container-highest); }
+.sion-camera-effects-toggle[aria-expanded="true"] { border-color: var(--color-primary); color: var(--color-primary); }
+.sion-camera-effects-toggle:disabled, .sion-camera-import:disabled { opacity: .5; cursor: default; }
+.sion-camera-effects-pane { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.sion-camera-effect-tabs { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 3px; padding: 4px; border-radius: 14px; background: var(--color-surface-container-high); }
+.sion-camera-effect-tabs button { min-width: 0; min-height: 38px; padding: 6px 4px; border: 0; border-radius: 10px; background: transparent; color: var(--color-on-surface-variant); font: inherit; font-size: 12px; font-weight: 500; cursor: pointer; overflow-wrap: anywhere; }
+.sion-camera-effect-tabs button:hover { color: var(--color-on-surface); }
+.sion-camera-effect-tabs button[aria-selected="true"] { color: var(--color-primary); background: color-mix(in srgb, var(--color-primary) 12%, var(--color-surface-container)); }
+.sion-camera-effect-content { min-width: 0; min-height: 224px; }
+.sion-camera-effect-grid { display: grid; grid-template-columns: repeat(5, minmax(0,1fr)); gap: 8px; }
+.sion-camera-effect-grid.accessories { grid-template-columns: repeat(4, minmax(0,1fr)); }
+.sion-camera-effect-grid button { min-width: 0; padding: 5px; border: 1px solid var(--color-border); border-radius: var(--sion-carte-rayon, 14px); color: var(--color-on-surface-variant); background: var(--color-surface-container-high); cursor: pointer; font: inherit; font-size: 11px; }
+.sion-camera-effect-grid button:hover { border-color: color-mix(in srgb, var(--color-primary) 40%, var(--color-border)); }
+.sion-camera-effect-grid button[aria-pressed="true"] { border-color: color-mix(in srgb, var(--color-primary) 60%, var(--color-border)); color: var(--color-primary); background: color-mix(in srgb, var(--color-primary) 10%, var(--color-surface-container-high)); }
+.sion-camera-effect-grid button > span:last-child { display: flex; align-items: center; justify-content: center; min-height: 30px; padding: 4px 0; line-height: 1.2; overflow-wrap: anywhere; }
+.sion-camera-effects-pane button:focus-visible, .sion-camera-effect-content:focus-visible, .sion-camera-effect-range input:focus-visible, .sion-camera-dialog select:focus-visible, .sion-camera-dialog header button:focus-visible, .sion-camera-dialog footer button:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; }
+.sion-camera-effect-sample { display: flex; align-items: center; justify-content: center; height: 38px; border-radius: 7px; font-size: 25px; background: var(--color-surface-container); }
+.sion-camera-effect-sample.background-aurora { background: linear-gradient(130deg,#184d52,#652e70,#24486c); } /* theme-exempt : aperçu de l'effet vidéo */
+.sion-camera-effect-sample.background-sion { background: linear-gradient(135deg,#142b33,#265a52); } /* theme-exempt : aperçu du fond vidéo */
+.sion-camera-effect-sample.background-sion img { width: 28px; height: 28px; object-fit: contain; }
+.sion-camera-effect-sample.background-blur { background: radial-gradient(ellipse,#457b65,#374551); } /* theme-exempt : aperçu du flou vidéo */
+.sion-camera-effect-sample.filter-mono { filter: grayscale(1); }
+.sion-camera-effect-sample.filter-cinema { filter: sepia(.3) saturate(.8); }
+.sion-camera-effect-sample.filter-vhs { filter: saturate(.6); text-shadow: 2px 0 #d84b60,-2px 0 #4795bb; } /* theme-exempt : aperçu VHS */
+.sion-camera-effect-sample.filter-pixel { image-rendering: pixelated; }
+.sion-camera-effect-toggles { display: grid; gap: 8px; }
+.sion-camera-dialog .sion-camera-effect-toggles label { flex-direction: row; align-items: center; gap: 12px; min-height: 48px; padding: 12px; border: 1px solid var(--color-border); border-radius: 12px; color: var(--color-on-surface); background: var(--color-surface-container-high); cursor: pointer; }
+.sion-camera-effect-toggles label[data-enabled="true"] { border-color: color-mix(in srgb, var(--color-primary) 25%, var(--color-border)); }
+.sion-camera-check { position: relative; display: inline-grid; place-items: center; flex: 0 0 20px; width: 20px; height: 20px; }
+.sion-camera-check input[type="checkbox"] { position: absolute; inset: 0; z-index: 1; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: inherit; }
+.sion-camera-check > span { display: grid; place-items: center; width: 20px; height: 20px; border: 1px solid var(--color-outline-variant); border-radius: 6px; background: var(--color-surface-container); color: var(--color-on-primary); }
+.sion-camera-check svg { display: block; visibility: hidden; }
+.sion-camera-check input:checked + span { border-color: var(--color-primary); background: var(--color-primary); }
+.sion-camera-check input:checked + span svg { visibility: visible; }
+.sion-camera-check input:focus-visible + span { outline: 2px solid var(--color-primary); outline-offset: 3px; }
+.sion-camera-effect-range { margin: 16px 0 12px; }
+.sion-camera-effect-range input { appearance: none; width: 100%; height: 20px; margin: 4px 0; background: transparent; cursor: pointer; }
+.sion-camera-effect-range input::-webkit-slider-runnable-track { height: 4px; border-radius: 2px; background: var(--color-surface-container-highest); }
+.sion-camera-effect-range input::-webkit-slider-thumb { appearance: none; width: 14px; height: 14px; margin-top: -5px; border: 0; border-radius: 50%; background: var(--color-primary); }
+.sion-camera-effect-range input::-moz-range-track { height: 4px; border-radius: 2px; background: var(--color-surface-container-highest); }
+.sion-camera-effect-range input::-moz-range-thumb { width: 14px; height: 14px; border: 0; border-radius: 50%; background: var(--color-primary); }
+.sion-camera-effect-bottom { display: flex; align-items: center; justify-content: flex-end; gap: 12px; min-height: 28px; }
+.sion-camera-reset { padding: 6px 0; border: 0; background: transparent; color: var(--color-on-surface-variant); font: inherit; font-size: 11px; cursor: pointer; }
+.sion-camera-reset:hover { color: var(--color-primary); }
+.sion-camera-effects-pane .sion-camera-import { margin-top: 8px; }
+.sion-camera-dialog .sion-camera-background-name { margin: 6px 0 0; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sion-camera-dialog .sion-camera-effects-preparing { color: var(--color-primary); }
+@media (max-width: 767px) {
+  .sion-camera-dialog { padding: 16px; }
+  .sion-camera-video-action { min-height: 34px; }
+  .sion-camera-tile .sion-camera-video-action { width: 34px; height: 34px; min-height: 34px; }
+  .sion-camera-dialog[data-effects-open="true"] .sion-camera-preview-layout { grid-template-columns: minmax(0,1fr); gap: 16px; }
+  .sion-camera-dialog[data-effects-open="true"] .sion-camera-preview { width: min(100%, 320px); margin-inline: auto; }
+  .sion-camera-effect-content { min-height: 0; }
+  .sion-camera-effect-tabs button { min-height: 40px; font-size: 11px; }
+}

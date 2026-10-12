@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import * as voiceNativeService from "../services/voiceNativeService";
 import * as matrixService from "../services/matrixService";
+import { useEspacesStore } from "./useEspacesStore";
 import { resolveShareVideoCodec } from "./useMediaCapsStore";
 import { playMuteCue, playUnmuteCue, playDeafenCue, playUndeafenCue } from "../services/voiceChannelSounds";
 
@@ -29,7 +30,7 @@ export interface PendingFile {
   mimeType: string;
 }
 
-type MobileView = "sidebar" | "chat";
+export type MobileView = "sidebar" | "channels" | "chat";
 
 export interface UserContextMenuState {
   userId: string;
@@ -152,14 +153,21 @@ export const useAppStore = create<AppState>((set, get) => ({
       activeChannel: id,
       mobileView: "chat" as MobileView,
     })),
-  setConnectedVoice: (id: string | null) => set({ connectedVoiceChannel: id }),
+  setConnectedVoice: (id: string | null) => {
+    const conserve = useEspacesStore.getState().espaceVocalConserve;
+    if (conserve && conserve.vocal !== id) useEspacesStore.setState({ espaceVocalConserve: null });
+    set({ connectedVoiceChannel: id });
+  },
   // `isScreenSharing` doit retomber ici aussi. Une coupure réseau est réparée
   // par LiveKit, qui republie les pistes : le partage reprend et l'indicateur
   // reste juste. Un kick est au contraire une déconnexion définitive suivie
   // d'une nouvelle session, où rien n'est republié — l'indicateur restait alors
   // allumé, le bouton passait pour actif, et le premier clic au retour tentait
   // d'ARRÊTER un partage inexistant au lieu d'en démarrer un.
-  disconnectVoice: () => set({ connectedVoiceChannel: null, isMuted: false, isDeafened: false, e2eeUnhealthy: false, isScreenSharing: false }),
+  disconnectVoice: () => {
+    if (useEspacesStore.getState().espaceVocalConserve) useEspacesStore.setState({ espaceVocalConserve: null });
+    set({ connectedVoiceChannel: null, isMuted: false, isDeafened: false, e2eeUnhealthy: false, isScreenSharing: false });
+  },
   setE2EEUnhealthy: (v: boolean) => set({ e2eeUnhealthy: v }),
   setClockSkewMin: (v: number) => set({ clockSkewMin: v }),
   toggleMute: async (silent = false) => {

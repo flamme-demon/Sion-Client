@@ -9,6 +9,20 @@ async function rehydrater(state: unknown, version: number) {
 }
 
 describe("réhydratation de la disposition", () => {
+  it("place la navigation en bas pour une v7 et mémorise son déplacement sans toucher aux panneaux", async () => {
+    const ancien = { panneaux: ["members"], positionsPanneaux: { members: "left" }, hauteurPanneauxBas: 220 };
+    const s = await rehydrater(ancien, 7);
+    expect(s.positionEspaces).toBe("bottom");
+    s.deplacerEspaces("top");
+    const sauve = JSON.parse(localStorage.getItem("sion-layout")!);
+    expect(sauve.version).toBe(8);
+    const repris = await rehydrater(sauve.state, sauve.version);
+    expect(repris.positionEspaces).toBe("top");
+    expect(repris.panneaux).toEqual(["members"]);
+    expect(repris.positionsPanneaux).toEqual({ members: "left" });
+    expect(repris.hauteurPanneauxBas).toBe(220);
+    expect((await rehydrater({ positionEspaces: "invalide" }, 8)).positionEspaces).toBe("bottom");
+  });
   it("ajoute la taille du haut aux préférences existantes et conserve sa position au redémarrage", async () => {
     expect((await rehydrater({ panneaux: ["members"], positionsPanneaux: { members: "right" } }, 7)).hauteurPanneauxHaut).toBe(280);
     useLayoutStore.getState().deplacerPanneau("members", "top");

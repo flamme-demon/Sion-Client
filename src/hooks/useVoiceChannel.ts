@@ -188,6 +188,12 @@ async function onNativeSessionDisconnected(reprendre: boolean) {
 // natif — cf. connect idempotent côté Rust, ici on évite même la course).
 let joinChain: Promise<void> = Promise.resolve();
 
+/** Un départ de salon doit attendre qu'une entrée en vocal déjà engagée
+ * soit terminée, puis raccrocher avant de quitter l'adhésion Matrix. */
+export async function attendreConnexionsVocales(): Promise<void> {
+  await joinChain;
+}
+
 export function useVoiceChannel() {
   // Rejoindre Matrix est une commande : aucun abonnement aux messages ou
   // aux salons n'est nécessaire pour les boutons qui déclenchent l'appel.

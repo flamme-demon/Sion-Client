@@ -1,6 +1,9 @@
 <resources xmlns:tools="http://schemas.android.com/tools">
-    <!-- Base application theme. -->
-    <style name="Theme.sion_client" parent="Theme.MaterialComponents.DayNight.NoActionBar">
-        <!-- Customize your theme here. -->
+    <style name="Theme.Sion.Base" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+        <item name="android:windowBackground">#050907</item>
+        <item name="android:statusBarColor">#050907</item>
+        <item name="android:navigationBarColor">#050907</item>
+        <item name="android:windowLightStatusBar">false</item>
     </style>
+    <style name="Theme.sion_client" parent="Theme.Sion.Base" />
 </resources>

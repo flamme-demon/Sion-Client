@@ -1,5 +1,8 @@
 import { useCallback, lazy, Suspense, useEffect, useState, type DragEvent } from "react";
 import { ChatHeader } from "../chat/ChatHeader";
+import { CameraLifecycle } from "../chat/CameraControls";
+import { CameraStrip } from "../chat/CameraStrip";
+import { VideoMeeting } from "../chat/VideoMeeting";
 import { PinnedBar } from "../chat/PinnedBar";
 import { TranscriptInviteBanner } from "../chat/TranscriptInviteBanner";
 import { MessageList } from "../chat/MessageList";
@@ -7,9 +10,9 @@ import { ChatInput } from "../chat/ChatInput";
 import { IndicateurFrappe } from "../chat/IndicateurFrappe";
 import { ApercuMessage } from "../chat/ApercuMessage";
 import { DropZone } from "../chat/DropZone";
-import { MobilePanelSheet } from "../mobile/MobilePanelSheet";
 import { Bulle } from "./Bulle";
 import { PanneauLateral, CiblesModules } from "./PanneauLateral";
+import { RailServeurs } from "./RailServeurs";
 import { MIME_PANNEAU, useLayoutStore } from "../../stores/useLayoutStore";
 import { PanelBackgroundLayer } from "./PanelBackground";
 import { useAppStore } from "../../stores/useAppStore";
@@ -31,6 +34,7 @@ export function MainArea() {
   const addPendingFile = useAppStore((s) => s.addPendingFile);
   const connectedVoice = useAppStore((s) => s.connectedVoiceChannel);
   const isMobile = useIsMobile();
+  const positionEspaces = useLayoutStore((s) => s.positionEspaces);
   const panneauxDesDeuxCotes = useLayoutStore((s) =>
     s.panneaux.some((id) => s.positionsPanneaux[id] === "left")
     && s.panneaux.some((id) => (s.positionsPanneaux[id] ?? "right") === "right"),
@@ -110,11 +114,14 @@ export function MainArea() {
   const needsVoiceBarPadding = isMobile && !!connectedVoice;
 
   const conversation = <>
+    <CameraLifecycle />
+    <VideoMeeting />
     <ChatHeader />
     <PinnedBar />
     <TranscriptInviteBanner />
     {/* La surface vidéo native reste rectangulaire dans la bulle arrondie. */}
     {shareViewMounted && <Suspense fallback={null}><ScreenShareView /></Suspense>}
+    {connectedVoice && <CameraStrip />}
     <MessageList />
     <IndicateurFrappe />
     <ChatInput />
@@ -137,17 +144,20 @@ export function MainArea() {
         </div>
       ) : (
         <div className="sion-main-area" style={{ display: "flex", flexDirection: "column", gap: "var(--sion-bulle-ecart)", flex: 1, minHeight: 0, minWidth: 0, position: "relative" }}>
+          {positionEspaces === "top" && <RailServeurs zone="top" />}
           <PanneauLateral zone="top" />
           <div className={`sion-conversation-et-panneaux${panneauxDesDeuxCotes ? " sion-panneaux-deux-cotes" : ""}`}>
+            {positionEspaces === "left" && <RailServeurs zone="left" />}
             <PanneauLateral zone="left" />
             <Bulle as="main" scope="chat" className="sion-conversation" style={{ flex: 1 }}>{conversation}</Bulle>
             <PanneauLateral zone="right" />
+            {positionEspaces === "right" && <RailServeurs zone="right" />}
           </div>
           <PanneauLateral zone="bottom" />
+          {positionEspaces === "bottom" && <RailServeurs zone="bottom" />}
           <CiblesModules />
         </div>
       )}
-      {isMobile && <MobilePanelSheet />}
     </div>
   );
 }

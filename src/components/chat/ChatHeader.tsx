@@ -2,6 +2,7 @@ import { OngletsPanneaux } from "./OngletsPanneaux";
 import { useRef, useState, useEffect, lazy, Suspense } from "react";
 import { useTranslation } from "react-i18next";
 import { ScreenIcon, PencilIcon, HashIcon, ArrowLeftIcon, UserAddIcon, UsersIcon, PinIcon, MicIcon, SoundboardIcon, MemeboardIcon } from "../icons";
+import { CameraButton } from "./CameraControls";
 import { ChannelIcon } from "../sidebar/ChannelIcon";
 import { useAppStore } from "../../stores/useAppStore";
 import { useMatrixStore } from "../../stores/useMatrixStore";
@@ -228,7 +229,7 @@ export function ChatHeader() {
         <div style={{ display: 'flex', alignItems: 'center', gap: isMobile ? 8 : 12, minWidth: 0 }}>
           {isMobile && (
             <button
-              onClick={() => setMobileView("sidebar")}
+              onClick={() => setMobileView("channels")}
               style={{
                 padding: 8,
                 borderRadius: 12,
@@ -408,6 +409,7 @@ export function ChatHeader() {
                 }}
               >⚙</button>
             )}
+            <CameraButton />
             <button
               onClick={() => {
                 if (isScreenSharing) {
@@ -446,6 +448,7 @@ export function ChatHeader() {
           <div className="sion-chat-actions">
             <button type="button" aria-label={t("chat.pinnedList")} title={t("chat.pinnedList")} aria-pressed={panelOpen("pinned")} onClick={() => basculerPanneau("pinned")}><PinIcon filled /></button>
             {!channel?.isDM && <button type="button" aria-label={t("members.title")} title={t("members.title")} aria-pressed={panelOpen("members")} onClick={() => basculerPanneau("members")}><UsersIcon /></button>}
+            {connectedVoice && <CameraButton />}
             {connectedVoice && <button type="button" className="sion-chat-partage" aria-label={isScreenSharing ? t("chat.stopShare") : t("chat.shareScreen")} title={isScreenSharing ? t("chat.stopShare") : t("chat.shareScreen")} aria-pressed={isScreenSharing}
               onClick={() => isScreenSharing ? toggleScreenShare() : setShowScreenShareOptions(true)}><ScreenIcon /></button>}
             {((!channel?.isDM && (canEdit || (canInvite && isInviteOnly))) || isScreenSharing) && <div ref={plusRef} style={{ position: 'relative' }} onKeyDown={(e) => { if (e.key === 'Escape') { setPlusActions(false); (plusRef.current?.querySelector('button') as HTMLButtonElement)?.focus(); } }}>

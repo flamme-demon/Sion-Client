@@ -21,3 +21,13 @@ it("sépare les équipes, les MP, les bibliothèques et les salons non rattaché
   expect(salonsDansEspace(rooms, "!B").map((c) => c.id)).toEqual(["!b"]);
   expect(salonsDansEspace(rooms, null).map((c) => c.id)).toEqual(["!libre"]);
 });
+it("affiche les salons choisis dans un sous-espace exploré sans imposer l'adhésion au sous-espace", () => {
+  const rooms = [salon("!A", { isSpace: true, spaceChildren: ["!sous"] }), salon("!fr"), salon("!libre")];
+  const catalogue = { "!sous": ["!fr", "!A"] };
+  expect(salonsDansEspace(rooms, "!A", catalogue).map((c) => c.id)).toEqual(["!fr"]);
+  expect(salonsDansEspace(rooms, null, catalogue).map((c) => c.id)).toEqual(["!libre"]);
+});
+it("les liens actuels du serveur remplacent ceux d'un ancien catalogue", () => {
+  const rooms = [salon("!A", { isSpace: true, spaceChildren: [] }), salon("!retire")];
+  expect(salonsDansEspace(rooms, "!A", { "!A": ["!retire"] })).toEqual([]);
+});

@@ -40,6 +40,13 @@ class MainActivity : TauriActivity() {
     super.onWebViewCreate(webView)
     cachedWebView = webView
     webView.addJavascriptInterface(VoiceServiceBridge(this), "__SION__")
+    webView.addJavascriptInterface(PartageBridge(this), "__SION_PARTAGE__")
+    webView.addJavascriptInterface(CameraBridge(this), "__SION_CAMERA__")
+    webView.addJavascriptInterface(MobileNavigationBridge(
+      this, webView,
+      { mediaChromeClient?.backCallback?.isEnabled == true },
+      { mediaChromeClient?.backCallback?.handleOnBackPressed() },
+    ), "__SION_NAVIGATION__")
     webView.settings.mediaPlaybackRequiresUserGesture = false
     // Wry pose son WebChromeClient APRÈS ce crochet : l'envelopper au tour
     // suivant, sinon il écraserait notre client.
@@ -127,6 +134,9 @@ class MainActivity : TauriActivity() {
       val accordee = grantResults.isNotEmpty() && grantResults[0] == android.content.pm.PackageManager.PERMISSION_GRANTED
       VoiceServiceBridge.reponseMicro = if (accordee) "accordée" else "refusée"
     }
+    if (requestCode == CameraBridge.REQUEST_CAMERA) {
+      CameraBridge.permissionResult = if (grantResults.isNotEmpty() && grantResults[0] == android.content.pm.PackageManager.PERMISSION_GRANTED) "accordée" else "refusée"
+    }
   }
 
   @Deprecated("Android settings permission result")
@@ -137,6 +147,7 @@ class MainActivity : TauriActivity() {
 
   override fun onPause() {
     auPremierPlan = false
+    CameraBridge.pause()
     super.onPause()
   }
 
@@ -254,6 +265,7 @@ class MainActivity : TauriActivity() {
   }
 
   override fun onDestroy() {
+    CameraBridge.pause()
     mediaChromeClient?.onHideCustomView()
     vivante = false
     auPremierPlan = false

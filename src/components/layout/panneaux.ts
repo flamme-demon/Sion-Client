@@ -1,5 +1,4 @@
-import { useEspacesStore } from "../../stores/useEspacesStore";
-import { useMatrixStore } from "../../stores/useMatrixStore";
+import { useBibliothequeActive } from "../../hooks/useBibliothequeActive";
 /**
  * Panneaux de la dock : composants (chargés à la demande) et titres. Partagés
  * par la dock du bureau et la feuille du téléphone (`MobilePanelSheet`).
@@ -57,9 +56,7 @@ export function fermerFeuilleMobile(): boolean {
 }
 
 function useCleBibliotheque() {
-  const espace = useEspacesStore((s) => s.espaceActif);
-  const board = useMatrixStore((s) => s.channels.find((c) => c.id === espace)?.boardRoomId);
-  return `${espace ?? "serveur"}:${board ?? ""}`;
+  return useBibliothequeActive().cle;
 }
 function SoundboardEspace() { return createElement(SoundboardPanel, { key: useCleBibliotheque() }); }
 function MemeboardEspace() { return createElement(MemeboardPanel, { key: useCleBibliotheque() }); }

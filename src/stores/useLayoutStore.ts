@@ -31,6 +31,8 @@ const SIDEBAR_MODE_CYCLE: readonly SidebarMode[] = ["full", "rail", "hidden"];
 
 export const PANNEAU_IDS = ["members", "soundboard", "memeboard", "transcript", "pinned"] as const;
 export type PanneauId = typeof PANNEAU_IDS[number];
+/** La navigation reste toujours accessible, avec une géométrie compacte. */
+export type ModuleId = PanneauId | "espaces";
 export const ZONES_PANNEAUX = ["left", "right", "top", "bottom"] as const;
 export type ZonePanneau = typeof ZONES_PANNEAUX[number];
 export const PANNEAUX_BAS_DEFAULT_HEIGHT = 280;
@@ -100,7 +102,8 @@ interface LayoutState {
   panneau: PanneauId | null;
   panneaux: PanneauId[];
   positionsPanneaux: Partial<Record<PanneauId, ZonePanneau>>;
-  panneauEnDeplacement: PanneauId | null;
+  panneauEnDeplacement: ModuleId | null;
+  positionEspaces: ZonePanneau;
   largeurPanneau: number;
   largeurPanneauGauche: number;
   hauteurPanneauxBas: number;
@@ -120,7 +123,8 @@ interface LayoutState {
   fermerPanneau: (id?: PanneauId) => void;
   deplacerPanneau: (id: PanneauId, zone: ZonePanneau, avant?: PanneauId) => void;
   ordonnerPanneau: (id: PanneauId, direction: -1 | 1) => void;
-  commencerDeplacement: (id: PanneauId | null) => void;
+  commencerDeplacement: (id: ModuleId | null) => void;
+  deplacerEspaces: (zone: ZonePanneau) => void;
   setLargeurPanneau: (px: number, zone?: ZonePanneau) => void;
   setPanelBackground: (scope: BackgroundScope, cfg: PanelBackgroundCfg | null) => void;
   setShareViewMaxVh: (vh: number) => void;
@@ -143,6 +147,7 @@ function preferences(persisted: unknown) {
     sidebarSide: s.sidebarSide === "right" ? "right" as SidebarSide : "left" as SidebarSide,
     panneau,
     panneaux,
+    positionEspaces: ZONES_PANNEAUX.includes(s.positionEspaces as ZonePanneau) ? s.positionEspaces! : "bottom" as ZonePanneau,
     positionsPanneaux: Object.fromEntries(Object.entries(s.positionsPanneaux ?? {}).filter(([id, zone]) =>
       estPanneau(id) && ZONES_PANNEAUX.includes(zone))),
     largeurPanneau: largeurPanneau(s.largeurPanneau),
@@ -233,6 +238,7 @@ export const useLayoutStore = create<LayoutState>()(
         return { panneaux };
       }),
       commencerDeplacement: (id) => set({ panneauEnDeplacement: id }),
+      deplacerEspaces: (zone) => set(ZONES_PANNEAUX.includes(zone) ? { positionEspaces: zone, panneauEnDeplacement: null } : {}),
       setLargeurPanneau: (px, zone = "right") => set(zone === "bottom"
         ? { hauteurPanneauxBas: borne(px, PANNEAUX_BAS_MIN_HEIGHT, PANNEAUX_BAS_MAX_HEIGHT, PANNEAUX_BAS_DEFAULT_HEIGHT) }
         : zone === "top" ? { hauteurPanneauxHaut: borne(px, PANNEAUX_BAS_MIN_HEIGHT, PANNEAUX_BAS_MAX_HEIGHT, PANNEAUX_BAS_DEFAULT_HEIGHT) }
@@ -256,7 +262,7 @@ export const useLayoutStore = create<LayoutState>()(
     }),
     {
       name: "sion-layout",
-      version: 7,
+      version: 8,
       partialize: (s) => preferences(s),
       merge: (saved, current) => ({ ...current, ...preferences(saved) }),
       migrate: (saved, version) => {

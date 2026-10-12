@@ -1,7 +1,7 @@
 import * as sdk from "matrix-js-sdk";
 import * as core from "./matrixCore";
 import { moteurRust } from "./moteur";
-import { getMatrixClient, inviteUser, leaveRoom, setRoomAvatar, setRoomName, setRoomTopic } from "./matrixService";
+import { getMatrixClient, inviteUser, leaveRoom, mxcToHttp, setRoomAvatar, setRoomName, setRoomTopic } from "./matrixService";
 import { useEspacesStore } from "../stores/useEspacesStore";
 import { useMatrixStore } from "../stores/useMatrixStore";
 import { adresseEspace, salonCommun } from "../utils/espaces";
@@ -22,9 +22,12 @@ export async function lireEtat(salon: string, type: string, cle = ""): Promise<R
   return client().getRoom(salon)?.currentState.getStateEvents(type as any, cle)?.getContent();
 }
 export async function envoyerEtat(salon: string, type: string, contenu: Record<string, unknown>, cle = "") {
-  if (moteurRust()) return core.envoyerEtat(salon, type, cle, contenu);
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  await client().sendStateEvent(salon, type as any, contenu, cle);
+  if (moteurRust()) await core.envoyerEtat(salon, type, cle, contenu);
+  else {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await client().sendStateEvent(salon, type as any, contenu, cle);
+  }
+  if (type === "m.space.child") viderDecouvertesEspaces();
 }
 export async function responsables(espace: string): Promise<boolean> {
   if (moteurRust()) { const d = await core.detailsSalon(espace); return d.moi >= d.niveauEtat; }
@@ -54,6 +57,73 @@ export interface SalonHierarchie {
   room_id: string; name?: string; topic?: string; avatar_url?: string; room_type?: string;
   join_rule?: string; allowed_room_ids?: string[];
   children_state?: { type: string; state_key: string; content: { via?: string[]; suggested?: boolean } }[];
+}
+export interface SalonDecouvrable extends SalonHierarchie {
+  via: string[];
+  suggested: boolean;
+  icon?: string;
+}
+const decouvertes = new Map<string, { date: number; salons: SalonDecouvrable[] }>();
+const decouvertesEnCours = new Map<string, Promise<SalonDecouvrable[]>>();
+const FRAICHEUR_DECOUVERTE_MS = 60_000;
+let generationDecouverte = 0;
+let compteDecouverte: string | null = null;
+
+/** Métadonnées de consultation uniquement : elles restent en mémoire pour
+ * éviter de redemander la fédération à chaque retour dans un sous-espace. */
+export function viderDecouvertesEspaces(): void {
+  generationDecouverte++;
+  decouvertes.clear();
+  decouvertesEnCours.clear();
+  compteDecouverte = null;
+}
+const arreterSuiviCompte = useEspacesStore.subscribe((etat, avant) => {
+  if (etat.utilisateur !== avant.utilisateur) viderDecouvertesEspaces();
+});
+if (import.meta.hot) import.meta.hot.dispose(() => { arreterSuiviCompte(); viderDecouvertesEspaces(); });
+
+/** Liste consultable avant d'adhérer. Les serveurs anciens peuvent omettre
+ * join_rule : l'API de jointure reste responsable de vérifier l'accès. */
+export async function decouvrirSalonsEspace(espace: string): Promise<SalonDecouvrable[]> {
+  const utilisateur = useMatrixStore.getState().currentUserId;
+  if (compteDecouverte !== utilisateur) { viderDecouvertesEspaces(); compteDecouverte = utilisateur; }
+  const connu = decouvertes.get(espace);
+  if (connu && Date.now() - connu.date < FRAICHEUR_DECOUVERTE_MS) return connu.salons;
+  const enCours = decouvertesEnCours.get(espace);
+  if (enCours) return enCours;
+  const generation = generationDecouverte;
+  const demande = lireSalonsDecouvrables(espace, utilisateur).then((salons) => {
+    if (generation === generationDecouverte && useMatrixStore.getState().currentUserId === utilisateur) {
+      decouvertes.delete(espace);
+      decouvertes.set(espace, { date: Date.now(), salons });
+      while (decouvertes.size > 64) decouvertes.delete(decouvertes.keys().next().value!);
+    }
+    return salons;
+  }).finally(() => {
+    if (decouvertesEnCours.get(espace) === demande) decouvertesEnCours.delete(espace);
+  });
+  decouvertesEnCours.set(espace, demande);
+  return demande;
+}
+
+async function lireSalonsDecouvrables(espace: string, utilisateur: string | null): Promise<SalonDecouvrable[]> {
+  const rooms = await hierarchieEspace(espace);
+  const racine = rooms.find((r) => r.room_id === espace);
+  const liens = (racine?.children_state ?? []).filter((e) => e.type === "m.space.child" && e.content.via?.length);
+  if (useMatrixStore.getState().currentUserId !== utilisateur) return [];
+  useEspacesStore.getState().memoriserHierarchie(espace, liens.map((l) => l.state_key));
+  const parId = new Map(rooms.map((r) => [r.room_id, r]));
+  const liste = await Promise.all(liens.flatMap((lien) => {
+    const room = parId.get(lien.state_key);
+    if (!room || room.room_id === espace) return [];
+    return [(async () => {
+      const icon = room.avatar_url?.startsWith("mxc://")
+        ? await (moteurRust() ? core.urlMedia(room.avatar_url) : Promise.resolve(mxcToHttp(room.avatar_url))).catch(() => null)
+        : null;
+      return { ...room, via: lien.content.via!, suggested: lien.content.suggested === true, icon: icon ?? undefined };
+    })()];
+  }));
+  return useMatrixStore.getState().currentUserId === utilisateur ? liste : [];
 }
 export async function hierarchieEspace(espace: string): Promise<SalonHierarchie[]> {
   const rooms = new Map<string, SalonHierarchie>();
@@ -108,7 +178,7 @@ export async function rejoindreEspace(entree: string) {
     }
   }
   useEspacesStore.getState().choisir(id);
-  return { id, echecs: await rejoindreSalonsCommuns(id) };
+  return { id };
 }
 export async function creerEspace(nom: string, sujet: string, publique: boolean): Promise<string> {
   if (!nom.trim()) throw new Error("spaces.nameRequired");
@@ -168,6 +238,30 @@ export async function membresEspace(espace: string): Promise<{ userId: string; d
   if (!room) throw new Error("spaces.notSpace");
   await room.loadMembersIfNeeded();
   return room.getJoinedMembers().map((m) => ({ userId: m.userId, displayName: m.name, powerLevel: m.powerLevel }));
+}
+/** Invitations actuelles de cet espace : les départs et refus sont exclus.
+ * Le pont d'état existant permet de les lire aussi dans le moteur Rust. */
+export async function invitationsEspace(espace: string): Promise<core.UtilisateurAnnuaire[]> {
+  let invitations: core.UtilisateurAnnuaire[];
+  if (moteurRust()) {
+    const etats = await core.etats(espace, "m.room.member");
+    invitations = await Promise.all(etats.filter((e) => e.content.membership === "invite").map(async (e) => ({
+      userId: e.stateKey,
+      displayName: typeof e.content.displayname === "string" && e.content.displayname.trim()
+        ? e.content.displayname.trim() : e.stateKey.slice(1).split(":")[0],
+      avatarUrl: typeof e.content.avatar_url === "string" && e.content.avatar_url.startsWith("mxc://")
+        ? await core.urlMedia(e.content.avatar_url).catch(() => null) : null,
+    })));
+  } else {
+    const room = client().getRoom(espace);
+    if (!room) throw new Error("spaces.notSpace");
+    await room.loadMembersIfNeeded();
+    invitations = room.getMembersWithMembership("invite").map((m) => ({
+      userId: m.userId, displayName: m.rawDisplayName?.trim() || m.userId.slice(1).split(":")[0],
+      avatarUrl: m.getMxcAvatarUrl() ? mxcToHttp(m.getMxcAvatarUrl()!) : null,
+    }));
+  }
+  return invitations.sort((a, b) => a.displayName.localeCompare(b.displayName, undefined, { sensitivity: "base" }));
 }
 export async function inviterMembresEspace(espace: string, salon: string): Promise<string[]> {
   const echecs: string[] = [];

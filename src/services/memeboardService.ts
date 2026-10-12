@@ -105,13 +105,13 @@ function lireMeme(ev: {
 /** Tous les memes du salon, du plus récent au plus ancien. */
 export async function listMemes(): Promise<MemeEntry[]> {
   if (moteurRust()) {
-    const salon = await findSoundboardRoom();
+    const salon = await findSoundboardRoom("vocal");
     if (!salon) return [];
     return (await core.memes(salon)).map((m) => ({ ...m, category: normaliserCategorie(m.category) }));
   }
   const client = getMatrixClient();
   if (!client) return [];
-  const roomId = await findSoundboardRoom();
+  const roomId = await findSoundboardRoom("vocal");
   if (!roomId) return [];
   const room = client.getRoom(roomId);
   if (!room) return [];
@@ -304,7 +304,7 @@ export async function envoyerMeme(prepare: MemePrepare, label: string, emoji: st
   }
   const client = getMatrixClient();
   if (!client) throw new Error("Matrix client not initialized");
-  const roomId = await findSoundboardRoom();
+  const roomId = await findSoundboardRoom("vocal");
   if (!roomId) throw new Error("Soundboard room not created yet");
   const gif = prepare.mime === "image/gif";
   const nomFichier = `${label.replace(/[^\p{L}\p{N} _-]/gu, "").trim() || "meme"}.${gif ? "gif" : "mp4"}`;
@@ -351,7 +351,7 @@ export async function supprimerMeme(eventId: string): Promise<void> {
   }
   const client = getMatrixClient();
   if (!client) throw new Error("Matrix client not initialized");
-  const roomId = await findSoundboardRoom();
+  const roomId = await findSoundboardRoom("vocal");
   if (!roomId) throw new Error("Soundboard room not created");
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   await (client as any).redactEvent(roomId, eventId);
@@ -374,7 +374,7 @@ export function __reinitialiserDelais(): void {
 }
 
 async function bibliothequeRequise(): Promise<string> {
-  const id = await findSoundboardRoom();
+  const id = await findSoundboardRoom("vocal");
   if (!id) throw new Error("spaces.noLibrary");
   return id;
 }

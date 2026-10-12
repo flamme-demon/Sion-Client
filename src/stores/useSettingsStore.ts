@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
+import { DEFAULT_CAMERA_EFFECTS, type CameraEffects } from "../types/cameraEffects";
 
 export type ChannelSortMode = "created" | "name" | "activity";
 export type SidebarView = "channels" | "dm";
@@ -113,6 +114,10 @@ interface SettingsState {
    *  codec n'est pas décodé par la webview (dépend des codecs système,
    *  notamment sous Linux/WebKitGTK). Empty = use `ffmpeg` from PATH. */
   ffmpegPath: string;
+  cameraDeviceId: string;
+  setCameraDeviceId: (id: string) => void;
+  cameraEffects: CameraEffects;
+  setCameraEffects: (effects: CameraEffects) => void;
   /** Volume du lecteur vidéo, de 0 à 1,5 (au-delà de 1 le son est amplifié).
    *  Gardé d'une vidéo à l'autre et d'une session à l'autre, comme le fait
    *  n'importe quel lecteur : le réglage suivait jusqu'ici chaque ouverture
@@ -282,6 +287,10 @@ export const useSettingsStore = create<SettingsState>()(
       experimentalUpdates: false,
       setExperimentalUpdates: (value) => set({ experimentalUpdates: value }),
       ffmpegPath: "",
+      cameraDeviceId: "",
+      setCameraDeviceId: (id) => set({ cameraDeviceId: id }),
+      cameraEffects: DEFAULT_CAMERA_EFFECTS,
+      setCameraEffects: (effects) => set({ cameraEffects: effects }),
       videoVolume: 1,
       ytdlpPath: "",
       ttsEnginePath: "",

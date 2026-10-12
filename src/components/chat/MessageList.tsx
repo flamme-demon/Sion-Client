@@ -1,12 +1,18 @@
 import { useEffect, useRef, useMemo, useCallback, useState } from "react";
+import type { CSSProperties } from "react";
 import { useTranslation } from "react-i18next";
-import { Message } from "./Message";
+import { Message, GalerieImagesProvider } from "./Message";
 import { LecteursMessage } from "./LecteursMessage";
 import { useAppStore, APP_SESSION_START_TS } from "../../stores/useAppStore";
 import { useMatrixStore } from "../../stores/useMatrixStore";
 import { findAdminRoom } from "../../services/adminCommandService";
 import { moteurRust } from "../../services/moteur";
 import { EVENEMENTS_ACTIVITE, EVENEMENT_PRESENCE, etatPresence } from "../../services/premierPlan";
+import { useIsMobile } from "../../hooks/useIsMobile";
+import { groupesImages, lignesMosaique, ratioImage } from "../../utils/mosaique";
+import "./Mosaique.css";
+import { SelectionMessagesContext } from "./selectionMessages";
+import { BarreSelectionMessages } from "./BarreSelectionMessages";
 
 const EMPTY_MESSAGES: never[] = [];
 const SCROLL_TOP_THRESHOLD = 100;
@@ -102,6 +108,8 @@ function UnreadSeparator({ count }: { count: number }) {
 export function MessageList() {
   const { t } = useTranslation();
   const activeChannel = useAppStore((s) => s.activeChannel);
+  const isMobile = useIsMobile();
+  const chatVisible = useAppStore((s) => s.mobileView === "chat");
   const messagesMap = useMatrixStore((s) => s.messages);
   const roomHasMore = useMatrixStore((s) => s.roomHasMore);
   const roomLoadingHistory = useMatrixStore((s) => s.roomLoadingHistory);
@@ -160,8 +168,8 @@ export function MessageList() {
   // ce qu'on avait manqué (28/09). La présence est celle de `premierPlan`
   // (commune aux notifications) : fenêtre quittée, cachée, ou une minute sans
   // souris ni clavier = absent.
-  const presentRef = useRef(true);
-  const [present, setPresent] = useState(true);
+  const presentRef = useRef(!isMobile || chatVisible);
+  const [present, setPresent] = useState(!isMobile || chatVisible);
   /** Génération des défilements vers le bas en attente (rAF, minuteur) : un
    *  placement sur le bandeau l'incrémente, ce qui les annule. */
   const defilementGenRef = useRef(0);
@@ -230,7 +238,7 @@ export function MessageList() {
   // Mark messages as read when at bottom
   const markAsRead = useCallback((raison: string = "?") => {
     // Personne devant l'écran : rien n'est lu (voir « Présence » plus bas).
-    if (!presentRef.current) return;
+    if (!presentRef.current || (isMobile && !chatVisible)) return;
     if (!activeChannel || messages.length === 0) return;
     const lastMsg = messages[messages.length - 1];
     const lastId = lastMsg.eventId || String(lastMsg.id);
@@ -245,7 +253,7 @@ export function MessageList() {
         ))
         .catch(() => {});
     }
-  }, [activeChannel, messages, lastReadMessageId, setLastReadMessageId]);
+  }, [activeChannel, messages, lastReadMessageId, setLastReadMessageId, isMobile, chatVisible]);
 
   /** Valeurs du dernier rendu, pour les écouteurs de la fenêtre. */
   const courantRef = useRef<{ salon: string | null; dernierLu: string | undefined; lire: () => void }>({
@@ -263,7 +271,9 @@ export function MessageList() {
     // démarrage, a déjà mis son état à jour (écouteurs posés avant ceux-ci).
     const evaluer = () => {
       const etat = etatPresence();
-      const p = etat.present;
+      // Le chat reste monté derrière les salons : les messages masqués
+      // ne sont pas lus tant que l'utilisateur n'y revient pas.
+      const p = etat.present && (!isMobile || chatVisible);
       if (p === presentRef.current) return;
       presentRef.current = p;
       setPresent(p);
@@ -293,7 +303,7 @@ export function MessageList() {
       window.clearInterval(minuterie);
       window.clearTimeout(premier);
     };
-  }, []);
+  }, [isMobile, chatVisible]);
 
   // Scroll to bottom helper
   const scrollToBottom = useCallback(() => {
@@ -750,8 +760,33 @@ export function MessageList() {
     loadRoomHistory(activeChannel);
   }, [pendingJump, messages, activeChannel, hasMore, isLoading, loadRoomHistory, setScrollToMessageId]);
 
+  const groupes = useMemo(() => groupesImages(messages, unreadSepIndex), [messages, unreadSepIndex]);
+  const [choix, setChoix] = useState({ salon: activeChannel, utilisateur: currentUserId, ids: new Set<string>() });
+  useEffect(() => {
+    const vider = () => setChoix({ salon: useAppStore.getState().activeChannel, utilisateur: useMatrixStore.getState().currentUserId, ids: new Set() });
+    const salon = useAppStore.subscribe((s, avant) => { if (s.activeChannel !== avant.activeChannel) vider(); });
+    const compte = useMatrixStore.subscribe((s, avant) => { if (s.currentUserId !== avant.currentUserId) vider(); });
+    return () => { salon(); compte(); };
+  }, []);
+  const selection = useMemo(() => choix.salon === activeChannel && choix.utilisateur === currentUserId ? choix.ids : new Set<string>(), [choix, activeChannel, currentUserId]);
+  const basculer = useCallback((id: string) => setChoix((c) => {
+    const ids = new Set(c.salon === activeChannel && c.utilisateur === currentUserId ? c.ids : []);
+    if (ids.has(id)) ids.delete(id); else ids.add(id);
+    return { salon: activeChannel, utilisateur: currentUserId, ids };
+  }), [activeChannel, currentUserId]);
+  const ajouterSelection = useCallback((nouveaux: string[]) => setChoix((c) => ({ salon: activeChannel, utilisateur: currentUserId,
+    ids: new Set([...(c.salon === activeChannel && c.utilisateur === currentUserId ? c.ids : []), ...nouveaux]) })), [activeChannel, currentUserId]);
+  const contexteSelection = useMemo(() => ({ ids: selection, basculer, ajouter: ajouterSelection }), [selection, basculer, ajouterSelection]);
+  const cliquerSelection = (id: string) => (event: React.MouseEvent) => {
+    if (!selection.size) return;
+    event.preventDefault(); event.stopPropagation(); basculer(id);
+  };
   return (
+    <SelectionMessagesContext.Provider value={contexteSelection}>
     <div style={{ position: "relative", display: "flex", flexDirection: "column", flex: 1, minWidth: 0, minHeight: 0, overflow: "hidden" }}>
+      {selection.size > 0 && <BarreSelectionMessages key={`${activeChannel}:${currentUserId}`} salon={activeChannel} ids={selection}
+        onAnnuler={() => setChoix({ salon: activeChannel, utilisateur: currentUserId, ids: new Set() })}
+        onRetirer={(ids) => setChoix((c) => ({ ...c, ids: new Set([...c.ids].filter((id) => !ids.includes(id))) }))} />}
       {/* Unread messages banner (top) */}
       {unreadCount > 0 && showScrollDown && (
         <button
@@ -796,24 +831,41 @@ export function MessageList() {
           <div className="text-center text-text-muted text-sm py-3">{t("chat.conversationStart")}</div>
         )}
 
-        {messages.map((msg, i) => {
+        {groupes.map(({ debut: i, messages: groupe }) => {
+          const msg = groupe[0];
           const prev = i > 0 ? messages[i - 1] : null;
           const showDaySeparator =
             msg.ts !== undefined && (i === 0 || (prev?.ts !== undefined && !isSameDay(prev.ts, msg.ts)));
-          const showHeader = i === 0 || showDaySeparator || messages[i - 1].user !== msg.user;
+          const showHeader = i === 0 || showDaySeparator || (msg.senderId && messages[i - 1].senderId
+            ? messages[i - 1].senderId !== msg.senderId : messages[i - 1].user !== msg.user);
           const eventId = msg.eventId || String(msg.id);
           const showUnreadSep = i === unreadSepIndex;
           return (
-            <div key={msg.id} data-event-id={eventId} style={{ minWidth: 0 }}>
+            <div key={msg.id} data-event-id={groupe.length === 1 ? eventId : undefined} style={{ minWidth: 0 }} onClickCapture={groupe.length === 1 ? cliquerSelection(eventId) : undefined}>
               {showUnreadSep && <div data-unread-sep><UnreadSeparator count={unreadCount} /></div>}
               {showDaySeparator && msg.ts !== undefined && <DaySeparator ts={msg.ts} />}
-              <Message
+              {groupe.length > 1 ? <GalerieImagesProvider key={`galerie-${eventId}`} count={groupe.length}><Message
+                message={msg}
+                showHeader={showHeader}
+                isFirst={i === 0}
+                highlighted={groupe.length === 1 && highlightedId === eventId}
+              >{groupe.length > 1 ? <div className="sion-mosaique" data-images={groupe.length}>
+                {lignesMosaique(groupe).map((ligne) => <div key={ligne[0].id} className="sion-mosaique-ligne">{ligne.map((image) => {
+                  const id = image.eventId || String(image.id);
+                  const ratio = ratioImage(image);
+                  return <div key={image.id} data-event-id={id} style={{ flex: `${ratio} 1 0`, "--sion-ratio-image": ratio } as CSSProperties} onClickCapture={cliquerSelection(id)}>
+                    <Message message={image} showHeader={false} isFirst={false} enMosaique indexGalerie={groupe.indexOf(image)} groupeIds={groupe.map((m) => m.eventId || String(m.id))} highlighted={highlightedId === id} />
+                    {activeChannel && <div className="sion-lecteurs-image"><LecteursMessage salon={activeChannel} eventId={id} /></div>}
+                  </div>;
+                })}</div>)}
+                <span className="sion-mosaique-heure">{groupe.at(-1)?.time}</span>
+              </div> : undefined}</Message></GalerieImagesProvider> : <Message
                 message={msg}
                 showHeader={showHeader}
                 isFirst={i === 0}
                 highlighted={highlightedId === eventId}
-              />
-              {activeChannel && <LecteursMessage salon={activeChannel} eventId={eventId} />}
+              />}
+              {groupe.length === 1 && activeChannel && <LecteursMessage salon={activeChannel} eventId={eventId} />}
             </div>
           );
         })}
@@ -868,5 +920,6 @@ export function MessageList() {
         </button>
       )}
     </div>
+    </SelectionMessagesContext.Provider>
   );
 }

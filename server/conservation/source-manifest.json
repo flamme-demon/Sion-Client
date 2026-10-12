@@ -1,0 +1,83 @@
+{
+  "version": "26.9.1",
+  "commit": "046074bbc",
+  "files": [
+    {
+      "path": "src/admin/debug/commands.rs",
+      "sha256": "42437138c6f645b925de9719d3fa023c00a83b7517884f6c0d6f77912f03b615"
+    },
+    {
+      "path": "src/api/admin/mod.rs",
+      "sha256": "8b36a6e97ac6a3e42b83f88da0efeae48291eea3b2d9b0db0afcfe65861b6a52"
+    },
+    {
+      "path": "src/api/client/membership/knock.rs",
+      "sha256": "3b381417ac147d3f7ae39c2d4d0f63840d8e4e7454e6af6afb6ade0c6799e9c5"
+    },
+    {
+      "path": "src/api/client/membership/leave.rs",
+      "sha256": "928b93e9e4bca6882ea7eaa97fd90fa15291eb0152710249b6324dea2c15b862"
+    },
+    {
+      "path": "src/api/router.rs",
+      "sha256": "888952996b15a51e5351fa3adbaa9420c226e8eed839b173e7f161eda52b41eb"
+    },
+    {
+      "path": "src/api/server/invite.rs",
+      "sha256": "06f570e7c5506571c20cdc4d3887322d254664ace1d77d7418d7b9e7c10319c3"
+    },
+    {
+      "path": "src/core/config/mod.rs",
+      "sha256": "34ff182eca6d4714f4d301a90bd1a58c4e8b7a0cb4bb84ddfc983911bb4fad28"
+    },
+    {
+      "path": "src/ruminuwuity/admin/continuwuity/mod.rs",
+      "sha256": "8b36a6e97ac6a3e42b83f88da0efeae48291eea3b2d9b0db0afcfe65861b6a52"
+    },
+    {
+      "path": "src/service/mod.rs",
+      "sha256": "961b84630c194e1fc1ad4dad3465e42963dd182881443f8dcbb70aa9d9b3f4db"
+    },
+    {
+      "path": "src/service/rooms/event_handler/fetch_auth.rs",
+      "sha256": "3518eea57c89d6c5a202ce72328c71429976708c61cbf846168cc9036fc73f43"
+    },
+    {
+      "path": "src/service/rooms/event_handler/handle_outlier_pdu.rs",
+      "sha256": "07cd306b2d65e20190063e016eb8a7d81acf9f31606dff7fdefabcbffaf4b6de"
+    },
+    {
+      "path": "src/service/rooms/event_handler/upgrade_outlier_pdu.rs",
+      "sha256": "2cf5f560004bbca8abd2ec2774f2d6e911da1461b5778614755a9e2cb0c2a229"
+    },
+    {
+      "path": "src/service/rooms/membership/mod.rs",
+      "sha256": "a028fa8bd632186d08dd5fa57abb5fdc2b36976d7fa5cd77a0869c89cb25f092"
+    },
+    {
+      "path": "src/service/rooms/outlier/mod.rs",
+      "sha256": "4118a736efc3c972d8e9942b2c41b1255f44556c5f60a607b601f683142557f7"
+    },
+    {
+      "path": "src/service/rooms/timeline/append.rs",
+      "sha256": "2954e3c909241ca686e3825b2c37e255673aeae69e21c25d8ea37b76440c3043"
+    },
+    {
+      "path": "src/service/services.rs",
+      "sha256": "f409f16b9d0e85cbcae90942275cde016149617f0580a000fb3f59e17efb0280"
+    },
+    {
+      "path": "src/service/users/profile.rs",
+      "sha256": "fc3e52c98f45b556529074f066ee208faca8dc61574ebaa477f39b9c9147008b"
+    },
+    {
+      "path": "src/service/account_data/mod.rs",
+      "sha256": "66566b3ad1a8e80895e18874473a6ef2f503c94d63b731f5718203272596f12b"
+    },
+    {
+      "path": "src/service/rooms/timeline/backfill.rs",
+      "sha256": "2a7febaf543a0fface6f87ce193c114a48eff9d2ee6501225a13466900c9a4e8"
+    }
+  ],
+  "archiveSha256": "96390f9f3551b41ef8ac81805af9a1be7c4efd22637814f3cc5688ba8ef15e1a"
+}

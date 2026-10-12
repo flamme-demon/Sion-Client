@@ -154,23 +154,32 @@ export function conserverInchanges<T extends { id: number | string }>(avant: T[]
 }
 
 /** Choisit le salon d'ouverture, une fois (même règle que le moteur JS). */
-function selectionnerSalonParDefaut(channels: Channel[]): void {
+export async function selectionnerSalonParDefaut(channels: Channel[]): Promise<void> {
   if (channels.length === 0) return;
-  void Promise.all([import("./useAppStore"), import("./useSettingsStore")]).then(async ([{ useAppStore }, { useSettingsStore }]) => {
-    const app = useAppStore.getState();
-    if (app.activeChannel) return;
-    const { defaultChannel, autoJoinVoice } = useSettingsStore.getState();
-    const [{ salonsDansEspace }, { useEspacesStore }] = await Promise.all([import("../utils/espaces"), import("./useEspacesStore")]);
-    const visibles = salonsDansEspace(channels, useEspacesStore.getState().espaceActif);
-    const choisi = visibles.find((c) => c.id === defaultChannel) || visibles.find((c) => !c.hasVoice) || visibles[0];
-    if (!choisi) return;
-    const vue = app.mobileView;
-    app.setActiveChannel(choisi.id, choisi.hasVoice);
-    app.setMobileView(vue);
-    // Entrée automatique en vocal : même marqueur que le moteur JS, le join
-    // réel reste à App.tsx.
-    if (autoJoinVoice && choisi.hasVoice && !app.connectedVoiceChannel) app.setPendingAutoJoinVoice(choisi.id);
-  });
+  const [{ useAppStore }, { useSettingsStore }, { salonsDansEspace }, { useEspacesStore }] = await Promise.all([
+    import("./useAppStore"), import("./useSettingsStore"), import("../utils/espaces"), import("./useEspacesStore"),
+  ]);
+  const app = useAppStore.getState();
+  if (app.activeChannel) return;
+  const { defaultChannel, autoJoinVoice } = useSettingsStore.getState();
+  const espaces = useEspacesStore.getState();
+  const visibles = salonsDansEspace(channels, espaces.espaceActif, espaces.hierarchies);
+  const defaut = channels.find((c) => c.id === defaultChannel && !c.isSpace && !c.isSoundboard && c.membership !== "invite");
+  const choisi = defaut || visibles.find((c) => !c.hasVoice) || visibles[0];
+  if (!choisi) return;
+  // Le réglage de démarrage est global : un espace externe consulté avant
+  // la fermeture ne doit pas cacher le vocal choisi dans une autre équipe.
+  if (defaut && !visibles.some((c) => c.id === defaut.id)) {
+    const parent = channels.find((c) => c.isSpace && c.membership !== "invite"
+      && salonsDansEspace(channels, c.id, espaces.hierarchies).some((s) => s.id === defaut.id));
+    espaces.choisir(parent?.id ?? null);
+  }
+  const vue = app.mobileView;
+  app.setActiveChannel(choisi.id, choisi.hasVoice);
+  app.setMobileView(vue);
+  // Entrée automatique en vocal : même marqueur que le moteur JS, le join
+  // réel reste à App.tsx.
+  if (autoJoinVoice && choisi.hasVoice && !app.connectedVoiceChannel) app.setPendingAutoJoinVoice(choisi.id);
 }
 
 /** Au-delà, une rafale (retour de connexion) ne notifie que ses derniers

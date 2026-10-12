@@ -14,7 +14,7 @@ export function ModuleEnMain() {
   const y = Math.max(8, Math.min(saisie.y + 18, window.innerHeight - 112));
   return createPortal(<div className="sion-module-en-main" aria-hidden="true"
     style={{ position: "fixed", left: x, top: y, width: largeur }}>
-    <div className="sion-module-en-main-titre"><span className="sion-poignee-module">⠿</span>{t(PANNEAU_TITRES[saisie.id])}</div>
+    <div className="sion-module-en-main-titre"><span className="sion-poignee-module">⠿</span>{t(saisie.id === "espaces" ? "spaces.title" : PANNEAU_TITRES[saisie.id])}</div>
     <span>{cible ? t(LIBELLES_PLACEMENT[cible.zone]) : t("layout.moveToEdge", { defaultValue: "Glisse vers un bord" })}</span>
     {cible && <small>{t("layout.dropPanelHere", { defaultValue: "Relâche pour placer" })}</small>}
   </div>, document.body);

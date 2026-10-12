@@ -307,8 +307,10 @@ mod actif {
                     .header(header::CACHE_CONTROL, "max-age=31536000, immutable")
                     .body(octets),
                 Err(e) => {
-                    log::warn!("[Sion][matrix] média {cle} indisponible : {e}");
-                    reponse.status(404).body(Vec::new())
+                    // Le cœur journalise le premier échec et le garde 30 s ;
+                    // les autres images du même avatar n'ajoutent aucun appel.
+                    log::debug!("[Sion][matrix] média {cle} indisponible : {e}");
+                    reponse.status(404).header(header::CACHE_CONTROL, "max-age=30").body(Vec::new())
                 }
             };
             match reponse {
@@ -388,7 +390,7 @@ mod actif {
             return Some((nom, sion_matrix::type_mime(&debut[..lus])));
         }
         let octets = tauri::async_runtime::block_on(coeur().ok()?.media(cle, false))
-            .map_err(|e| log::warn!("[Sion][matrix] média {cle} indisponible : {e}"))
+            .map_err(|e| log::debug!("[Sion][matrix] média {cle} indisponible : {e}"))
             .ok()?;
         // Déchiffré : lisible par ce seul utilisateur. Écrit à côté puis
         // renommé, pour qu'une requête concurrente ne lise jamais un fichier
@@ -731,6 +733,11 @@ pub mod commandes {
     #[tauri::command]
     pub async fn matrix_details_salon(salon: String) -> Result<serde_json::Value, String> {
         json(coeur()?.details_salon(&salon).await)
+    }
+
+    #[tauri::command]
+    pub async fn matrix_rechercher_utilisateurs(terme: String) -> Result<serde_json::Value, String> {
+        json(coeur()?.rechercher_utilisateurs(&terme).await)
     }
 
     #[tauri::command]
@@ -1379,6 +1386,11 @@ pub mod commandes {
     }
     #[tauri::command]
     pub async fn matrix_details_salon(_salon: String) -> Result<serde_json::Value, String> {
+        Err(INACTIF.into())
+    }
+
+    #[tauri::command]
+    pub async fn matrix_rechercher_utilisateurs(_terme: String) -> Result<serde_json::Value, String> {
         Err(INACTIF.into())
     }
 

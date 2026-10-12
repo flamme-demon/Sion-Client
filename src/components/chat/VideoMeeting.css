@@ -1,0 +1,34 @@
+.sion-camera-floating-video { position: relative; container-type: size; container-name: meeting; }
+.sion-meeting-gallery { width: 100%; height: 100%; padding: 4px; display: grid; gap: 4px; min-height: 0; }
+.sion-camera-detached-summary { display: flex; flex: 0 1 auto; align-items: center; min-width: 0; max-width: 100%; gap: 6px; }
+.sion-camera-detached-summary > button { width: auto; white-space: nowrap; }
+.sion-camera-detached-summary > button span { overflow: hidden; text-overflow: ellipsis; }
+.sion-camera-detached-summary > button:nth-child(2) { width: 32px; padding: 8px; flex-shrink: 0; }
+.sion-meeting-detached { display: flex; align-items: center; justify-content: center; gap: 8px; width: 100%; padding: 8px 12px; border: none; border-radius: 8px; background: var(--color-surface-container-high); color: var(--color-on-surface-variant); font-size: 12px; cursor: pointer; }
+.sion-meeting-featured { grid-template-columns: minmax(0, 1fr) minmax(80px, 28%); }
+.sion-meeting-main, .sion-meeting-grid, .sion-meeting-rail { min-width: 0; min-height: 0; }
+.sion-meeting-main { display: grid; }
+.sion-meeting-grid { display: grid; gap: 4px; grid-auto-rows: minmax(0, 1fr); }
+.sion-meeting-rail { display: grid; gap: 4px; grid-auto-rows: minmax(0, 1fr); overflow: hidden; }
+.sion-meeting-tile { position: relative; container-type: inline-size; min-height: 0; min-width: 0; overflow: hidden; border-radius: 6px; background: var(--color-surface-container-lowest); }
+.sion-meeting-tile .sion-camera-stream { width: 100%; height: 100%; aspect-ratio: auto !important; display: block; }
+.sion-meeting-label { position: absolute; bottom: 0; left: 0; max-width: 100%; display: flex; gap: 4px; align-items: center; border: none; background: var(--color-surface-container); color: var(--color-on-surface); font-size: 11px; padding: 3px 6px; border-radius: 0 6px 0 0; cursor: pointer; }
+.sion-meeting-label span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sion-meeting-label svg { width: 12px; height: 12px; flex-shrink: 0; }
+.sion-meeting-audio { position: absolute; right: 4px; bottom: 4px; display: flex; align-items: center; padding: 4px; border-radius: 6px; border: none; background: var(--color-surface-container); color: var(--color-on-surface); cursor: pointer; }
+.sion-meeting-controller { position: relative; display: flex; align-items: center; gap: 6px; padding: 6px 12px; color: var(--color-on-surface); background: var(--color-surface-container); border-radius: 12px; }
+.sion-meeting-controller strong { margin-right: auto; font-size: 12px; }
+.sion-meeting-controller button { background: transparent; color: inherit; border: none; padding: 5px; cursor: pointer; }
+.sion-meeting-picker { position: absolute; top: 0; right: 0; width: min(320px, 100%); max-height: 100%; overflow: auto; z-index: 2; padding: 6px; border: 1px solid var(--color-outline-variant); border-radius: 8px; background: var(--color-surface-container-high); color: var(--color-on-surface); box-shadow: var(--sion-shadow-bulle); }
+.sion-meeting-controller .sion-meeting-picker { top: 100%; max-height: 280px; z-index: 20; }
+.sion-meeting-picker label { display: flex; align-items: center; gap: 8px; padding: 6px; font-size: 12px; }
+.sion-meeting-picker input { flex-shrink: 0; width: 14px; height: 14px; margin: 0; accent-color: var(--color-primary); }
+.sion-meeting-picker span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sion-meeting-picker button { border: none; border-radius: 5px; padding: 3px 6px; background: var(--color-secondary-container); color: var(--color-on-secondary-container); cursor: pointer; }
+@container (width < 240px) {
+  .sion-meeting-tile .screenshare-volume-slider { display: none; }
+}
+@container meeting (aspect-ratio < 1) {
+  .sion-meeting-featured { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) minmax(60px, 35%); }
+  .sion-meeting-rail { grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); }
+}

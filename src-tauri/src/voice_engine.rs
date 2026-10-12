@@ -111,6 +111,7 @@ pub enum VoiceEngineEvent {
         sender: String,
         sharing: bool,
     },
+    CameraPresence { sender: String, active: bool },
     /// Le partage d'écran distant publie aussi du son (piste
     /// `ScreenshareAudio`) : le front affiche le contrôle 🔊/🔇.
     /// Indépendant du mute local (voir `set_screenshare_audio_subscribed`).
@@ -1326,6 +1327,10 @@ fn convert_to_native_surface(
     crate::native_video_surface::on_frame(sender, dw, dh, scratch).unwrap_or_default()
 }
 
+static VIDEO_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+static VIDEO_GENERATIONS: std::sync::OnceLock<Mutex<std::collections::HashMap<String, u64>>> = std::sync::OnceLock::new();
+fn video_generations() -> &'static Mutex<std::collections::HashMap<String, u64>> { VIDEO_GENERATIONS.get_or_init(|| Mutex::new(std::collections::HashMap::new())) }
+
 /// Pompe vidéo : partage d'écran distant → JPEG adaptatif par WebSocket local
 /// binaire. Le flux décodé par libwebrtc EST fluide et net
 /// (vrai codec adaptatif côté SFU) ; le pont JPEG n'en garde que l'essentiel :
@@ -1343,6 +1348,7 @@ fn spawn_video_pump(
     sender: String,
     rtc_track: livekit::webrtc::video_track::RtcVideoTrack,
     stop: tokio::sync::oneshot::Receiver<()>,
+    generation: u64,
 ) {
     rt.spawn(async move {
         use futures_util::StreamExt as _;
@@ -1551,6 +1557,13 @@ fn spawn_video_pump(
                 }
             }
         }
+        // Une nouvelle piste peut déjà reprendre la même clé (changement
+        // de webcam ou republication). L'ancienne pompe ne doit pas effacer
+        // la surface ni la dernière frame de sa remplaçante.
+        let mut generations = video_generations().lock().unwrap_or_else(|e| e.into_inner());
+        if generations.get(&sender) != Some(&generation) { return }
+        generations.remove(&sender);
+        drop(generations);
         log::info!("[Sion][voix-native] fin de partage {}", sender);
         crate::native_video_surface::remove(&sender);
         crate::native_video_transport::remove(&sender);
@@ -1580,6 +1593,8 @@ fn start_remote_video_pump(
         );
         return;
     };
+    let generation = VIDEO_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    video_generations().lock().unwrap_or_else(|e| e.into_inner()).insert(sender.clone(), generation);
     let (stop_tx, stop_rx) = tokio::sync::oneshot::channel();
     if let Some(prev) = video_stops
         .lock()
@@ -1588,7 +1603,7 @@ fn start_remote_video_pump(
     {
         let _ = prev.send(());
     }
-    spawn_video_pump(rt, app, sender, rtc_track, stop_rx);
+    spawn_video_pump(rt, app, sender, rtc_track, stop_rx, generation);
 }
 
 /// Stoppe la pompe vidéo d'un expéditeur (unsubscribe, leave).
@@ -1609,6 +1624,22 @@ fn stop_remote_video_pump(
     if let Some(prev) = prev {
         let _ = prev.send(());
     }
+}
+
+struct LocalCameraState {
+    capture: crate::camera_capture::CameraCapture,
+    track: LocalVideoTrack,
+    sid: Option<TrackSid>,
+}
+
+#[derive(Debug, Default, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CameraState {
+    pub previewing: bool,
+    pub ready: bool,
+    pub published: bool,
+    pub device_id: Option<String>,
+    pub error: Option<String>,
 }
 
 pub struct LiveKitEngine {
@@ -1645,6 +1676,7 @@ pub struct LiveKitEngine {
     /// Partage d'écran local (émission) : `Some` tant que le thread de
     /// capture tourne et que la piste est publiée.
     local_share: Mutex<Option<LocalShareState>>,
+    local_camera: Mutex<Option<LocalCameraState>>,
     /// Expéditeurs dont le son du partage est coupé localement (miroir du
     /// `screenShareAudioMuted` JS) : survivre au undeafen global (qui
     /// réinscrit tout) sans réactiver leur partage.
@@ -1713,6 +1745,7 @@ impl LiveKitEngine {
             mic_track: Mutex::new(None),
             mic_needs_republish: std::sync::atomic::AtomicBool::new(false),
             local_share: Mutex::new(None),
+            local_camera: Mutex::new(None),
             share_audio_muted: std::sync::Arc::new(Mutex::new(std::collections::HashSet::new())),
             share_video_hidden: std::sync::Arc::new(Mutex::new(std::collections::HashSet::new())),
             share_audio_volume: std::sync::Arc::new(Mutex::new(std::collections::HashMap::new())),
@@ -2202,6 +2235,87 @@ impl LiveKitEngine {
     /// le `connect` du trait ne reçoit pas le `AppHandle`).
     pub fn set_event_app(&self, app: tauri::AppHandle<crate::TauriRuntime>) {
         *self.event_app.lock().unwrap_or_else(|e| e.into_inner()) = Some(app);
+    }
+
+    pub fn camera_state(&self) -> CameraState {
+        let camera = self.local_camera.lock().unwrap_or_else(|e| e.into_inner());
+        camera.as_ref().map(|c| CameraState {
+            previewing: true,
+            ready: c.capture.ready.load(std::sync::atomic::Ordering::Acquire) && crate::camera_effects::control().status.lock().unwrap_or_else(|e|e.into_inner()).ready,
+            published: c.sid.is_some(),
+            device_id: Some(c.capture.device.id.clone()),
+            error: c.capture.error.lock().unwrap_or_else(|e| e.into_inner()).clone().or_else(||crate::camera_effects::control().status.lock().unwrap_or_else(|e|e.into_inner()).error.clone()).or_else(|| {
+                (!c.capture.ready.load(std::sync::atomic::Ordering::Acquire) && c.capture.started.elapsed().as_secs() >= 12)
+                    .then(|| "La caméra n'a pas fourni d'image. Vérifie qu'elle n'est pas utilisée par une autre application.".into())
+            }),
+        }).unwrap_or_default()
+    }
+
+    pub fn preview_camera(&self, device: crate::camera_capture::CameraDevice, ffmpeg: &str) -> Result<CameraState, String> {
+        if !self.is_connected() { return Err("Rejoins un salon vocal pour utiliser la caméra.".into()) }
+        self.stop_camera()?;
+        let _rt_enter = self.rt.enter();
+        let source = livekit::webrtc::video_source::native::NativeVideoSource::new(
+            livekit::webrtc::video_source::VideoResolution { width: 1280, height: 720 }, false);
+        let track = LocalVideoTrack::create_video_track("camera", livekit::webrtc::video_source::RtcVideoSource::Native(source.clone()));
+        let capture = crate::camera_capture::CameraCapture::start(device, ffmpeg, source)?;
+        self.track_remote_video(crate::camera_capture::PREVIEW_KEY.into(), track.rtc_track());
+        *self.local_camera.lock().unwrap_or_else(|e| e.into_inner()) = Some(LocalCameraState { capture, track, sid: None });
+        Ok(self.camera_state())
+    }
+
+    pub fn publish_camera(&self) -> Result<CameraState, String> {
+        let _rt_enter = self.rt.enter();
+        let mut camera = self.local_camera.lock().unwrap_or_else(|e| e.into_inner());
+        let c = camera.as_mut().ok_or("Choisis une caméra avant de l'activer.")?;
+        if c.sid.is_some() { drop(camera); return Ok(self.camera_state()) }
+        if !c.capture.ready.load(std::sync::atomic::Ordering::Acquire) { return Err("La caméra n'a pas encore envoyé d'image.".into()) }
+        let effects=crate::camera_effects::control();
+        { let status=effects.status.lock().unwrap_or_else(|e|e.into_inner());if let Some(error)=&status.error{return Err(error.clone())}if !status.ready{return Err("Les effets webcam sont encore en préparation.".into())} }
+        if let Some(error) = c.capture.error.lock().unwrap_or_else(|e| e.into_inner()).clone() { return Err(error) }
+        let room = self.room.lock().unwrap_or_else(|e| e.into_inner());
+        let room = room.as_ref().ok_or("Pas de session vocale.")?;
+        let options = TrackPublishOptions {
+            source: TrackSource::Camera,
+            video_codec: VideoCodec::VP8,
+            video_encoding: Some(VideoEncoding { max_bitrate: 1_500_000, max_framerate: 30.0 }),
+            simulcast: true,
+            ..Default::default()
+        };
+        let publication = self.rt.block_on(room.local_participant().publish_track(LocalTrack::Video(c.track.clone()), options)).map_err(|e| format!("Activation caméra : {e}"))?;
+        c.sid = Some(publication.sid());
+        let _ = self.event_tx.send(VoiceEngineEvent::CameraPresence { sender: room.local_participant().identity().to_string(), active: true });
+        drop(camera);
+        Ok(self.camera_state())
+    }
+
+    pub fn stop_camera(&self) -> Result<(), String> {
+        // Fermer la capture avant toute dépublication : voyant éteint même
+        // si le réseau met du temps à confirmer la fin de la piste.
+        let Some(camera) = self.local_camera.lock().unwrap_or_else(|e| e.into_inner()).take() else { return Ok(()) };
+        let sid = camera.sid.clone();
+        drop(camera);
+        self.stop_remote_video(crate::camera_capture::PREVIEW_KEY);
+        let _rt_enter = self.rt.enter();
+        let room = self.room.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(room) = room.as_ref() {
+            if let Some(sid) = sid {
+                let _ = self.rt.block_on(tokio::time::timeout(std::time::Duration::from_secs(3), room.local_participant().unpublish_track(&sid)));
+                let _ = self.event_tx.send(VoiceEngineEvent::CameraPresence { sender: room.local_participant().identity().to_string(), active: false });
+            }
+        }
+        Ok(())
+    }
+
+    pub fn stop_failed_camera(&self, token: u64) {
+        let (error, app) = {
+            let guard = self.local_camera.lock().unwrap_or_else(|e| e.into_inner());
+            let Some(camera) = guard.as_ref().filter(|c| c.capture.matches_token(token)) else { return };
+            let error = camera.capture.error.lock().unwrap_or_else(|e| e.into_inner()).clone().unwrap_or("La caméra a été arrêtée.".into());
+            (error, self.event_app.lock().unwrap_or_else(|e| e.into_inner()).clone())
+        };
+        let _ = self.stop_camera();
+        if let Some(app) = app { let _ = app.emit("voice-native-camera-failed", serde_json::json!({ "reason": error })); }
     }
 
     /// Démarre (ou remplace) la pompe vidéo d'un partage d'écran distant.
@@ -3129,7 +3243,7 @@ impl LiveKitEngine {
                                 // branche TrackSubscribed).
                                 let is_share_audio = publication.kind() == TrackKind::Audio
                                     && publication.source() == TrackSource::ScreenshareAudio;
-                                if !is_share_audio {
+                                if publication.kind() == TrackKind::Audio && !is_share_audio {
                                     let _ = tx.send(VoiceEngineEvent::TrackMutedChanged {
                                         identity: id.clone(),
                                         muted: publication.is_muted(),
@@ -3178,6 +3292,13 @@ impl LiveKitEngine {
                                         );
                                     }
                                 }
+                                if publication.kind() == TrackKind::Video && publication.source() == TrackSource::Camera {
+                                    let _ = tx.send(VoiceEngineEvent::CameraPresence { sender: id.clone(), active: !publication.is_muted() });
+                                    if publication.simulcasted() { publication.set_video_quality(VideoQuality::Medium); publication.update_video_dimensions(TrackDimension(640, 360)); }
+                                    if let Some(RemoteTrack::Video(track)) = publication.track() {
+                                        start_remote_video_pump(&video_rt, video_app.clone(), &video_stops, crate::camera_capture::camera_key(&id), track.rtc_track());
+                                    }
+                                }
                                 if deafened.load(std::sync::atomic::Ordering::Relaxed) {
                                     if publication.kind() == TrackKind::Audio {
                                         publication.set_subscribed(false);
@@ -3211,6 +3332,7 @@ impl LiveKitEngine {
                             p.disconnect_reason()
                         );
                         stop_remote_video_pump(&video_stops, &id);
+                        stop_remote_video_pump(&video_stops, &crate::camera_capture::camera_key(&id));
                         share_audio_muted
                             .lock()
                             .map(|mut m| m.remove(id.as_str()))
@@ -3239,7 +3361,7 @@ impl LiveKitEngine {
                         // observé : plus aucune image reçue, aucun événement
                         // de souscription. On force l'abonnement des pistes de
                         // partage dès leur publication (idempotent).
-                        if is_screenshare_video(publication.kind(), publication.source()) {
+                        if is_screenshare_video(publication.kind(), publication.source()) || (publication.kind() == TrackKind::Video && publication.source() == TrackSource::Camera) {
                             publication.set_subscribed(true);
                         }
                     }
@@ -3249,6 +3371,11 @@ impl LiveKitEngine {
                             publication.sid(),
                             participant.identity()
                         );
+                        if publication.source() == TrackSource::Camera {
+                            let identity = participant.identity().to_string();
+                            stop_remote_video_pump(&video_stops, &crate::camera_capture::camera_key(&identity));
+                            let _ = tx.send(VoiceEngineEvent::CameraPresence { sender: identity, active: false });
+                        }
                         // Son du partage retiré côté émetteur : masquer le
                         // contrôle 🔊 (pas de réinscription possible).
                         if publication.kind() == TrackKind::Audio
@@ -3376,16 +3503,15 @@ impl LiveKitEngine {
                                 sender,
                                 video_track.rtc_track(),
                             );
-                        } else {
-                            log::info!(
-                                "[Sion][voix-native] piste vidéo caméra ignorée {} ({})",
-                                publication.sid(),
-                                sender
-                            );
+                        } else if publication.source() == TrackSource::Camera {
+                            if publication.simulcasted() { publication.set_video_quality(VideoQuality::Medium); publication.update_video_dimensions(TrackDimension(640, 360)); }
+                            let _ = tx.send(VoiceEngineEvent::CameraPresence { sender: sender.clone(), active: !publication.is_muted() });
+                            start_remote_video_pump(&video_rt, video_app.clone(), &video_stops, crate::camera_capture::camera_key(&sender), video_track.rtc_track());
                         }
                     }
                     RoomEvent::TrackUnsubscribed {
                         track: RemoteTrack::Video(video_track),
+                        publication,
                         participant,
                         ..
                     } => {
@@ -3395,11 +3521,13 @@ impl LiveKitEngine {
                             video_track.sid(),
                             sender
                         );
-                        stop_remote_video_pump(&video_stops, &sender);
-                        let _ = tx.send(VoiceEngineEvent::VideoPresence {
-                            sender,
-                            sharing: false,
-                        });
+                        if publication.source() == TrackSource::Camera {
+                            stop_remote_video_pump(&video_stops, &crate::camera_capture::camera_key(&sender));
+                            let _ = tx.send(VoiceEngineEvent::CameraPresence { sender, active: false });
+                        } else if publication.source() == TrackSource::Screenshare {
+                            stop_remote_video_pump(&video_stops, &sender);
+                            let _ = tx.send(VoiceEngineEvent::VideoPresence { sender, sharing: false });
+                        }
                     }
                     RoomEvent::TrackUnsubscribed {
                         track: RemoteTrack::Audio(audio_track),
@@ -3440,17 +3568,19 @@ impl LiveKitEngine {
                             }
                         }
                     }
-                    RoomEvent::TrackMuted { participant, .. } => {
-                        let _ = tx.send(VoiceEngineEvent::TrackMutedChanged {
-                            identity: participant.identity().to_string(),
-                            muted: true,
-                        });
+                    RoomEvent::TrackMuted { participant, publication, .. } => {
+                        if publication.kind() == TrackKind::Audio && publication.source() != TrackSource::ScreenshareAudio {
+                            let _ = tx.send(VoiceEngineEvent::TrackMutedChanged { identity: participant.identity().to_string(), muted: true });
+                        } else if publication.source() == TrackSource::Camera {
+                            let _ = tx.send(VoiceEngineEvent::CameraPresence { sender: participant.identity().to_string(), active: false });
+                        }
                     }
-                    RoomEvent::TrackUnmuted { participant, .. } => {
-                        let _ = tx.send(VoiceEngineEvent::TrackMutedChanged {
-                            identity: participant.identity().to_string(),
-                            muted: false,
-                        });
+                    RoomEvent::TrackUnmuted { participant, publication, .. } => {
+                        if publication.kind() == TrackKind::Audio && publication.source() != TrackSource::ScreenshareAudio {
+                            let _ = tx.send(VoiceEngineEvent::TrackMutedChanged { identity: participant.identity().to_string(), muted: false });
+                        } else if publication.source() == TrackSource::Camera {
+                            let _ = tx.send(VoiceEngineEvent::CameraPresence { sender: participant.identity().to_string(), active: true });
+                        }
                     }
                     RoomEvent::ActiveSpeakersChanged { speakers } => {
                         // Le SFU associe chaque niveau audio au SID du
@@ -3674,6 +3804,7 @@ impl VoiceEngine for LiveKitEngine {
     }
 
     fn disconnect(&mut self) {
+        let _ = self.stop_camera();
         // Couper d'abord le partage local éventuel (sinon pistes fantômes
         // + parec qui tourne dans le vide).
         if let Some(share) = self
@@ -3730,6 +3861,12 @@ impl VoiceEngine for LiveKitEngine {
             .store(false, std::sync::atomic::Ordering::Relaxed);
     }
 }
+
+// Le fork libwebrtc n'est pas membre du workspace. Inclure ses tests purs
+// ici pour que les régressions SDP soient aussi exécutées par cargo test.
+#[cfg(test)]
+#[path = "../vendor/libwebrtc/src/native/opus_sdp.rs"]
+mod opus_sdp_tests;
 
 #[cfg(test)]
 mod tests {

@@ -5,17 +5,21 @@ import { Message } from "./Message";
 import { useMatrixStore } from "../../stores/useMatrixStore";
 import { useAppStore } from "../../stores/useAppStore";
 import type { ChatMessage } from "../../types/matrix";
+import { SelectionMessagesContext } from "./selectionMessages";
 
 const serveur = vi.hoisted(() => ({
-  pouvoir: 0, natif: true, epingles: [] as string[],
+  pouvoir: 0, redact: 50, natif: true, epingles: [] as string[],
   supprimer: vi.fn(), epingler: vi.fn(), reagir: vi.fn(), retirerReaction: vi.fn(),
+  dechiffrer: vi.fn(),
 }));
+vi.mock("../../utils/decryptMedia", () => ({ createDecryptedObjectUrl: serveur.dechiffrer }));
 vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 vi.mock("../../i18n", () => ({ default: { t: (key: string) => key, changeLanguage: vi.fn() } }));
 vi.mock("../../hooks/useIsMobile", () => ({ useIsMobile: () => false }));
 vi.mock("../../services/moteur", () => ({ moteurRust: () => serveur.natif }));
 vi.mock("../../services/matrixService", () => ({
   getUserPowerLevel: () => serveur.pouvoir, getStatePowerLevel: () => 50, getMemberPowerLevel: () => 0,
+  getRedactPowerLevel: () => serveur.redact,
   getPinnedEventIds: () => serveur.epingles, pinMessage: serveur.epingler,
   sendReaction: serveur.reagir, redactMessage: serveur.retirerReaction,
 }));
@@ -31,6 +35,7 @@ beforeEach(() => {
   // Les clics droits ne sont pas les clics synthétiques d'un appui long.
   vi.spyOn(performance, "now").mockReturnValue(instant += 1000);
   serveur.pouvoir = 0;
+  serveur.redact = 50;
   serveur.natif = true;
   serveur.epingles = [];
   useMatrixStore.setState({ currentUserId: "@moi:sion.test", deleteMessage: serveur.supprimer, pinnedVersion: 0 });
@@ -170,6 +175,12 @@ it("un modérateur peut désépingler et supprimer un message tiers", async () =
   expect(serveur.supprimer).toHaveBeenCalledWith("!salon", "$message");
 });
 
+it("le droit d'épingler ne donne pas celui de supprimer quand le seuil redact est supérieur", async () => {
+  serveur.pouvoir = 50; serveur.redact = 75;
+  await rendre(); await ouvrir();
+  expect(libelles()).toEqual(["chat.pinMessage", "report.action"]);
+});
+
 it("le menu s'ouvre et se parcourt au clavier ; Échap rend le focus au message", async () => {
   await rendre(true);
   await act(async () => { bulle().focus(); bulle().dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "F10", shiftKey: true })); });
@@ -206,4 +217,60 @@ it("un appui long ouvre les actions sur téléphone", async () => {
   Object.defineProperty(event, "touches", { value: [{ clientX: 180, clientY: 100 }] });
   await act(async () => { bulle().dispatchEvent(event); vi.advanceTimersByTime(500); });
   expect(libelles()).toEqual(["chat.editMessage", "chat.deleteMessage"]);
+});
+
+const image = (id: string): ChatMessage => ({
+  ...message, id, eventId: id, text: "", time: "12:03",
+  attachments: [{ id, name: `${id}.png`, mimeType: "image/png", size: 12, url: `https://media.invalid/${id}` }],
+});
+
+it("chaque image en mosaïque conserve sa réponse et ses réactions", async () => {
+  const images = [image("$image1"), image("$image2")];
+  await vue.render(<Message message={images[0]} showHeader isFirst><div className="sion-mosaique">
+    {images.map((m) => <div key={m.id} data-event-id={m.eventId}><Message message={m} enMosaique showHeader={false} isFirst={false} /></div>)}
+  </div></Message>);
+  expect(vue.container.querySelectorAll(".sion-message-bulle")).toHaveLength(2);
+  expect(vue.container.querySelectorAll('[aria-label="chat.reply"]')).toHaveLength(2);
+  await vue.click('[data-event-id="$image2"] [aria-label="chat.reply"]');
+  expect(useAppStore.getState().replyingTo?.eventId).toBe("$image2");
+  await act(async () => { vue.container.querySelector('[data-event-id="$image1"] [aria-label="chat.react"]')!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true })); });
+  await act(async () => { selecteurReaction()!.querySelector("button")!.click(); });
+  expect(serveur.reagir).toHaveBeenCalledExactlyOnceWith("!salon", "$image1", "😂");
+});
+
+it("le clavier ouvre l'original d'une vignette et la suppression cible seulement cette image", async () => {
+  const m = { ...image("$image2"), senderId: "@moi:sion.test" };
+  await vue.render(<Message message={m} enMosaique showHeader={false} isFirst={false} />);
+  await act(async () => { vue.container.querySelector('[role="button"]')!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })); });
+  expect(document.body.querySelector<HTMLImageElement>('img[src="https://media.invalid/$image2"]')).not.toBeNull();
+  await act(async () => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" })); });
+  await ouvrir();
+  expect(libelles()).toEqual(["chat.reply", "chat.react", "chat.deleteMessage"]);
+  await choisir("chat.deleteMessage"); await choisir("chat.deleteMessageConfirm");
+  expect(serveur.supprimer).toHaveBeenCalledExactlyOnceWith("!salon", "$image2");
+});
+
+it("libère aussi une image déchiffrée après le démontage de sa mosaïque", async () => {
+  let terminer!: (url: string) => void;
+  serveur.dechiffrer.mockReturnValue(new Promise<string>((resolve) => { terminer = resolve; }));
+  const revoquer = vi.fn(); const UrlOriginale = URL;
+  vi.stubGlobal("URL", class extends UrlOriginale { static revokeObjectURL = revoquer; });
+  const m = image("$chiffree");
+  m.attachments![0].encryptedFile = { url: "mxc://hs/image", key: { alg: "A256CTR", key_ops: ["decrypt"], kty: "oct", k: "fictif", ext: true }, iv: "iv", hashes: {}, v: "v2" };
+  await vue.render(<Message message={m} enMosaique showHeader={false} isFirst={false} />);
+  await vue.render(<div />);
+  await act(async () => { terminer("blob:image-dechiffree"); });
+  expect(revoquer).toHaveBeenCalledExactlyOnceWith("blob:image-dechiffree");
+});
+
+it("le menu de l'image propose la sélection individuelle et celle du groupe, en gardant copier et enregistrer", async () => {
+  const basculer = vi.fn(), ajouter = vi.fn();
+  const m = image("$image1");
+  await vue.render(<SelectionMessagesContext.Provider value={{ ids: new Set(), basculer, ajouter }}>
+    <Message message={m} enMosaique groupeIds={["$image1", "$image2"]} showHeader={false} isFirst={false} />
+  </SelectionMessagesContext.Provider>);
+  await act(async () => { vue.container.querySelector('[role="button"]')!.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 100, clientY: 200 })); });
+  expect(libelles()).toContain("chat.copyImage"); expect(libelles()).toContain("chat.saveImage");
+  await choisir("chat.selectMessage"); expect(basculer).toHaveBeenCalledExactlyOnceWith("$image1");
+  await ouvrir(); await choisir("chat.selectImageGroup"); expect(ajouter).toHaveBeenCalledExactlyOnceWith(["$image1", "$image2"]);
 });

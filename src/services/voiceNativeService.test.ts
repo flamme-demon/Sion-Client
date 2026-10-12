@@ -3,10 +3,14 @@ import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 const invokeMock = vi.fn();
 const listenMock = vi.fn();
 const getMatrixClientMock = vi.fn();
+const getRoomMemberInfoMock = vi.fn();
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: (...args: unknown[]) => invokeMock(...args) }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: (...args: unknown[]) => listenMock(...args) }));
-vi.mock("./matrixService", () => ({ getMatrixClient: (...args: unknown[]) => getMatrixClientMock(...args) }));
+vi.mock("./matrixService", () => ({
+  getMatrixClient: (...args: unknown[]) => getMatrixClientMock(...args),
+  getRoomMemberInfo: (...args: unknown[]) => getRoomMemberInfoMock(...args),
+}));
 
 import {
   getVoiceNativeStatus,
@@ -50,6 +54,8 @@ beforeEach(() => {
   listenMock.mockReset();
   getMatrixClientMock.mockReset();
   getMatrixClientMock.mockReturnValue(null);
+  getRoomMemberInfoMock.mockReset();
+  getRoomMemberInfoMock.mockImplementation((_roomId: string, userId: string) => ({ displayName: userId, avatarUrl: null }));
 });
 
 describe("voiceNativeService (pont voix native, moteur Rust)", () => {
@@ -439,5 +445,12 @@ describe("voiceNativeService (pont voix native, moteur Rust)", () => {
     // Rien nulle part : localpart.
     getMatrixClientMock.mockReturnValue({ getRoom: () => null, getUser: () => null });
     expect(resolveNativeDisplayName("@narkow:example.org:xyz", "!room")).toBe("narkow");
+  });
+  it("résout le pseudo depuis les membres du moteur Matrix Rust, sans client JS", () => {
+    getRoomMemberInfoMock.mockReturnValue({ displayName: "  Alice du salon  ", avatarUrl: null });
+    expect(resolveNativeDisplayName("@alice:example.org:PC", "!vocal:example.org")).toBe("Alice du salon");
+    expect(getRoomMemberInfoMock).toHaveBeenCalledWith("!vocal:example.org", "@alice:example.org");
+    getRoomMemberInfoMock.mockReturnValue({ displayName: "@alice:example.org", avatarUrl: null });
+    expect(resolveNativeDisplayName("@alice:example.org:PC", "!vocal:example.org")).toBe("alice");
   });
 });

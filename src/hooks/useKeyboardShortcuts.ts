@@ -64,7 +64,7 @@ export function useKeyboardShortcuts() {
       }
       if (e.shiftKey && e.code === "KeyP") {
         e.preventDefault();
-        useLayoutStore.getState().toggleShareDock();
+        window.dispatchEvent(new Event("sion-toggle-video-meeting"));
         return;
       }
 

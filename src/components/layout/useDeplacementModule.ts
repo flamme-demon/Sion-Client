@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useRef, type PointerEvent } from "react";
-import { useLayoutStore, type PanneauId } from "../../stores/useLayoutStore";
+import { useLayoutStore, type ModuleId } from "../../stores/useLayoutStore";
 import { placementSousPointeur, useApercuPlacementModule } from "./apercuPlacementModule";
 
 /** Capture le pointeur : le geste reste actif au-dessus du chat et des vidéos,
  * sans passer par le glisser-déposer de fichiers de la fenêtre native. */
-export function useDeplacementModule(id: PanneauId) {
+export function useDeplacementModule(id: ModuleId) {
   const geste = useRef<{ pointerId: number; x: number; y: number; actif: boolean; element: HTMLDivElement } | null>(null);
   const terminer = useCallback(() => {
     const courant = geste.current;
@@ -61,7 +61,11 @@ export function useDeplacementModule(id: PanneauId) {
       if (!courant || courant.pointerId !== event.pointerId) return;
       const cible = courant.actif ? placementSousPointeur(courant.element, id, event.clientX, event.clientY) : null;
       terminer();
-      if (cible) useLayoutStore.getState().deplacerPanneau(id, cible.zone, cible.avant);
+      if (cible) {
+        const layout = useLayoutStore.getState();
+        if (id === "espaces") layout.deplacerEspaces(cible.zone);
+        else layout.deplacerPanneau(id, cible.zone, cible.avant);
+      }
     },
     onPointerCancel: terminer,
     onLostPointerCapture: terminer,

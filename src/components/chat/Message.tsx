@@ -1,5 +1,5 @@
 import { useIsMobile } from "../../hooks/useIsMobile";
-import React, { useState, useEffect, useRef, useMemo, lazy, Suspense } from "react";
+import React, { useState, useEffect, useRef, useMemo, useContext, lazy, Suspense } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import { CrownIcon, ShieldIcon, FileIcon, DownloadIcon, ReplyIcon, PencilIcon, PinIcon, TrashIcon, EmojiIcon, MessageBubbleIcon, FlagIcon, CloseIcon } from "../icons";
@@ -40,6 +40,7 @@ import { moteurRust } from "../../services/moteur";
 import { copierImage, enregistrerImage } from "../../services/actionsImage";
 import { definirLecteurActif, libererLecteurActif, useEstLecteurActif } from "../../services/lecteurActif";
 import { AndroidVideoPlayer } from "./AndroidVideoPlayer";
+import { SelectionMessagesContext } from "./selectionMessages";
 // Lecteur hors moteur web (voir docs/lecteur-video-natif.md). Chargé à la
 // demande : il ne sert qu'au clic, inutile de l'embarquer au démarrage.
 const NativeVideoPlayer = lazy(() =>
@@ -80,10 +81,11 @@ function useResolvedUrl(attachment: FileAttachment, enabled: boolean = true): st
     // E2EE: decrypt to blob
     if (attachment.encryptedFile) {
       let objectUrl: string | null = null;
+      let cancelled = false;
       createDecryptedObjectUrl(attachment.url, attachment.encryptedFile, attachment.mimeType)
-        .then((url) => { objectUrl = url; setResolvedUrl(url); })
-        .catch((err) => console.error("[Sion] Décryption media échouée:", err));
-      return () => { if (objectUrl) URL.revokeObjectURL(objectUrl); };
+        .then((url) => { if (cancelled) { URL.revokeObjectURL(url); return; } objectUrl = url; setResolvedUrl(url); })
+        .catch((err) => { if (!cancelled) console.error("[Sion] Décryption media échouée:", err); });
+      return () => { cancelled = true; if (objectUrl) URL.revokeObjectURL(objectUrl); };
     }
 
     // Video/audio: on mobile use direct URL to avoid memory issues,
@@ -131,26 +133,41 @@ function useResolvedUrl(attachment: FileAttachment, enabled: boolean = true): st
  *  hors thème (marqué pour le garde anti-couleurs-en-dur). */
 const LIGHTBOX_INK = "#fff"; // theme-exempt — contrôles posés sur le média
 
-function ImageLightbox({ src, alt, onClose }: { src: string; alt: string; onClose: () => void }) {
+function ImageLightbox({ src, alt, onClose, index, count, onNavigate }: { src: string; alt: string; onClose: () => void; index?: number; count?: number; onNavigate?: (direction: -1 | 1) => void }) {
   // Fit (default) ↔ real size. Clicking the image toggles; at 100% the
   // overlay scrolls so very large screenshots can actually be read.
   const [zoomed, setZoomed] = useState(false);
   const { t } = useTranslation();
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   const [copiee, setCopiee] = useState(false);
+  const touchStart = useRef<number | null>(null);
+  const ignoreClick = useRef(false);
   // Fermer avec Escape
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+      if (!zoomed && onNavigate && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
+        e.preventDefault();
+        onNavigate(e.key === "ArrowLeft" ? -1 : 1);
+      }
+    };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  }, [onClose, onNavigate, zoomed]);
 
   // Portail sous <body> : rendue dans le fil, la visionneuse restait prise
   // dans son contexte d'empilement (le fond animé impose `isolation`), et le
   // panneau de la soundboard passait devant malgré son z-index (27/09).
   return createPortal(
     <div
-      onClick={onClose}
+      onClick={() => { if (ignoreClick.current) { ignoreClick.current = false; return; } onClose(); }}
+      onTouchStart={(e) => { touchStart.current = e.touches[0]?.clientX ?? null; }}
+      onTouchEnd={(e) => {
+        if (zoomed || !onNavigate || touchStart.current === null) return;
+        const delta = e.changedTouches[0].clientX - touchStart.current;
+        touchStart.current = null;
+        if (Math.abs(delta) > 55) { ignoreClick.current = true; onNavigate(delta < 0 ? 1 : -1); }
+      }}
       style={{
         position: 'fixed', inset: 0, zIndex: 9999,
         background: 'rgba(0,0,0,0.88)',
@@ -210,6 +227,16 @@ function ImageLightbox({ src, alt, onClose }: { src: string; alt: string; onClos
           >{libelle}</button>
         ))}
       </div>
+      {onNavigate && count && count > 1 && <>
+        {([-1, 1] as const).map((direction) => <button
+          key={direction}
+          aria-label={direction < 0 ? t("chat.previousImage") : t("chat.nextImage")}
+          title={direction < 0 ? t("chat.previousImage") : t("chat.nextImage")}
+          onClick={(e) => { e.stopPropagation(); onNavigate(direction); }}
+          style={{ position: 'fixed', top: '50%', [direction < 0 ? 'left' : 'right']: 18, transform: 'translateY(-50%)', width: 48, height: 48, border: 'none', borderRadius: '50%', background: 'rgba(255,255,255,0.18)', color: LIGHTBOX_INK, cursor: 'pointer', fontSize: 30, lineHeight: '40px' }}
+        >{direction < 0 ? '‹' : '›'}</button>)}
+        <div aria-live="polite" style={{ position: 'fixed', bottom: 'max(env(safe-area-inset-bottom, 0px), 20px)', left: '50%', transform: 'translateX(-50%)', padding: '6px 12px', borderRadius: 16, background: 'rgba(255,255,255,0.15)', color: LIGHTBOX_INK, fontSize: 13, fontWeight: 600, pointerEvents: 'none' }}>{(index ?? 0) + 1} / {count}</div>
+      </>}
       {menu && <MenuImage url={src} nom={alt} x={menu.x} y={menu.y} onClose={() => setMenu(null)} />}
       <button
         onClick={onClose}
@@ -223,6 +250,38 @@ function ImageLightbox({ src, alt, onClose }: { src: string; alt: string; onClos
     </div>,
     document.body,
   );
+}
+
+type AlbumImage = { src: string; alt: string };
+interface AlbumControls {
+  enregistrer: (index: number, image: AlbumImage) => () => void;
+  ouvrir: (index: number, image: AlbumImage) => void;
+}
+const AlbumImagesContext = React.createContext<AlbumControls | null>(null);
+
+export function GalerieImagesProvider({ count, children }: { count: number; children: React.ReactNode }) {
+  const images = useRef(new Map<number, AlbumImage>());
+  const [active, setActive] = useState<{ index: number; image: AlbumImage } | null>(null);
+  const enregistrer = React.useCallback((index: number, image: AlbumImage) => {
+    images.current.set(index, image);
+    return () => { if (images.current.get(index) === image) images.current.delete(index); };
+  }, []);
+  const ouvrir = React.useCallback((index: number, image: AlbumImage) => { images.current.set(index, image); setActive({ index, image }); }, []);
+  const naviguer = React.useCallback((direction: -1 | 1) => setActive((current) => {
+    if (!current || count < 2) return current;
+    for (let offset = 1; offset < count; offset++) {
+      const index = (current.index + direction * offset + count) % count;
+      const image = images.current.get(index);
+      if (image) return { index, image };
+    }
+    return current;
+  }), [count]);
+  const fermer = React.useCallback(() => setActive(null), []);
+  const controls = useMemo(() => ({ enregistrer, ouvrir }), [enregistrer, ouvrir]);
+  return <AlbumImagesContext.Provider value={controls}>
+    {children}
+    {active && <ImageLightbox src={active.image.src} alt={active.image.alt} index={active.index} count={count} onNavigate={naviguer} onClose={fermer} />}
+  </AlbumImagesContext.Provider>;
 }
 
 /** Android : le WebView (Chromium) lit lui-même les vidéos — H.264, VP9,
@@ -478,7 +537,7 @@ function boiteVignette(largeur?: number, hauteur?: number) {
   return { width: Math.round(largeur * echelle), height: Math.round(hauteur * echelle) };
 }
 
-function AttachmentDisplay({ attachment }: { attachment: FileAttachment }) {
+function AttachmentDisplay({ attachment, enMosaique = false, ouvrirMenu, indexGalerie }: { attachment: FileAttachment; enMosaique?: boolean; ouvrirMenu?: (event: React.MouseEvent, url: string) => void; indexGalerie?: number }) {
   const { t } = useTranslation();
   const isImage = attachment.mimeType.startsWith("image/");
   const isAudio = attachment.mimeType.startsWith("audio/");
@@ -505,6 +564,12 @@ function AttachmentDisplay({ attachment }: { attachment: FileAttachment }) {
     attachment,
     isVideo ? !SUR_ANDROID && videoVisible && !!attachment.encryptedFile : true,
   );
+  const galerie = useContext(AlbumImagesContext);
+  const imageAlbum = useMemo(() => resolvedUrl ? { src: resolvedUrl, alt: attachment.name } : null, [resolvedUrl, attachment.name]);
+  useEffect(() => {
+    if (!galerie || indexGalerie === undefined || !imageAlbum) return;
+    return galerie.enregistrer(indexGalerie, imageAlbum);
+  }, [galerie, indexGalerie, imageAlbum]);
   const [lightboxOpen, setLightboxOpen] = useState(false);
   const [menuImage, setMenuImage] = useState<{ x: number; y: number } | null>(null);
   // Vrai si la vignette du serveur n'a pas pu être chargée.
@@ -523,7 +588,7 @@ function AttachmentDisplay({ attachment }: { attachment: FileAttachment }) {
   if (isImage) {
     if (!resolvedUrl) {
       return (
-        <div style={{ marginTop: 6, padding: '8px 12px', borderRadius: 12, background: 'var(--color-surface-container-high)', color: 'var(--color-outline)', fontSize: 12 }}>
+        <div className={enMosaique ? "sion-image-mosaique" : undefined} style={{ marginTop: enMosaique ? 0 : 6, padding: '8px 12px', borderRadius: 12, background: 'var(--color-surface-container-high)', color: 'var(--color-outline)', fontSize: 12 }}>
           Chargement de l'image…
         </div>
       );
@@ -534,25 +599,29 @@ function AttachmentDisplay({ attachment }: { attachment: FileAttachment }) {
             déchargée quand elle sort de la vue, ce qui est ce qui limitait la
             remontée dans l'historique (voir ImageDuFil). */}
         <ImageDuFil
+          className={enMosaique ? "sion-image-mosaique" : undefined}
           src={vignetteEchouee || attachment.encryptedFile || !attachment.thumbnailUrl
             ? resolvedUrl
             : attachment.thumbnailUrl}
           alt={attachment.name}
           onError={() => setVignetteEchouee(true)}
-          onClick={() => setLightboxOpen(true)}
-          onContextMenu={(e) => { e.preventDefault(); setMenuImage({ x: e.clientX, y: e.clientY }); }}
+          onClick={() => {
+            if (galerie && indexGalerie !== undefined) galerie.ouvrir(indexGalerie, { src: resolvedUrl, alt: attachment.name });
+            else setLightboxOpen(true);
+          }}
+          onContextMenu={(e) => { e.preventDefault(); if (ouvrirMenu) ouvrirMenu(e, resolvedUrl); else setMenuImage({ x: e.clientX, y: e.clientY }); }}
           style={{
             // La place doit être RÉSERVÉE, sinon le fil sursaute chaque fois
             // qu'une image se décharge. On reproduit donc ce que faisait
             // `maxWidth: 300, maxHeight: 200` — dont un agrandissement des
             // petites images, que ce couple n'autorisait pas.
-            ...boiteVignette(attachment.width, attachment.height),
-            borderRadius: 16,
+            ...(enMosaique ? {} : boiteVignette(attachment.width, attachment.height)),
+            borderRadius: enMosaique ? 0 : 16,
             cursor: 'zoom-in',
-            marginTop: 6,
+            marginTop: enMosaique ? 0 : 6,
           }}
         />
-        {lightboxOpen && (
+        {lightboxOpen && !(galerie && indexGalerie !== undefined) && (
           <ImageLightbox src={resolvedUrl} alt={attachment.name} onClose={() => setLightboxOpen(false)} />
         )}
         {menuImage && (
@@ -651,9 +720,15 @@ interface MessageProps {
   showHeader: boolean;
   isFirst: boolean;
   highlighted?: boolean;
+  /** Chaque case conserve les contrôles et l'identité de son événement. */
+  enMosaique?: boolean;
+  groupeIds?: string[];
+  indexGalerie?: number;
+  /** Contenu groupé sous un seul avatar et nom. */
+  children?: React.ReactNode;
 }
 
-export const Message = React.memo(function Message({ message, showHeader, isFirst, highlighted }: MessageProps) {
+export const Message = React.memo(function Message({ message, showHeader, isFirst, highlighted, enMosaique = false, groupeIds, indexGalerie, children }: MessageProps) {
   const { t } = useTranslation();
   const isMobile = useIsMobile();
   const currentUserId = useMatrixStore((s) => s.currentUserId);
@@ -662,6 +737,11 @@ export const Message = React.memo(function Message({ message, showHeader, isFirs
   const setEditingMessage = useAppStore((s) => s.setEditingMessage);
   const setReplyingTo = useAppStore((s) => s.setReplyingTo);
   const isOwnMessage = currentUserId && message.senderId ? message.senderId === currentUserId : false;
+  const selection = useContext(SelectionMessagesContext);
+  const enSelection = !!selection?.ids.size;
+  const idMessage = message.eventId || String(message.id);
+  const choisi = selection?.ids.has(idMessage);
+  const [urlMenuImage, setUrlMenuImage] = useState<string | null>(null);
 
   const [isHovered, setIsHovered] = useState(false);
   const [showReactionPicker, setShowReactionPicker] = useState(false);
@@ -777,7 +857,7 @@ export const Message = React.memo(function Message({ message, showHeader, isFirs
   const canModerate = activeChannel
     ? matrixService.getUserPowerLevel(activeChannel) >= matrixService.getStatePowerLevel(activeChannel)
     : false;
-  const canDelete = isOwnMessage || canModerate;
+  const canDelete = isOwnMessage || (activeChannel && matrixService.getUserPowerLevel(activeChannel) >= matrixService.getRedactPowerLevel(activeChannel));
 
   const handleEdit = () => {
     const eventId = message.eventId || String(message.id);
@@ -856,9 +936,24 @@ export const Message = React.memo(function Message({ message, showHeader, isFirs
   const fermerMenuMessage = (restoreFocus = false) => {
     setMenuMessage(null);
     setShowDeleteConfirm(false);
+    setUrlMenuImage(null);
     if (restoreFocus) messageBubbleRef.current?.focus({ preventScroll: true });
   };
   const actionsContextuelles: ActionMenuMessage[] = [];
+  if (enMosaique) {
+    actionsContextuelles.push({ label: t("chat.reply"), icon: <ReplyIcon />, action: handleReply });
+    actionsContextuelles.push({ label: t("chat.react"), icon: <EmojiIcon />, action: () => {
+      const width = Math.min(320, innerWidth - 16), height = Math.min(360, innerHeight - 16);
+      setReactionPickerPosition({ left: Math.max(8, Math.min(menuMessage?.x ?? 8, innerWidth - width - 8)), top: Math.max(8, Math.min(menuMessage?.y ?? 8, innerHeight - height - 8)), width, height });
+      setShowReactionPicker(true);
+    } });
+  }
+  if (urlMenuImage) {
+    actionsContextuelles.push({ label: t("chat.copyImage"), action: () => void copierImage(urlMenuImage).catch((e) => useAppStore.getState().setFileError(String(e))) });
+    actionsContextuelles.push({ label: t("chat.saveImage"), action: () => void enregistrerImage(urlMenuImage, message.attachments?.[0]?.name ?? "image").catch((e) => useAppStore.getState().setFileError(String(e))) });
+  }
+  if (selection && message.eventId) actionsContextuelles.push({ label: t("chat.selectMessage"), action: () => selection.basculer(idMessage) });
+  if (selection && groupeIds?.length) actionsContextuelles.push({ label: t("chat.selectImageGroup"), action: () => selection.ajouter(groupeIds) });
   if (isOwnMessage && message.text) {
     actionsContextuelles.push({ label: t("chat.editMessage"), icon: <PencilIcon />, action: handleEdit });
   }
@@ -902,8 +997,8 @@ export const Message = React.memo(function Message({ message, showHeader, isFirs
     transition: 'background 150ms',
   };
 
-  const actionsMessage = (!isMobile || isHovered || showReactionPicker) && (
-        <div style={{
+  const actionsMessage = !enSelection && (!isMobile || enMosaique || isHovered || showReactionPicker) && (
+        <div className={enMosaique ? "sion-actions-image" : undefined} style={{
           display: 'flex',
           gap: 2,
           background: isMobile ? 'var(--color-surface-container-high)' : 'transparent',
@@ -984,22 +1079,23 @@ export const Message = React.memo(function Message({ message, showHeader, isFirs
 
   return (
     <div
+      className={enMosaique ? "sion-message-image" : undefined}
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
       style={{
       display: 'flex',
       flexDirection: isOwnMessage ? 'row-reverse' : 'row',
       alignItems: isMobile ? 'flex-end' : 'flex-start',
-      gap: 8,
+      gap: enMosaique ? 0 : 8,
       minWidth: 0,
-      marginTop: showHeader ? (isFirst ? 0 : 20) : 4,
+      marginTop: enMosaique ? 0 : showHeader ? (isFirst ? 0 : 20) : 4,
       borderRadius: 16,
-      padding: highlighted ? '4px 8px' : undefined,
+      padding: highlighted && !enMosaique ? '4px 8px' : undefined,
       background: highlighted ? 'var(--color-primary-container)' : undefined,
       transition: 'background 500ms',
     }}>
       {/* Avatar */}
-      {showHeader ? (
+      {enMosaique ? null : showHeader ? (
         <div
           style={{ flexShrink: 0, cursor: isOwnMessage ? 'default' : 'pointer', position: 'relative' }}
           onClick={() => { if (!isOwnMessage) setShowUserPopover((v) => !v); }}
@@ -1097,7 +1193,8 @@ export const Message = React.memo(function Message({ message, showHeader, isFirs
         display: 'flex',
         flexDirection: 'column',
         alignItems: isOwnMessage ? 'flex-end' : 'flex-start',
-        maxWidth: '70%',
+        maxWidth: enMosaique ? '100%' : children ? 'calc(100% - 44px)' : '70%',
+        width: enMosaique ? '100%' : children ? 480 : undefined,
         minWidth: 0,
       }}>
         {/* Nom seul (Telegram-style: l'heure est rendue à l'intérieur de
@@ -1124,6 +1221,7 @@ export const Message = React.memo(function Message({ message, showHeader, isFirs
         )}
 
         {/* M3 Bubble — surface-container-high pour les autres, primary-container pour soi */}
+        {children ?? <>
         <div ref={messageBubbleRef} className="sion-message-bulle" tabIndex={actionsContextuelles.length ? 0 : undefined}
           onContextMenu={(event) => {
             if (!event.defaultPrevented && !cibleInteractive(event.target) && actionsContextuelles.length) gestesMessage.onContextMenu(event);
@@ -1140,23 +1238,28 @@ export const Message = React.memo(function Message({ message, showHeader, isFirs
           style={{
           background: isOwnMessage ? 'var(--color-primary-container)' : 'var(--color-surface-container-high)',
           color: isOwnMessage ? 'var(--color-on-primary-container)' : 'var(--color-on-surface)',
-          borderRadius: isOwnMessage
+          borderRadius: enMosaique ? 0 : isOwnMessage
             ? (showHeader ? '20px 20px 4px 20px' : '20px 4px 4px 20px')
             : (showHeader ? '20px 20px 20px 4px' : '4px 20px 20px 4px'),
           // Extra bottom padding reserves a quiet band for the absolute-
           // positioned timestamp below. Horizontal padding is untouched so
           // text still ends at the normal right edge — the timestamp sits
           // below in the dedicated 20px strip and never overlaps content.
-          padding: message.replyTo ? '8px 8px 20px 8px' : '10px 16px 20px 16px',
+          padding: enMosaique ? 0 : message.replyTo ? '8px 8px 20px 8px' : '10px 16px 20px 16px',
           fontSize: 14,
           lineHeight: 1.55,
           wordBreak: 'break-word' as const,
           letterSpacing: '0.01em',
           maxWidth: '100%',
+          width: enMosaique ? '100%' : undefined,
           boxSizing: 'border-box' as const,
           overflow: 'hidden',
           position: 'relative',
+          outline: choisi ? '3px solid var(--color-primary)' : undefined,
+          outlineOffset: choisi ? -3 : undefined,
         }}>
+          {enSelection && <button type="button" className="sion-case-selection" aria-label={t("chat.selectMessage")} aria-pressed={!!choisi}
+            onClick={() => selection?.basculer(idMessage)}>{choisi ? "✓" : ""}</button>}
           {/* Reply quote — Telegram-style, inside bubble */}
           {message.replyTo && (() => {
             // Build a human-readable preview of the quoted message.
@@ -1253,9 +1356,9 @@ export const Message = React.memo(function Message({ message, showHeader, isFirs
           </>)}
           {/* Pièces jointes — inside the bubble */}
           {message.attachments && message.attachments.length > 0 && (
-            <div style={{ display: 'flex', flexWrap: 'wrap' as const, gap: 6, marginTop: 4 }}>
+            <div style={{ display: 'flex', flexWrap: 'wrap' as const, gap: 6, marginTop: enMosaique ? 0 : 4, width: enMosaique ? '100%' : undefined }}>
               {message.attachments.map((att) => (
-                <AttachmentDisplay key={att.id} attachment={att} />
+                <AttachmentDisplay key={att.id} attachment={att} enMosaique={enMosaique} indexGalerie={indexGalerie} ouvrirMenu={selection ? (event, url) => { setUrlMenuImage(url); ouvrirMenuMessage(event.clientX, event.clientY); } : undefined} />
               ))}
             </div>
           )}
@@ -1263,7 +1366,7 @@ export const Message = React.memo(function Message({ message, showHeader, isFirs
           {/* Telegram-style in-bubble timestamp: absolute bottom-right, in
               the padding band reserved above. `pointerEvents: none` keeps
               the timestamp from interfering with clicks on the bubble. */}
-          <span style={{
+          {!enMosaique && <span style={{
             position: 'absolute',
             bottom: 4,
             right: 10,
@@ -1275,12 +1378,12 @@ export const Message = React.memo(function Message({ message, showHeader, isFirs
             whiteSpace: 'nowrap',
           }}>
             {message.time}
-          </span>
+          </span>}
         </div>
 
         {/* Reactions display */}
         {message.reactions && message.reactions.length > 0 && (
-          <div style={{
+          <div className={enMosaique ? "sion-reactions-image" : undefined} style={{
             display: 'flex',
             flexWrap: 'wrap',
             gap: 4,
@@ -1316,9 +1419,10 @@ export const Message = React.memo(function Message({ message, showHeader, isFirs
             })}
           </div>
         )}
-      {!isMobile && actionsMessage}
+      {(!isMobile || enMosaique) && actionsMessage}
+      </>}
       </div>
-      {isMobile && actionsMessage}
+      {isMobile && !enMosaique && !children && actionsMessage}
 
       {menuMessage && actionsContextuelles.length > 0 && (
         <MenuMessage {...menuMessage} actions={actionsContextuelles} onClose={fermerMenuMessage} />

@@ -16,6 +16,7 @@ export function UpdateSettings({ toggleStyle, toggleDotStyle }: Props) {
   const { status, update, error, check } = useUpdateStore();
   const busy = ["checking", "downloading", "installing", "permission"].includes(status);
   return <div style={{ marginBottom: 24, background: "var(--color-surface-container)", borderRadius: 16, padding: 16 }}>
+    <img src="/branding/logo-texte.webp" alt="Sion" width="720" height="240" style={{ display: "block", width: 180, maxWidth: "100%", height: "auto", marginBottom: 16 }} />
     <div style={{ fontSize: 14, fontWeight: 600, color: "var(--color-on-surface)", marginBottom: 14 }}>{t("update.title")}</div>
     <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
       <div style={{ marginRight: 12 }}>

@@ -32,6 +32,7 @@ function HiddenSidebarHandle({ onReveal, side }: { onReveal: () => void; side: "
 
   return (
     <div
+      data-module-salons
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
       style={{ position: 'relative', width: 8, flexShrink: 0, height: '100%' }}
@@ -135,7 +136,7 @@ export function Sidebar() {
   );
 
   return (
-    <div style={{ display: 'flex', height: '100%', flexShrink: 0 }}>
+    <div data-module-salons style={{ display: 'flex', height: '100%', flexShrink: 0 }}>
       {onRight && handle}
       <Bulle as="nav" scope="channels" aria-label={t("layout.channels")} style={{ width, minWidth: width, maxWidth: width, height: '100%' }}>
         <ServerHeader compact={compact} />

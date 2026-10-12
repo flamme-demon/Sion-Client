@@ -9,10 +9,12 @@ import { ancienneSession } from "../services/migrationMoteur";
 import { lireConnexionQr, type ConnexionQr } from "../services/connexionQr";
 import { ScannerQr, type QrLu } from "../components/qr/ScannerQr";
 import { SUR_ANDROID } from "../utils/plateforme";
+import { terminerDemarrage } from "../services/demarrage";
 
 type AuthMode = "login" | "register";
 
 export function LoginPage() {
+  useEffect(terminerDemarrage, []);
   const { t } = useTranslation();
   const { login, loginJeton, register, isLoading, error, clearError, fetchRegistrationFlows, registrationFlows, isLoadingFlows, keyringUnavailable, restoreSession } = useAuthStore();
   // Téléphone : connexion par le QR code affiché sur le PC (connexionQr.ts).
@@ -144,11 +146,11 @@ export function LoginPage() {
       textAlign: "center" as const,
       marginBottom: 32,
     },
-    logoText: {
-      fontSize: 32,
-      fontWeight: 700,
-      color: "var(--color-primary)",
-      letterSpacing: "-0.02em",
+    logoImage: {
+      display: "block",
+      width: "min(100%, 300px)",
+      height: "auto",
+      margin: "0 auto",
     },
     logoSub: {
       fontSize: 13,
@@ -292,7 +294,7 @@ export function LoginPage() {
           </select>
         </div>
         <div style={styles.logo}>
-          <div style={styles.logoText}>Sion</div>
+          <img src="/branding/logo-texte.webp" alt="Sion" width="720" height="240" style={styles.logoImage} />
           <div style={styles.logoSub}>{t("app.subtitle")}</div>
         </div>
 

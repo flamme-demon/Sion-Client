@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
-import { SpeakerIcon, SpeakerOffIcon, MicIcon, HeadphoneIcon, CrownIcon, ShieldIcon, MessageBubbleIcon, SignalBarsIcon, PhoneIcon, LogoutIcon } from "../icons";
+import { SpeakerIcon, SpeakerOffIcon, MicIcon, HeadphoneIcon, CrownIcon, ShieldIcon, MessageBubbleIcon, SignalBarsIcon, PhoneIcon, LogoutIcon, HistoryIcon } from "../icons";
 import { ChannelIcon } from "./ChannelIcon";
 import { UserAvatar } from "./UserAvatar";
 import { useAppStore, APP_SESSION_START_TS } from "../../stores/useAppStore";
@@ -19,6 +19,7 @@ import { moteurRust } from "../../services/moteur";
 import { quitterSalon } from "../../services/quitterSalon";
 import { MenuMessage } from "../chat/MenuMessage";
 import { ConfirmationDepartSalon } from "./ConfirmationDepartSalon";
+import { ConservationSalon } from "./ConservationSalon";
 import * as cacheRust from "../../services/cacheRust";
 import { plateformeLocale, plateformeMobile } from "../../utils/plateforme";
 import { appareilDeIdentite, estCetAppareil } from "../../utils/identiteVocale";
@@ -127,9 +128,10 @@ export function ChannelItem({ channel, compact = false }: { channel: Channel; co
   const isMobile = useIsMobile();
   const openUserContextMenu = useAppStore((s) => s.openUserContextMenu);
   const [hoveredUserId, setHoveredUserId] = useState<string | null>(null);
-  // Detailed voice-user list is shown for the channel you're connected to;
-  // other channels collapse to just the stacked avatars (click them to peek).
+  // Le salon rejoint affiche toujours ses participants ; un clic sur toute
+  // la ligne permet aussi d'explorer les occupants des autres salons.
   const [expandedVoice, setExpandedVoice] = useState(false);
+  const participantsId = useId();
 
   const messages = useMatrixStore((s) => s.messages[channel.id]);
   const lastReadId = useAppStore((s) => s.lastReadMessageId[channel.id]);
@@ -159,10 +161,12 @@ export function ChannelItem({ channel, compact = false }: { channel: Channel; co
 
   const isActive = activeChannel === channel.id;
   const isConnectedChannel = connectedVoiceChannel === channel.id;
+  const voiceExpanded = isConnectedChannel || expandedVoice;
 
   const handleClick = async () => {
     setActiveChannel(channel.id, channel.hasVoice);
     loadRoomHistory(channel.id);
+    if (!compact && channel.hasVoice && channel.voiceUsers.length > 0 && !isConnectedChannel) setExpandedVoice((v) => !v);
     // On mobile: single tap on voice channel joins it directly
     if (isMobile && channel.hasVoice && connectedVoiceChannel !== channel.id && hasLiveKitConfig) {
       try {
@@ -303,6 +307,7 @@ export function ChannelItem({ channel, compact = false }: { channel: Channel; co
   const boutonSalon = useRef<HTMLButtonElement>(null);
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number } | null>(null);
   const [confirmerDepart, setConfirmerDepart] = useState(false);
+  const [conservationOuverte, setConservationOuverte] = useState(false);
   const closeCtxMenu = (restoreFocus = false) => {
     setCtxMenu(null);
     if (restoreFocus) boutonSalon.current?.focus();
@@ -317,6 +322,8 @@ export function ChannelItem({ channel, compact = false }: { channel: Channel; co
       {/* M3 Navigation Drawer item */}
       <button
         ref={boutonSalon}
+        aria-expanded={!compact && channel.hasVoice && voiceUsers.length > 0 ? voiceExpanded : undefined}
+        aria-controls={!compact && channel.hasVoice && voiceUsers.length > 0 && voiceExpanded ? participantsId : undefined}
         onClick={handleClick}
         onDoubleClick={handleDoubleClick}
         onMouseEnter={openHoverCard}
@@ -495,11 +502,7 @@ export function ChannelItem({ channel, compact = false }: { channel: Channel; co
               </span>
             )
           ) : voiceUsers.length > 0 ? (
-            <span
-              onClick={(e) => { if (!isMobile || !isConnectedChannel) { e.stopPropagation(); setExpandedVoice((v) => !v); } }}
-              style={{ display: 'flex', alignItems: 'center', flexShrink: 0, cursor: isConnectedChannel ? 'inherit' : 'pointer' }}
-              title={isConnectedChannel ? voiceUsers.map((u) => u.name).join(", ") : (expandedVoice ? "Replier" : "Voir les membres")}
-            >
+            <span style={{ display: 'flex', alignItems: 'center', flexShrink: 0 }} aria-hidden="true">
               {voiceUsers.slice(0, 3).map((u, i) => (
                 <span
                   key={u.id}
@@ -530,6 +533,12 @@ export function ChannelItem({ channel, compact = false }: { channel: Channel; co
               <SpeakerIcon />
             </span>
           )
+        )}
+        {!compact && channel.hasVoice && voiceUsers.length > 0 && (
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"
+            style={{ flexShrink: 0, transform: voiceExpanded ? 'rotate(0deg)' : 'rotate(-90deg)', transition: 'transform 150ms' }}>
+            <polyline points="6 9 12 15 18 9" />
+          </svg>
         )}
       </button>
 
@@ -618,11 +627,11 @@ export function ChannelItem({ channel, compact = false }: { channel: Channel; co
         document.body,
       )}
 
-      {/* Voice users — full detail only for your connected channel, or when you
-          click the stacked avatars to peek at another channel. Jamais en rail :
+      {/* Voice users — full detail for your connected channel, or when you
+          click another channel to peek at its occupants. Jamais en rail :
           les noms ne tiennent pas dans 72px, la pastille suffit. */}
-      {!compact && channel.hasVoice && voiceUsers.length > 0 && ((isMobile && isConnectedChannel) || expandedVoice) && (
-        <div style={{
+      {!compact && channel.hasVoice && voiceUsers.length > 0 && voiceExpanded && (
+        <div id={participantsId} style={{
           display: 'flex',
           flexDirection: 'column',
           marginTop: 2,
@@ -722,7 +731,10 @@ export function ChannelItem({ channel, compact = false }: { channel: Channel; co
         label: channel.isDM ? t("channels.leaveConversation", { defaultValue: "Quitter cette conversation" })
           : t("channels.leave", { defaultValue: "Quitter le salon" }),
         icon: <LogoutIcon />, tone: "error", action: () => setConfirmerDepart(true),
-      }]} />}
+      }, ...(!channel.isDM && !channel.isSpace && !channel.isSoundboard ? [{
+        label: t("conservation.title"), icon: <HistoryIcon />, action: () => setConservationOuverte(true),
+      }] : [])]} />}
+      {conservationOuverte && <ConservationSalon salonId={channel.id} onFermer={() => { setConservationOuverte(false); boutonSalon.current?.focus(); }} />}
       {confirmerDepart && <ConfirmationDepartSalon salon={channel} onConfirmer={handleLeave}
         onFermer={() => { setConfirmerDepart(false); boutonSalon.current?.focus(); }} />}
     </div>

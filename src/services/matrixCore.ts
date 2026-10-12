@@ -55,6 +55,19 @@ export async function moteurMatrix(): Promise<"js" | "rust"> {
 
 export const etatConnexion = () => invoquer<EtatConnexion>("matrix_etat");
 
+export interface UtilisateurAnnuaire {
+  userId: string;
+  displayName: string;
+  avatarUrl: string | null;
+}
+export interface ResultatAnnuaire {
+  utilisateurs: UtilisateurAnnuaire[];
+  limite: boolean;
+}
+/** Annuaire Matrix du serveur connecté ; le jeton reste dans le cœur Rust. */
+export const rechercherUtilisateurs = (terme: string) =>
+  invoquer<ResultatAnnuaire>("matrix_rechercher_utilisateurs", { terme });
+
 /** Connexion comme NOUVEL appareil : tout état local précédent est effacé. */
 export const connecter = (serveur: string, identifiant: string, motDePasse: string) =>
   invoquer<void>("matrix_connecter", { serveur, identifiant, motDePasse });
@@ -239,6 +252,8 @@ export interface DetailsSalon {
   moi: number;
   niveauEtat: number;
   niveauInvitation: number;
+  /** Optionnel pendant la transition depuis les binaires antérieurs. */
+  niveauSuppression?: number;
   peutEcrire: boolean;
   regleAcces: string | null;
 }

@@ -34,13 +34,17 @@ pub fn journaliser_initialisation() {
 
 #[no_mangle]
 pub extern "system" fn Java_com_sion_client_SionNatif_initialiser<'local>(
-    env: JNIEnv<'local>,
+    mut env: JNIEnv<'local>,
     _classe: JClass<'local>,
     contexte: JObject<'local>,
 ) {
     initialiser_tls(&env, &contexte);
     #[cfg(feature = "native-voice")]
     initialiser_webrtc(&env, &contexte);
+    #[cfg(feature = "native-voice")]
+    if let Err(error) = crate::camera_capture::initialiser_android(&mut env) {
+        noter(log::Level::Error, format!("[Sion][android] caméra : {error}"));
+    }
 }
 
 fn initialiser_tls(env: &JNIEnv, contexte: &JObject) {

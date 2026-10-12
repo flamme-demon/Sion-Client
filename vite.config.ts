@@ -31,6 +31,13 @@ export default defineConfig({
         "**/build-scripts/**",
         "**/*.txt",
         "**/*.md",
+        // Un test n'est pas un module de l'interface : sa création déclenchait
+        // un rechargement complet, avec reprise du vocal, à chaque vérification.
+        "**/*.test.{ts,tsx}",
+        "**/*.spec.{ts,tsx}",
+        "**/src/test/**",
+        "**/vitest.config.*",
+        "**/*.tsbuildinfo",
       ],
     },
     headers: process.env.TAURI_ENV_PLATFORM === "android"

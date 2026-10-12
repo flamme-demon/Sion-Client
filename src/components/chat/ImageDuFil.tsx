@@ -20,6 +20,7 @@ interface Props {
   onError?: () => void;
   title?: string;
   onContextMenu?: (e: React.MouseEvent) => void;
+  className?: string;
 }
 
 /** Marge autour de la vue où l'image reste montée.
@@ -29,7 +30,7 @@ interface Props {
  *  messages n'en garde qu'une poignée en mémoire. */
 const MARGE = "600px";
 
-export function ImageDuFil({ src, alt, style, onClick, onError, title, onContextMenu }: Props) {
+export function ImageDuFil({ src, alt, style, onClick, onError, title, onContextMenu, className }: Props) {
   const boiteRef = useRef<HTMLDivElement>(null);
   const [visible, setVisible] = useState(false);
 
@@ -53,7 +54,9 @@ export function ImageDuFil({ src, alt, style, onClick, onError, title, onContext
   }, []);
 
   return (
-    <div ref={boiteRef} style={{ ...style, overflow: 'hidden' }} onClick={onClick} onContextMenu={onContextMenu} title={title}>
+    <div ref={boiteRef} className={className} style={{ ...style, overflow: 'hidden' }} onClick={onClick} onContextMenu={onContextMenu} title={title}
+      role={onClick ? "button" : undefined} tabIndex={onClick ? 0 : undefined} aria-label={onClick ? alt : undefined}
+      onKeyDown={onClick ? (event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); event.stopPropagation(); onClick(); } } : undefined}>
       {visible && src ? (
         <img
           src={src}

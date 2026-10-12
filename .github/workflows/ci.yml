@@ -102,3 +102,7 @@ jobs:
         # Hors `default-members` : sans `-p`, ses tests ne tourneraient pas.
         working-directory: src-tauri
         run: cargo test -j4 -p sion-matrix
+
+      - name: Rust unit tests — effets webcam
+        working-directory: src-tauri
+        run: cargo test -j4 -p sion-camera-effects

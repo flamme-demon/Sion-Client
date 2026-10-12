@@ -1,15 +1,18 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { onCursorsChange, onCursorClick, broadcastCursor, broadcastCursorHide, broadcastCursorClick, type RemoteCursor, type RemoteCursorClick } from "../../services/cursorService";
-import { connectVoiceNativeVideoStream, estRejoue, getVoiceNativeShareAudioState, isNativeVideoSurfaceAvailable, registerNativeVideoSurface, resolveNativeDisplayName, setVoiceNativeShareAudioMuted, setVoiceNativeShareAudioVolume, pipNativeOpen, pipNativeClose, pipNativeStatus, onVoiceNativeShareAudio, onVoiceNativePip, type VoiceNativeBinaryFrame } from "../../services/voiceNativeService";
+import { connectVoiceNativeVideoStream, estRejoue, getVoiceNativeShareAudioState, isNativeVideoSurfaceAvailable, registerNativeVideoSurface, resolveNativeDisplayName, setVoiceNativeShareAudioMuted, setVoiceNativeShareAudioVolume, onVoiceNativeShareAudio, type VoiceNativeBinaryFrame } from "../../services/voiceNativeService";
+import { useNativePip } from "../../hooks/useNativePip";
+import { showVideoMeeting, closeVideoMeeting, selectedMeetingStreams, useMeetingStreams, useVideoMeetingStore } from "../../hooks/useVideoMeeting";
 import { useLiveKitStore } from "../../stores/useLiveKitStore";
 import { useAppStore } from "../../stores/useAppStore";
-import { useLayoutStore, SHARE_VIEW_MIN_VH, SHARE_VIEW_MAX_VH, SHARE_FLOATING_MIN_W, SHARE_FLOATING_MIN_H } from "../../stores/useLayoutStore";
+import { useLayoutStore, SHARE_VIEW_MIN_VH, SHARE_VIEW_MAX_VH } from "../../stores/useLayoutStore";
 import { ResizeHandle } from "../layout/ResizeHandle";
 import { useTranslation } from "react-i18next";
 import { SpeakerIcon, ScreenIcon, EyeIcon, EyeOffIcon } from "../icons";
 import { useIsMobile } from "../../hooks/useIsMobile";
 import { useVideoMasqueeStore } from "../../stores/useVideoMasqueeStore";
 import { attachTouchSharePointer } from "../../services/touchSharePointer";
+import { subscribeVideoFrames } from "../../services/videoFramesService";
 
 /** Partage affichable : les pixels arrivent par le WebSocket binaire natif,
  *  il n'y a plus d'objet piste LiveKit dans la webview. */
@@ -635,16 +638,6 @@ function FloatIcon() {
 }
 
 /** Icône « remettre en ligne » — coins vers l'intérieur. */
-function DockIcon() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M9 3v4a2 2 0 0 1-2 2H3" />
-      <path d="M15 3v4a2 2 0 0 0 2 2h4" />
-      <path d="M9 21v-4a2 2 0 0 0-2-2H3" />
-      <path d="M15 21v-4a2 2 0 0 1 2-2h4" />
-    </svg>
-  );
-}
 
 /** Icône « PIP natif » — écran + vignette posée dessus (fenêtre OS). */
 function NativePipIcon() {
@@ -657,130 +650,42 @@ function NativePipIcon() {
   );
 }
 
-interface FloatingShareCardProps {
-  identity: string;
-  name: string;
-  hasAudio: boolean;
-  muted: boolean;
-  volume: number;
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-  subscribe: (cb: (frame: VoiceNativeBinaryFrame) => void) => () => void;
-  getLatest: () => VoiceNativeBinaryFrame | undefined;
-  onToggleMute: (identity: string) => Promise<boolean>;
-  onVolumeChange: (identity: string, v: number) => Promise<boolean>;
-  markPointed: (identity: string) => void;
-  nativeSurfaceEnabled: boolean;
-  onMove: (x: number, y: number) => void;
-  onResizeW: (w: number) => void;
-  onResizeH: (h: number) => void;
-  onDockBack: () => void;
-}
-
-/** Carte PIP interne : un partage détaché en carte flottante au-dessus de
- *  l'app. Drag par le bandeau (snap aux quatre coins à la dépose), resize par
- *  les bords gauche/bas (le bord droit reste ancré), son/pointage/curseurs
- *  fournis par `ShareTile`. `position: fixed` — la carte survit aux
- *  changements de salon. */
-function FloatingShareCard({ identity, name, hasAudio, muted, volume, x, y, w, h, subscribe, getLatest, onToggleMute, onVolumeChange, markPointed, nativeSurfaceEnabled, onMove, onResizeW, onResizeH, onDockBack }: FloatingShareCardProps) {
-  const { t } = useTranslation();
-
-  // Drag par le bandeau : écouteurs fenêtre le temps du geste, snap aux coins
-  // à la dépose (à moins de 48 px d'un bord → collage à 12 px).
-  const startDrag = (e: React.PointerEvent<HTMLDivElement>) => {
-    e.preventDefault();
-    const startX = e.clientX;
-    const startY = e.clientY;
-    const x0 = x;
-    const y0 = y;
-    let lastX = x;
-    let lastY = y;
-    const onMoveWin = (ev: PointerEvent) => {
-      lastX = Math.min(Math.max(x0 + ev.clientX - startX, 4), Math.max(4, window.innerWidth - w - 10));
-      // Au plus bas, on garde le bandeau (≈ 28 px) entièrement visible :
-      // sinon la carte lâchée en bas ne se voit « plus du tout » et le bouton
-      // « remettre en ligne » devient inatteignable.
-      lastY = Math.min(Math.max(y0 + ev.clientY - startY, 4), Math.max(4, window.innerHeight - 60));
-      onMove(lastX, lastY);
-    };
-    const onUpWin = () => {
-      window.removeEventListener("pointermove", onMoveWin);
-      window.removeEventListener("pointerup", onUpWin);
-      const SNAP = 48;
-      const MARGIN = 12;
-      let sx = lastX;
-      let sy = lastY;
-      if (lastX <= SNAP) sx = MARGIN;
-      else if (window.innerWidth - (lastX + w) <= SNAP) sx = window.innerWidth - w - MARGIN;
-      if (lastY <= SNAP) sy = MARGIN;
-      else if (window.innerHeight - (lastY + h) <= SNAP) sy = window.innerHeight - h - MARGIN;
-      if (sx !== lastX || sy !== lastY) onMove(sx, sy);
-    };
-    window.addEventListener("pointermove", onMoveWin);
-    window.addEventListener("pointerup", onUpWin);
+/** La diffusion commune réutilise son, volume, plein écran et pointage du partage. */
+export function MeetingScreenTile({ identity, name, hasAudio, onSelect }: { identity: string; name: string; hasAudio: boolean; onSelect: () => void }) {
+  const [audio, setAudio] = useState(() => screenShareAudioState(identity));
+  const [native, setNative] = useState<boolean | null>(null);
+  const latest = useRef<VoiceNativeBinaryFrame | undefined>(undefined);
+  useEffect(() => {
+    let alive = true;
+    let stop: (() => void) | undefined;
+    let revision = 0;
+    void isNativeVideoSurfaceAvailable().then((ready) => { if (alive) setNative(ready); }).catch(() => { if (alive) setNative(false); });
+    void onVoiceNativeShareAudio((event) => {
+      if (!alive || event.sender !== identity) return;
+      revision++;
+      const value = { muted: event.muted, volume: event.volume };
+      shareAudioState.set(identity, value); setAudio(value);
+    }).then((cleanup) => { if (alive) stop = cleanup; else cleanup(); }).catch(() => {});
+    const before = revision;
+    void getVoiceNativeShareAudioState(identity).then((value) => {
+      if (alive && revision === before) { shareAudioState.set(identity, value); setAudio(value); }
+    }).catch(() => {});
+    return () => { alive = false; stop?.(); };
+  }, [identity]);
+  const subscribe = useCallback((callback: (frame: VoiceNativeBinaryFrame) => void) => subscribeVideoFrames(identity, (frame) => { latest.current = frame; callback(frame); }), [identity]);
+  const mute = async () => {
+    try { return await setVoiceNativeShareAudioMuted(identity, !screenShareAudioState(identity).muted); }
+    catch { return false; }
   };
-
-  return (
-    <div
-      style={{
-        position: 'fixed', left: x, top: y, width: w + 6, height: h + 6,
-        zIndex: 400, display: 'flex',
-      }}
-    >
-      <ResizeHandle
-        side="left"
-        value={w}
-        min={SHARE_FLOATING_MIN_W}
-        max={Math.max(SHARE_FLOATING_MIN_W, window.innerWidth - 40)}
-        onChange={onResizeW}
-        onReset={() => onResizeW(440)}
-        label={t("screenShare.floatResize", { defaultValue: "Redimensionner la carte flottante — double-clic pour la taille par défaut" })}
-      />
-      <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
-        <div style={{ flex: 1, minHeight: 0, borderRadius: 10, overflow: 'hidden', boxShadow: '0 12px 40px rgba(0,0,0,0.55)' }}>
-          <ShareTile
-            identity={identity}
-            name={name}
-            hasAudio={hasAudio}
-            muted={muted}
-            volume={volume}
-            subscribe={subscribe}
-            getLatest={getLatest}
-            onSelect={() => { /* la carte flottante ne « sélectionne » rien */ }}
-            onToggleMute={onToggleMute}
-            onVolumeChange={onVolumeChange}
-            markPointed={markPointed}
-            nativeSurfaceEnabled={nativeSurfaceEnabled}
-            fill
-            onHeaderDragStart={startDrag}
-            headerExtra={(
-              <button
-                type="button"
-                onClick={(e) => { e.stopPropagation(); onDockBack(); }}
-                title={t("screenShare.dockBack", { defaultValue: "Remettre en ligne (Ctrl+Maj+P)" })}
-                aria-label={t("screenShare.dockBack", { defaultValue: "Remettre en ligne (Ctrl+Maj+P)" })}
-                className="flex items-center shrink-0"
-                style={{ border: 'none', background: 'transparent', cursor: 'pointer', padding: 0, color: 'var(--color-on-surface-variant)' }}
-              >
-                <DockIcon />
-              </button>
-            )}
-          />
-        </div>
-        <ResizeHandle
-          side="bottom"
-          value={h}
-          min={SHARE_FLOATING_MIN_H}
-          max={Math.max(SHARE_FLOATING_MIN_H, window.innerHeight - 60)}
-          onChange={onResizeH}
-          onReset={() => onResizeH(300)}
-          label={t("screenShare.floatResize", { defaultValue: "Redimensionner la carte flottante — double-clic pour la taille par défaut" })}
-        />
-      </div>
-    </div>
-  );
+  const volume = async (_identity: string, value: number) => {
+    try {
+      const changed = await setVoiceNativeShareAudioVolume(identity, value);
+      if (screenShareAudioState(identity).muted !== (value === 0)) await setVoiceNativeShareAudioMuted(identity, value === 0);
+      return changed;
+    } catch { return false; }
+  };
+  if (native === null) return null;
+  return <><ShareViewStyles /><ShareTile identity={identity} name={name} hasAudio={hasAudio} muted={audio.muted} volume={audio.volume} nativeSurfaceEnabled={native} subscribe={subscribe} getLatest={() => latest.current} onSelect={onSelect} onToggleMute={mute} onVolumeChange={volume} markPointed={() => {}} fill /></>;
 }
 
 /** Styles partagés des deux modes (ripples, bouton plein écran, tuiles) —
@@ -830,10 +735,9 @@ export function ScreenShareView() {
   const shareViewMaxVh = useLayoutStore((s) => s.shareViewMaxVh);
   const setShareViewMaxVh = useLayoutStore((s) => s.setShareViewMaxVh);
   const resetShareViewMaxVh = useLayoutStore((s) => s.resetShareViewMaxVh);
-  const shareDock = useLayoutStore((s) => s.shareDock);
-  const shareFloating = useLayoutStore((s) => s.shareFloating);
-  const setShareFloating = useLayoutStore((s) => s.setShareFloating);
-  const toggleShareDock = useLayoutStore((s) => s.toggleShareDock);
+  const streams = useMeetingStreams();
+  const meeting = useVideoMeetingStore();
+  const detachedKeys = selectedMeetingStreams(streams, meeting.selection).map((s) => s.key);
   const nativeShares: ScreenShareInfo[] = useMemo(() => {
     return nativeParticipants
       .filter((p) => p.isScreenSharing)
@@ -878,16 +782,14 @@ export function ScreenShareView() {
 
   // PIP natif (fenêtre OS au-dessus des autres applis) : état reflété depuis
   // Rust — elle peut s'être fermée seule (fin de partage, clic droit).
-  const [nativePipOpen, setNativePipOpen] = useState(false);
+  const nativePip = useNativePip();
+  const nativePipOpen = !!activeIdentity && (nativePip.sources.includes(activeIdentity) || (meeting.mode === "internal" && detachedKeys.includes(activeIdentity)));
+  const shareDock = nativePipOpen ? "floating" : "inline";
+  const toggleShareDock = () => { void (meeting.mode === "closed" ? showVideoMeeting("internal", streams) : closeVideoMeeting()); };
   // `null` = sonde Rust en cours. On ne démarre pas le fallback JPEG pendant
   // ces quelques millisecondes, sinon chaque lancement créerait inutilement
   // un serveur et une connexion WebSocket avant de basculer sur GTK.
   const [nativeSurfaceEnabled, setNativeSurfaceEnabled] = useState<boolean | null>(null);
-  useEffect(() => {
-    let alive = true;
-    void pipNativeStatus().then((open) => { if (alive) setNativePipOpen(open); });
-    return () => { alive = false; };
-  }, [activeIdentity]);
   useEffect(() => {
     let alive = true;
     void isNativeVideoSurfaceAvailable().then((available) => {
@@ -1076,6 +978,9 @@ export function ScreenShareView() {
       }).then((u) => { unsubStopped = u; }).catch(() => {});
     }).catch(() => {});
     connectVoiceNativeVideoStream((frame) => {
+      // Les webcams utilisent le même transport, avec des clés distinctes.
+      // Leur cache et leur rendu appartiennent à CameraStream.
+      if (frame.sender.startsWith("camera:")) return;
       framesRef.current.set(frame.sender, frame);
       // Diffuse aux tuiles abonnées (mode mosaïque) — un abonné défaillant
       // ne doit pas casser le flux des autres.
@@ -1530,23 +1435,6 @@ export function ScreenShareView() {
     };
   }, []);
 
-  // Le PIP natif peut se fermer tout seul (bouton maison, clic droit,
-  // Échap) : l'état du bouton de la vue suit.
-  useEffect(() => {
-    let alive = true;
-    let unlisten: (() => void) | undefined;
-    void onVoiceNativePip((ev) => {
-      if (alive) setNativePipOpen(ev.open);
-    }).then((fn) => {
-      if (alive) unlisten = fn;
-      else fn();
-    });
-    return () => {
-      alive = false;
-      unlisten?.();
-    };
-  }, []);
-
   /** Plein écran depuis le bouton de la barre d'onglets (même logique que le
    *  double-clic sur la vidéo). */
   const handleToggleFullscreen = () => {
@@ -1574,61 +1462,8 @@ export function ScreenShareView() {
   // than not rendering them at all.
   const visibleClicks = clicks.filter((c) => !!c.target && c.target === activeIdentity);
 
-  // Carte PIP interne : le partage détaché vit en `position: fixed` au-dessus
-  // de l'app. En vue simple elle REMPLACE le bloc en ligne (le chat respire) ;
-  // en mosaïque elle se CUMULE avec la grille (mosaïque + PIP). Position/
-  // taille persistées ; x/y négatifs = « coller en bas à droite » (calculé
-  // ici, la fenêtre n'est pas connue du store).
-  // Mosaïque + PIP : la grille n'affiche PAS le partage déjà dans la carte
-  // flottante (sinon il apparaît en double) ; cliquer une tuile ou un onglet
-  // échange la carte au lieu de quitter la mosaïque.
-  const mosaicShares = shareDock === "floating"
-    ? activeShares.filter((s) => s.participantIdentity !== activeIdentity)
-    : activeShares;
-
-  let floatingCard: React.ReactNode = null;
-  if (shareDock === "floating") {
-    const fw = Math.min(Math.max(shareFloating.w, SHARE_FLOATING_MIN_W), Math.max(SHARE_FLOATING_MIN_W, window.innerWidth - 24));
-    const fh = Math.min(Math.max(shareFloating.h, SHARE_FLOATING_MIN_H), Math.max(SHARE_FLOATING_MIN_H, window.innerHeight - 60));
-    const fx = shareFloating.x < 0
-      ? Math.max(8, window.innerWidth - fw - 24)
-      : Math.min(Math.max(shareFloating.x, 4), Math.max(4, window.innerWidth - fw - 10));
-    const fy = shareFloating.y < 0
-      ? Math.max(8, window.innerHeight - fh - 24)
-      : Math.min(Math.max(shareFloating.y, 4), Math.max(4, window.innerHeight - 60));
-    floatingCard = (
-      <FloatingShareCard
-        identity={activeShare.participantIdentity}
-        name={activeShare.participantName}
-        hasAudio={!!activeShare.hasAudio}
-        muted={audioMuted}
-        volume={audioVolume}
-        x={fx}
-        y={fy}
-        w={fw}
-        h={fh}
-        subscribe={(cb) => subscribeFrames(activeShare.participantIdentity, cb)}
-        getLatest={() => framesRef.current.get(activeShare.participantIdentity)}
-        onToggleMute={handleToggleAudioMute}
-        onVolumeChange={handleVolumeChange}
-        markPointed={(id) => { pointedTargetsRef.current.add(id); }}
-        nativeSurfaceEnabled={nativeSurfaceEnabled === true}
-        onMove={(mx, my) => setShareFloating({ x: mx, y: my })}
-        onResizeW={(nw) => setShareFloating({ x: Math.max(4, fx + (fw - nw)), w: nw })}
-        onResizeH={(nh) => setShareFloating({ h: nh })}
-        onDockBack={toggleShareDock}
-      />
-    );
-  }
-
-  if (floatingCard && (!mosaic || mosaicShares.length === 0)) {
-    return (
-      <>
-        <ShareViewStyles />
-        {floatingCard}
-      </>
-    );
-  }
+  const detached = new Set([...nativePip.sources, ...(meeting.mode === "internal" ? detachedKeys : [])]);
+  const mosaicShares = activeShares.filter((s) => !detached.has(s.participantIdentity));
 
   return (
     <div className="bg-black flex flex-col items-center border-b border-[var(--color-border)]">
@@ -1799,13 +1634,9 @@ export function ScreenShareView() {
           <button
             type="button"
             onClick={() => {
-              if (nativePipOpen) {
-                void pipNativeClose();
-                setNativePipOpen(false);
-                return;
-              }
-              void pipNativeOpen(activeIdentity).then((ok) => setNativePipOpen(ok));
+              void showVideoMeeting("system", streams);
             }}
+            disabled={nativePip.busy}
             title={t("screenShare.nativePip", { defaultValue: "PIP natif — fenêtre au-dessus des autres applications (glisser pour déplacer, clic droit pour fermer)" })}
             aria-label={t("screenShare.nativePip", { defaultValue: "PIP natif — fenêtre au-dessus des autres applications (glisser pour déplacer, clic droit pour fermer)" })}
             aria-pressed={nativePipOpen}
@@ -1881,6 +1712,7 @@ export function ScreenShareView() {
             ['--sion-share-max-height' as string]: `${shareViewMaxVh}vh`,
           } as React.CSSProperties}
         />
+        {nativePipOpen && <button type="button" className="sion-meeting-detached" onClick={() => { void closeVideoMeeting(); }}>{t("meeting.detached")}</button>}
         {videoMasquee && activeIdentity && (
           <div style={{
             width: '100%', padding: '14px 16px', display: 'flex', alignItems: 'center', gap: 12,
@@ -1983,7 +1815,7 @@ export function ScreenShareView() {
         {/* Bouton plein écran posé sur la vidéo (visibilité gérée par la
             règle `.ss-expand` du <style> ci-dessus : au survol, au clavier
             et sur tactile). Le double-clic sur la vidéo reste équivalent. */}
-        {nativeSurfaceEnabled !== true && <button
+        {nativeSurfaceEnabled !== true && !nativePipOpen && !videoMasquee && <button
           type="button"
           onClick={handleToggleFullscreen}
           title={t("screenShare.fullscreen", { defaultValue: "Plein écran" })}
@@ -2002,7 +1834,7 @@ export function ScreenShareView() {
       {/* Poignée de hauteur du partage : tire vers le haut pour réduire (le
           chat respire), vers le bas pour agrandir ; double-clic = 50 %. La
           valeur est persistée avec le layout (reprise au chargement). */}
-      <ResizeHandle
+      {!nativePipOpen && <ResizeHandle
         side="bottom"
         value={(shareViewMaxVh / 100) * (window.innerHeight || 800)}
         min={(SHARE_VIEW_MIN_VH / 100) * (window.innerHeight || 800)}
@@ -2010,10 +1842,9 @@ export function ScreenShareView() {
         onChange={(px) => setShareViewMaxVh((px / (window.innerHeight || 800)) * 100)}
         onReset={resetShareViewMaxVh}
         label={t("layout.resizeShareView", { defaultValue: "Réduire ou agrandir la zone de partage — double-clic pour la taille par défaut" })}
-      />
+      />}
       {/* Mosaïque + PIP : la carte flottante se cumule avec la grille (elle
           est en `position: fixed`, hors flux — aucun impact sur la grille). */}
-      {floatingCard}
     </div>
   );
 }

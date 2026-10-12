@@ -32,3 +32,12 @@
 -keep class org.webrtc.** { *; }
 -keep, includedescriptorclasses class org.rustls.platformverifier.** { *; }
 -keep class com.sion.client.SionNatif { *; }
+-keep class com.sion.client.CameraBridge { *; }
+-keep class com.sion.client.CameraBridge$Companion { *; }
+# Pont du retour prédictif, invoqué depuis JavaScript.
+-keepclassmembers class com.sion.client.MobileNavigationBridge {
+    @android.webkit.JavascriptInterface <methods>;
+}
+-keepclassmembers class com.sion.client.PartageBridge {
+    @android.webkit.JavascriptInterface <methods>;
+}

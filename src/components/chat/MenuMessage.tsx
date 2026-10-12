@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
+import { EVENEMENT_FERMER_MENU, ouvertALInstant } from "../../utils/menuContextuel";
 
 export interface ActionMenuMessage {
   label: string;
@@ -31,8 +32,10 @@ export function MenuMessage({ x, y, actions, onClose }: {
   useEffect(() => { ref.current?.querySelector<HTMLButtonElement>("button")?.focus(); }, []);
   useEffect(() => {
     const dehors = (event: MouseEvent) => {
+      if (ouvertALInstant()) return;
       if (!ref.current?.contains(event.target as Node)) onClose();
     };
+    const retour = (event: Event) => { event.preventDefault(); onClose(true); };
     const echap = (event: KeyboardEvent) => { if (event.key === "Escape") onClose(true); };
     const redimensionner = () => onClose();
     const defiler = (event: Event) => {
@@ -42,16 +45,18 @@ export function MenuMessage({ x, y, actions, onClose }: {
     window.addEventListener("keydown", echap);
     window.addEventListener("scroll", defiler, true);
     window.addEventListener("resize", redimensionner);
+    window.addEventListener(EVENEMENT_FERMER_MENU, retour);
     return () => {
       window.removeEventListener("mousedown", dehors);
       window.removeEventListener("keydown", echap);
       window.removeEventListener("scroll", defiler, true);
       window.removeEventListener("resize", redimensionner);
+      window.removeEventListener(EVENEMENT_FERMER_MENU, retour);
     };
   }, [onClose]);
 
   return createPortal(
-    <div ref={ref} className="sion-menu-message" role="menu"
+    <div ref={ref} className="sion-menu-message" role="menu" data-menu-contextuel
       onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); }}
       onKeyDown={(event) => {
         const buttons = Array.from(ref.current?.querySelectorAll<HTMLButtonElement>("button") ?? []);

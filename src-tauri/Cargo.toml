@@ -1,11 +1,11 @@
 [workspace]
-members = ["native-audio", "sion-matrix"]
+members = ["native-audio", "sion-matrix", "camera-effects"]
 default-members = ["."]
 resolver = "2"
 
 [package]
 name = "sion-client"
-version = "2.0.0-beta.9"
+version = "2.0.0-beta.10"
 description = "Sion Client - Voice/Text client based on Matrix + LiveKit"
 authors = ["Sion"]
 license = "MIT OR Apache-2.0"
@@ -55,6 +55,7 @@ tauri-plugin-notification = "2.3.3"
 # défaut (libwebrtc est volumineux). TLS en rustls/webpki-roots comme
 # reqwest ci-dessus (pas d'OpenSSL système requis).
 sion-native-audio = { path = "native-audio", optional = true }
+sion-camera-effects = { path = "camera-effects", optional = true }
 webrtc-sys = { version = "=0.3.47", features = ["sion-audio"], optional = true }
 # `glib-main-loop` : indispensable au capturer PipeWire/Wayland — sans la
 # boucle GLib, le portail XDG affiche le sélecteur d'écran mais aucune frame
@@ -265,7 +266,7 @@ tempfile = "3"
 # Le moteur Matrix est le cœur Rust depuis la 2.0.0-beta.2 (docs/plan-matrix-rust-sdk.md) ;
 # `build-android.sh` retire ces deux features le temps du build Android.
 default = ["native-voice", "moteur-matrix-rust"]
-native-voice = ["dep:sion-native-audio", "dep:webrtc-sys", "dep:livekit", "dep:tokio", "dep:futures-util", "dep:jpeg-rusturbo"]
+native-voice = ["dep:sion-native-audio", "dep:webrtc-sys", "dep:livekit", "dep:tokio", "dep:futures-util", "dep:jpeg-rusturbo", "dep:sion-camera-effects"]
 # Moteur Matrix Rust : actif par défaut ; SION_MATRIX_MOTEUR=js relance
 # l'ancien moteur (secours), =rust-apercu l'écran de diagnostic du cœur.
 moteur-matrix-rust = ["dep:sion-matrix", "dep:rustls"]
@@ -332,6 +333,12 @@ softbuffer = { path = "vendor-softbuffer" }
 
 # Keep the native 10 ms audio callback optimized in development too.
 [profile.dev.package.sion-native-audio]
+opt-level = 3
+[profile.dev.package.sion-camera-effects]
+opt-level = 3
+[profile.dev.package.tract-core]
+opt-level = 3
+[profile.dev.package.tract-linalg]
 opt-level = 3
 [profile.dev.package.nnnoiseless]
 opt-level = 3

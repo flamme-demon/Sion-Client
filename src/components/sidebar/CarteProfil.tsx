@@ -72,7 +72,7 @@ export function CarteProfil({ compact = false }: { compact?: boolean }) {
       <div style={{ display: 'flex', flexDirection: compact ? 'column' : 'row', alignItems: 'center', gap: 4 }}>
         <button type="button" onClick={() => toggleMute()} aria-pressed={isMuted} aria-label={isMuted ? t("controls.unmute") : t("controls.mute")} title={isMuted ? t("controls.unmute") : t("controls.mute")} style={audioBouton(isMuted)}><MicIcon muted={isMuted} /></button>
         <button type="button" onClick={toggleDeafen} aria-pressed={isDeafened} aria-label={isDeafened ? t("controls.undeafen") : t("controls.deafen")} title={isDeafened ? t("controls.undeafen") : t("controls.deafen")} style={audioBouton(isDeafened)}><HeadphoneIcon muted={isDeafened} /></button>
-        {!compact && <button type="button" data-panel-toggle onClick={toggleSettings} onPointerEnter={() => preloadHeavyScreens(0)} aria-label={t("settings.title")} title={t("settings.title")} aria-pressed={showSettings} style={audioBouton(false)}><SettingsIcon /></button>}
+        <button type="button" data-panel-toggle onClick={toggleSettings} onPointerEnter={() => preloadHeavyScreens(0)} aria-label={t("settings.title")} title={t("settings.title")} aria-pressed={showSettings} style={audioBouton(false)}><SettingsIcon /></button>
         {raccrocher}
       </div>
       {!compact && <>

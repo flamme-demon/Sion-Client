@@ -34,7 +34,7 @@ it("en rail, micro et casque restent utilisables avec l'avatar et raccrocher", a
   useAppStore.setState({ connectedVoiceChannel: "!salon" });
   await vue.render(<CarteProfil compact />);
   expect(vue.container.querySelector('[aria-label="settings.account"]')).not.toBeNull();
-  expect(vue.container.querySelector('[aria-label="settings.title"]')).toBeNull();
+  expect(vue.container.querySelector('[aria-label="settings.title"]')).not.toBeNull();
   await vue.click('[aria-label="controls.mute"]');
   expect(useAppStore.getState().isMuted).toBe(true);
   expect(vue.container.querySelector('[aria-label="controls.unmute"]')?.getAttribute("aria-pressed")).toBe("true");

@@ -5,11 +5,13 @@ import { useTranslation } from "react-i18next";
 import { useMatrixStore } from "../../stores/useMatrixStore";
 import { useAppStore } from "../../stores/useAppStore";
 import { useSettingsStore, type ChannelSortMode } from "../../stores/useSettingsStore";
-import { SortIcon } from "../icons";
+import { PlusIcon, SortIcon } from "../icons";
 import { NavigationEspaces } from "./NavigationEspaces";
+import { SalonsHorsEspace } from "./SalonsHorsEspace";
 import { useIsMobile } from "../../hooks/useIsMobile";
 import { ChannelItem } from "./ChannelItem";
 import { MatrixRain, MATRIX_GREEN } from "./MatrixRain";
+import "./ParcourirSalonsEspace.css";
 
 const SORT_OPTIONS: ChannelSortMode[] = ["created", "name", "activity"];
 
@@ -19,17 +21,23 @@ const SORT_KEYS: Record<ChannelSortMode, string> = {
   activity: "channels.sortActivity",
 };
 
-export function ChannelList({ compact = false }: { compact?: boolean }) {
-  const { t } = useTranslation();
+export function ChannelList({ compact = false, navigationEspaces = true }: { compact?: boolean; navigationEspaces?: boolean }) {
+  const { t, i18n } = useTranslation(undefined, { bindI18n: "languageChanged loaded" });
   const isMobile = useIsMobile();
   const channels = useMatrixStore((s) => s.channels);
   const espaceActif = useEspacesStore((s) => s.espaceActif);
+  const hierarchies = useEspacesStore((s) => s.hierarchies);
   const connectingVoice = useAppStore((s) => s.connectingVoiceChannel);
   const channelSort = useSettingsStore((s) => s.channelSort);
   const setChannelSort = useSettingsStore((s) => s.setChannelSort);
   const sidebarView = useSettingsStore((s) => s.sidebarView);
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
+  const salonsHorsEspace = useMemo(() => salonsDansEspace(channels, null, hierarchies), [channels, hierarchies]);
+
+  useEffect(() => {
+    if (import.meta.env.DEV && i18n && !i18n.exists("spaces.chooseRooms")) void i18n.reloadResources().catch(() => {});
+  }, [i18n]);
 
   // Close menu on outside click
   useEffect(() => {
@@ -49,7 +57,7 @@ export function ChannelList({ compact = false }: { compact?: boolean }) {
     // watching (leading to "the message disappeared" confusion). Duplicates
     // are cleaned up via the admin-side "Nettoyer MP dupliqués" action.
     const filtered = sidebarView === "dm" ? channels.filter((ch) => ch.isDM && !ch.isSpace && !ch.isSoundboard)
-      : salonsDansEspace(channels, espaceActif);
+      : salonsDansEspace(channels, espaceActif, hierarchies);
     const copy = [...filtered];
     switch (channelSort) {
       case "created":
@@ -61,14 +69,14 @@ export function ChannelList({ compact = false }: { compact?: boolean }) {
       default:
         return copy;
     }
-  }, [channels, channelSort, sidebarView, espaceActif]);
+  }, [channels, channelSort, sidebarView, espaceActif, hierarchies]);
 
   return (
-    <div style={{ flex: 1, overflowY: 'auto', padding: compact ? '4px 6px' : '4px 12px' }}>
+    <div className="sion-liste-salons" style={{ flex: 1, overflowY: 'auto', padding: compact ? '4px 6px' : '4px 12px' }}>
       {/* Sur téléphone, les espaces restent dans la liste ; desktop utilise le rail. */}
       {(isMobile || !compact) && <div style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '8px 12px' }}>
-        {isMobile && <NavigationEspaces />}
-        {!isMobile && <span className="sion-titre" style={{ fontSize: 11, fontWeight: 600, color: 'var(--color-on-surface-variant)' }}>{t(sidebarView === "dm" ? "channels.tabDM" : "layout.channels")}</span>}
+        {isMobile && navigationEspaces && <NavigationEspaces />}
+        {(!isMobile || !navigationEspaces) && <span className="sion-titre" style={{ fontSize: 11, fontWeight: 600, color: 'var(--color-on-surface-variant)' }}>{t(sidebarView === "dm" ? "channels.tabDM" : "layout.channels")}</span>}
         {!compact && (
         <div ref={menuRef} style={{ position: 'relative', marginLeft: 'auto', flexShrink: 0 }}>
           <button
@@ -134,6 +142,9 @@ export function ChannelList({ compact = false }: { compact?: boolean }) {
         </div>
         )}
       </div>}
+      {salonsHorsEspace.length > 0 && <SalonsHorsEspace compact={compact} />}
+      {sidebarView === "channels" && espaceActif && channels.some((c) => c.id === espaceActif && c.isSpace && c.membership !== "invite") && <button type="button" className="sion-parcourir-salons"
+        title={t("spaces.browseRooms")} aria-label={t("spaces.browseRooms")} onClick={() => useEspacesStore.getState().ouvrir("parcourir")}><PlusIcon />{!compact && t("spaces.browseRooms")}</button>}
       {connectingVoice ? (
         <div style={{
           flex: 1, display: 'flex', flexDirection: 'column',
@@ -159,6 +170,7 @@ export function ChannelList({ compact = false }: { compact?: boolean }) {
           {sortedChannels.map((ch) => (
             <ChannelItem key={ch.id} channel={ch} compact={compact} />
           ))}
+          {!compact && sidebarView === "channels" && espaceActif && !sortedChannels.length && <p className="sion-salons-vides">{t("spaces.chooseRoomsEmpty")}</p>}
         </div>
       )}
     </div>

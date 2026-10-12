@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { useLayoutStore } from "../../stores/useLayoutStore";
 import { PANNEAU_CORPS, PANNEAU_TITRES } from "../layout/panneaux";
 import { CloseIcon } from "../icons";
+import { ContexteBoard } from "../chat/ContexteBoard";
 
 /**
  * Téléphone : le panneau courant s'ouvre en feuille qui monte du bas.
@@ -26,6 +27,7 @@ export function MobilePanelSheet() {
       }}
     >
       <div
+        className="sion-mobile-panel-sheet"
         onClick={(e) => e.stopPropagation()}
         style={{
           height: "85vh",
@@ -56,6 +58,7 @@ export function MobilePanelSheet() {
             <CloseIcon />
           </button>
         </div>
+        {(courant === "soundboard" || courant === "memeboard") && <ContexteBoard />}
         <div style={{ flex: 1, minHeight: 0, overflow: "auto" }}>
           <Suspense fallback={null}>
             <Corps />

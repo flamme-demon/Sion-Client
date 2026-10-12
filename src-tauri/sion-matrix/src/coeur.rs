@@ -593,6 +593,67 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn annuaire_utilise_api_authentifiee_et_rend_des_profils_sans_jeton() {
+        use std::io::{BufRead, Read, Write};
+        use std::net::TcpListener;
+        use matrix_sdk::ruma::api::MatrixVersion;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let serveur = std::thread::spawn(move || {
+            let debut = std::time::Instant::now();
+            let mut socket = loop {
+                match listener.accept() {
+                    Ok((socket, _)) => break socket,
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock && debut.elapsed() < Duration::from_secs(10) => std::thread::sleep(Duration::from_millis(10)),
+                    Err(e) => panic!("requête d'annuaire absente : {e}"),
+                }
+            };
+            socket.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            let mut lecteur = std::io::BufReader::new(&socket);
+            let mut ligne = String::new();
+            lecteur.read_line(&mut ligne).unwrap();
+            assert!(ligne.starts_with("POST /_matrix/client/v3/user_directory/search "));
+            let mut longueur = 0;
+            let mut authentifie = false;
+            loop {
+                ligne.clear(); lecteur.read_line(&mut ligne).unwrap();
+                if ligne == "\r\n" || ligne.is_empty() { break; }
+                let entete = ligne.to_ascii_lowercase();
+                if let Some(v) = entete.strip_prefix("content-length:") { longueur = v.trim().parse::<usize>().unwrap(); }
+                authentifie |= entete.trim() == "authorization: bearer fictif";
+            }
+            assert!(authentifie);
+            assert!(longueur < 1024);
+            let mut corps = vec![0; longueur]; lecteur.read_exact(&mut corps).unwrap();
+            assert_eq!(serde_json::from_slice::<serde_json::Value>(&corps).unwrap(), serde_json::json!({ "search_term": "Alice", "limit": 50 }));
+            drop(lecteur);
+            let reponse = serde_json::json!({ "results": [
+                { "user_id": "@alice:example.test", "display_name": "Alice 🐈", "avatar_url": "mxc://example.test/photo" },
+                { "user_id": "@ami:ailleurs.test", "display_name": " " }
+            ], "limited": true }).to_string();
+            write!(socket, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reponse}", reponse.len()).unwrap();
+        });
+        let client = Client::builder().homeserver_url(url).server_versions([MatrixVersion::V1_1]).build().await.unwrap();
+        client.restore_session(MatrixSession {
+            meta: SessionMeta { user_id: UserId::parse("@moi:example.test").unwrap(), device_id: OwnedDeviceId::from("FICTIF") },
+            tokens: SessionTokens { access_token: "fictif".into(), refresh_token: None },
+        }).await.unwrap();
+        let dossier = tempfile::tempdir().unwrap();
+        let c = coeur(dossier.path());
+        *c.client.lock().await = Some(client);
+        let profils = tokio::time::timeout(Duration::from_secs(10), c.rechercher_utilisateurs("  Alice  ")).await.unwrap().unwrap();
+        serveur.join().unwrap();
+        assert!(profils.limite);
+        assert_eq!(profils.utilisateurs[0].display_name, "Alice 🐈");
+        assert_eq!(profils.utilisateurs[0].user_id, "@alice:example.test");
+        assert!(profils.utilisateurs[0].avatar_url.as_deref().unwrap().contains("sion-media"));
+        assert_eq!(profils.utilisateurs[1].display_name, "ami");
+        assert!(profils.utilisateurs[1].avatar_url.is_none());
+        assert!(!serde_json::to_string(&profils).unwrap().contains("fictif"));
+    }
+
+    #[tokio::test]
     async fn purge_medias_sqlite_preserve_session_et_magasin_de_chiffrement() {
         use matrix_sdk::media::{MediaFormat, MediaRequestParameters, store::IgnoreMediaRetentionPolicy};
         use matrix_sdk::ruma::{OwnedMxcUri, events::room::MediaSource};

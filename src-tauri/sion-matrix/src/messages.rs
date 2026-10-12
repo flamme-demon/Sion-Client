@@ -488,9 +488,29 @@ pub(crate) fn extraire(evenements: &[EvenementBrut], ctx: &Contexte) -> Vec<Mess
                     }
                     .to_owned()
                 });
+                let corps = chaine(contenu.get("body")).unwrap_or_default();
+                let reponse = chaine(contenu.pointer("/m.relates_to/m.in_reply_to/event_id")).map(|cible| {
+                    let origine = msgs.iter().find(|m| m.id == cible);
+                    Reponse {
+                        event_id: cible,
+                        sender_id: origine.map(|m| m.sender_id.clone()),
+                        user: origine.map(|m| m.user.clone()),
+                        text: origine.map(|m| m.text.clone()).filter(|t| !t.is_empty()).or_else(|| citation_de_repli(&corps)),
+                        msgtype: origine.and_then(|m| m.msgtype.clone()),
+                        attachment_name: origine.and_then(|m| m.attachments.as_ref()).and_then(|a| a.first()).map(|a| a.name.clone()),
+                    }
+                });
+                let corps = if reponse.is_some() { sans_repli(&corps) } else { corps };
+                let nom = chaine(contenu.get("filename"));
+                let legende = nom.as_ref().is_some_and(|n| *n != corps);
+                let html = if legende && contenu.get("format").and_then(Value::as_str) == Some("org.matrix.custom.html") {
+                    chaine(contenu.get("formatted_body")).map(|h| if reponse.is_some() { sans_mx_reply(&h) } else { h })
+                } else {
+                    None
+                };
                 let piece = PieceJointe {
                     id: ev.id.clone(),
-                    name: chaine(contenu.get("body")).unwrap_or_else(|| "fichier".into()),
+                    name: nom.or_else(|| (!corps.is_empty()).then(|| corps.clone())).unwrap_or_else(|| "fichier".into()),
                     size: entier(info.get("size")).filter(|&t| t != 0).unwrap_or(0),
                     mime_type: type_mime,
                     url,
@@ -498,7 +518,10 @@ pub(crate) fn extraire(evenements: &[EvenementBrut], ctx: &Contexte) -> Vec<Mess
                     width: entier(info.get("w")),
                     height: entier(info.get("h")),
                 };
-                let mut m = nouveau(ev, ctx, String::new());
+                let mut m = nouveau(ev, ctx, if legende { corps } else { String::new() });
+                m.formatted_body = html;
+                m.msgtype = Some(msgtype);
+                m.reply_to = reponse;
                 m.attachments = Some(vec![piece]);
                 msgs.push(m);
             }
@@ -805,6 +828,33 @@ mod tests {
     #[test]
     fn media_sans_url_ignore() {
         assert!(extraire_(&[ev("m.room.message", json!({ "msgtype": "m.image", "body": "x" }))]).is_empty());
+    }
+
+    #[test]
+    fn legende_et_reponse_d_image_conservees() {
+        let origine = avec_id(ev("m.room.message", json!({ "msgtype": "m.text", "body": "Le paysage ?" })), "$origine");
+        let m = extraire_(&[origine, ev("m.room.message", json!({
+            "msgtype": "m.image", "filename": "photo.png", "body": "> <@alice:hs> Le paysage ?\n\nLa montagne",
+            "format": "org.matrix.custom.html", "formatted_body": "<mx-reply>citation</mx-reply><b>La montagne</b>",
+            "url": "mxc://hs/photo", "m.relates_to": { "m.in_reply_to": { "event_id": "$origine" } }
+        }))]);
+        assert_eq!(m[1].text, "La montagne");
+        assert_eq!(m[1].formatted_body.as_deref(), Some("<b>La montagne</b>"));
+        assert_eq!(m[1].msgtype.as_deref(), Some("m.image"));
+        assert_eq!(m[1].attachments.as_ref().unwrap()[0].name, "photo.png");
+        assert_eq!(m[1].reply_to.as_ref().unwrap().event_id, "$origine");
+        assert_eq!(m[1].reply_to.as_ref().unwrap().text.as_deref(), Some("Le paysage ?"));
+    }
+
+    #[test]
+    fn nom_d_image_ne_devient_pas_legende() {
+        for contenu in [json!({ "body": "photo.png" }), json!({ "body": "photo.png", "filename": "photo.png" })] {
+            let mut contenu = contenu;
+            contenu["msgtype"] = json!("m.image"); contenu["url"] = json!("mxc://hs/photo");
+            let m = extraire_(&[ev("m.room.message", contenu)]);
+            assert!(m[0].text.is_empty());
+            assert_eq!(m[0].attachments.as_ref().unwrap()[0].name, "photo.png");
+        }
     }
 
     #[test]

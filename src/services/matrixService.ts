@@ -7,6 +7,7 @@ import * as core from "./matrixCore";
 import * as cacheRust from "./cacheRust";
 import { moteurRust } from "./moteur";
 import { plateformeLocale } from "../utils/plateforme";
+import { contexteBibliotheque } from "../utils/bibliotheque";
 
 let matrixClient: MatrixClient | null = null;
 
@@ -850,6 +851,62 @@ export async function changePassword(oldPassword: string, newPassword: string): 
   );
 }
 
+/** Annuaire Matrix, complété par les comptes déjà découverts par l'admin.
+ * Continuwuity cache les comptes sans salon public ou partagé : ils doivent
+ * néanmoins rester recherchables pour les inviter dans leur premier espace.
+ * On réutilise la découverte existante, sans commande admin à chaque frappe. */
+export async function rechercherUtilisateurs(terme: string): Promise<core.ResultatAnnuaire> {
+  const recherche = terme.trim();
+  if (!recherche) return { utilisateurs: [], limite: false };
+  let resultat: core.ResultatAnnuaire;
+  if (moteurRust()) resultat = await core.rechercherUtilisateurs(recherche);
+  else {
+    if (!matrixClient) throw new Error("Matrix client not initialized");
+    const reponse = await matrixClient.searchUserDirectory({ term: recherche, limit: 50 });
+    resultat = {
+      utilisateurs: reponse.results.slice(0, 50).map((u) => ({
+        userId: u.user_id,
+        displayName: u.display_name?.trim() || u.user_id.slice(1).split(":")[0],
+        avatarUrl: u.avatar_url ? mxcToHttp(u.avatar_url) : null,
+      })),
+      limite: reponse.limited || reponse.results.length > 50,
+    };
+  }
+  const { useMatrixStore } = await import("../stores/useMatrixStore");
+  const moi = useMatrixStore.getState().currentUserId;
+  if (!moi) return resultat;
+  const domaine = moi.slice(moi.indexOf(":") + 1);
+  const profils = new Map(resultat.utilisateurs.map((u) => [u.userId, u]));
+  const termeMinuscule = recherche.toLowerCase();
+  const admins = moteurRust() ? await core.adminsServeur() : getServerAdminUserIds();
+  if (admins.includes(moi)) {
+    const { usePendingUsersStore } = await import("../stores/usePendingUsersStore");
+    const connus = [...usePendingUsersStore.getState()._knownUserIds].filter((id) =>
+      id.endsWith(`:${domaine}`) && id.toLowerCase().includes(termeMinuscule) && !profils.has(id)
+      && !/^@(conduit|conduwuit|continuwuity|server):/i.test(id));
+    // Au plus dix profils supplémentaires : assez pour la liste visible,
+    // même si le serveur comporte des milliers de comptes.
+    const ajoutes = await Promise.all(connus.slice(0, 10).map(async (userId) => {
+      const [nom, avatarUrl] = await Promise.all([fetchDisplayName(userId), getAvatarUrl(userId)]);
+      return { userId, displayName: nom?.trim() || userId.slice(1).split(":")[0], avatarUrl };
+    }));
+    for (const u of ajoutes) profils.set(u.userId, u);
+    resultat = { utilisateurs: [...profils.values()], limite: resultat.limite || connus.length > 10 };
+  }
+  // Un gestionnaire d'espace peut aussi retrouver un compte isolé par son
+  // pseudo exact. On vérifie son profil avant de proposer l'identifiant.
+  if (profils.size === 0 && /^@?[a-z0-9._=/-]+$/i.test(recherche)) {
+    const userId = `@${recherche.replace(/^@/, "").toLowerCase()}:${domaine}`;
+    const nom = await fetchDisplayName(userId);
+    if (nom?.trim()) {
+      resultat = { ...resultat, utilisateurs: [{ userId, displayName: nom.trim(), avatarUrl: await getAvatarUrl(userId) }] };
+    }
+  }
+  // Une recherche lancée avant une déconnexion ne rend pas les comptes de
+  // la session précédente à la nouvelle interface.
+  return useMatrixStore.getState().currentUserId === moi ? resultat : { utilisateurs: [], limite: false };
+}
+
 export async function fetchDisplayName(userId: string): Promise<string | null> {
   if (moteurRust()) {
     return core.nomUtilisateur(userId).catch(() => null);
@@ -1584,6 +1641,15 @@ export function getInvitePowerLevel(roomId: string): number {
   return content.invite ?? 0;
 }
 
+/** Matrix `redact` est indépendant du niveau de modification de l'état. */
+export function getRedactPowerLevel(roomId: string): number {
+  if (moteurRust()) return cacheRust.detailsSalon(roomId)?.niveauSuppression ?? 50;
+  const room = matrixClient?.getRoom(roomId);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const pl = room?.currentState?.getStateEvents?.("m.room.power_levels" as any, "");
+  return pl?.getContent?.().redact ?? 50;
+}
+
 export function getRoomMembers(roomId: string): { userId: string; displayName: string; avatarUrl: string | null; presence?: MatrixPresence }[] {
   if (moteurRust()) {
     return (cacheRust.detailsSalon(roomId)?.membres ?? []).map((m) => ({ userId: m.userId, displayName: m.displayName, avatarUrl: m.avatarUrl, presence: m.presence }));
@@ -1978,15 +2044,28 @@ let soundboardRoomCache: { domain: string; roomId: string | null } | null = null
 let soundboardLookupInflight: Promise<string | null> | null = null;
 
 /**
- * Returns the soundboard room id if the alias resolves, otherwise null.
- * Uses the current homeserver's domain so we never hardcode a host. Result
- * is cached for the session and de-duplicated across concurrent callers.
+ * Bibliothèque de l'espace consulté pour l'administration ; les modules
+ * utilisent "vocal" pour suivre l'espace de l'appel pendant la navigation.
+ * Sans espace, conserve la résolution historique par alias du homeserver.
  */
-export async function findSoundboardRoom(): Promise<string | null> {
-  const espace = useEspacesStore.getState().espaceActif;
+export async function findSoundboardRoom(usage: "espace" | "vocal" = "espace"): Promise<string | null> {
+  let espace = useEspacesStore.getState().espaceActif;
+  let bibliothequeConservee: string | undefined;
+  if (usage === "vocal") {
+    const [{ useAppStore }, { useMatrixStore }] = await Promise.all([
+      import("../stores/useAppStore"), import("../stores/useMatrixStore"),
+    ]);
+    const { hierarchies, espaceVocalConserve } = useEspacesStore.getState();
+    const contexte = contexteBibliotheque(useMatrixStore.getState().channels, espace,
+      useAppStore.getState().connectedVoiceChannel, hierarchies, espaceVocalConserve);
+    if (contexte.indisponible) return null;
+    espace = contexte.espaceId;
+    if (espaceVocalConserve?.espace.id === espace) bibliothequeConservee = espaceVocalConserve.espace.boardRoomId;
+  }
   if (espace) {
     const { espaceSelectionne, lireEtat } = await import("./espacesService");
-    return espaceSelectionne(espace)?.boardRoomId ?? (String((await lireEtat(espace, "com.sion.space"))?.board_room_id ?? "") || null);
+    return espaceSelectionne(espace)?.boardRoomId ?? bibliothequeConservee
+      ?? (String((await lireEtat(espace, "com.sion.space"))?.board_room_id ?? "") || null);
   }
   const id = await findLegacySoundboardRoom();
   const { useMatrixStore } = await import("../stores/useMatrixStore");

@@ -176,12 +176,12 @@ export async function fetchSoundboardMessages(
  */
 export async function listSounds(): Promise<SoundEntry[]> {
   if (moteurRust()) {
-    const salon = await findSoundboardRoom();
+    const salon = await findSoundboardRoom("vocal");
     return salon ? core.sons(salon) : [];
   }
   const client = getMatrixClient();
   if (!client) return [];
-  const roomId = await findSoundboardRoom();
+  const roomId = await findSoundboardRoom("vocal");
   if (!roomId) return [];
   const room = client.getRoom(roomId);
   if (!room) return [];
@@ -251,7 +251,7 @@ export async function listSounds(): Promise<SoundEntry[]> {
 }
 
 export async function getSoundboardRoomId(): Promise<string | null> {
-  return findSoundboardRoom();
+  return findSoundboardRoom("vocal");
 }
 
 /**
@@ -452,7 +452,7 @@ export async function editSound(
   }
   const client = getMatrixClient();
   if (!client) throw new Error("Matrix client not initialized");
-  const roomId = await findSoundboardRoom();
+  const roomId = await findSoundboardRoom("vocal");
   if (!roomId) throw new Error("Soundboard room not created");
 
   const clamped = clampGain(gain);
@@ -512,7 +512,7 @@ export async function deleteSound(eventId: string): Promise<void> {
   }
   const client = getMatrixClient();
   if (!client) throw new Error("Matrix client not initialized");
-  const roomId = await findSoundboardRoom();
+  const roomId = await findSoundboardRoom("vocal");
   if (!roomId) throw new Error("Soundboard room not created");
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   await (client as any).redactEvent(roomId, eventId);
@@ -775,7 +775,7 @@ export function playErrorBuzzer(): void {
 }
 
 async function bibliothequeRequise(): Promise<string> {
-  const id = await findSoundboardRoom();
+  const id = await findSoundboardRoom("vocal");
   if (!id) throw new Error("spaces.noLibrary");
   return id;
 }

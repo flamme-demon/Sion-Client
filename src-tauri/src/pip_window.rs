@@ -1,4 +1,4 @@
-//! Fenêtre PIP native du partage d'écran — au-dessus de toutes les applis.
+//! Fenêtre PIP native des vidéos (partages et webcams), au-dessus des applis.
 //!
 //! Complète le PIP *interne* (carte flottante dans la webview) : ici la
 //! fenêtre est une vraie fenêtre OS, `AlwaysOnTop`, sans décoration, pilotée
@@ -19,6 +19,8 @@
 //! La position est mémorisée en mémoire (par session) ; le partage terminé
 //! ferme la fenêtre automatiquement.
 
+use ab_glyph::{Font, FontRef, PxScale, ScaleFont};
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
@@ -43,10 +45,92 @@ const MIN_PAINT_INTERVAL: Duration = Duration::from_millis(33);
 struct PipFrame {
     width: u32,
     height: u32,
-    bgra: Vec<u8>,
-    /// Incrémentée à chaque image reçue ; la boucle compare pour savoir si
-    /// elle a déjà peint celle-ci.
-    generation: u64,
+    bgra: Arc<[u8]>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize)]
+pub struct PipSource {
+    sender: String,
+    name: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct TileRect {
+    x: u32,
+    y: u32,
+    w: u32,
+    h: u32,
+}
+
+// Même disposition que la fenêtre interne : partage en grand, rail des
+// autres flux ; sans partage, mosaïque. Les pixels restent bornés à la fenêtre.
+fn tile_rects(count: usize, focus: Option<usize>, size: (u32, u32)) -> Vec<TileRect> {
+    if count == 0 {
+        return vec![];
+    }
+    let (w, h) = size;
+    let whole = TileRect { x: 0, y: 0, w, h };
+    let grid = |count: usize, area: TileRect| {
+        let cols = ((count as f64 * area.w as f64 / area.h.max(1) as f64 * 9.0 / 16.0)
+            .sqrt()
+            .ceil() as usize)
+            .clamp(1, count);
+        let rows = count.div_ceil(cols);
+        (0..count)
+            .map(|i| {
+                let x = area.x + area.w * (i % cols) as u32 / cols as u32;
+                let y = area.y + area.h * (i / cols) as u32 / rows as u32;
+                let right = area.x + area.w * ((i % cols) + 1) as u32 / cols as u32;
+                let bottom = area.y + area.h * ((i / cols) + 1) as u32 / rows as u32;
+                TileRect {
+                    x,
+                    y,
+                    w: right - x,
+                    h: bottom - y,
+                }
+            })
+            .collect::<Vec<_>>()
+    };
+    let Some(focus) = focus.filter(|&i| i < count && count > 1) else {
+        return grid(count, whole);
+    };
+    let (main, rail) = if w >= h {
+        let rail = w * 28 / 100;
+        (
+            TileRect {
+                w: w - rail,
+                ..whole
+            },
+            TileRect {
+                x: w - rail,
+                w: rail,
+                ..whole
+            },
+        )
+    } else {
+        let rail = h * 35 / 100;
+        (
+            TileRect {
+                h: h - rail,
+                ..whole
+            },
+            TileRect {
+                y: h - rail,
+                h: rail,
+                ..whole
+            },
+        )
+    };
+    let mut others = grid(count - 1, rail).into_iter();
+    (0..count)
+        .map(|i| {
+            if i == focus {
+                main
+            } else {
+                others.next().unwrap()
+            }
+        })
+        .collect()
 }
 
 #[derive(Default)]
@@ -56,7 +140,10 @@ struct PipState {
     /// Dernière image reçue pour ce partage (gardée : une source en pause
     /// laisse l'écran rempli au lieu de noircir, et une réouverture repart de
     /// la dernière image au lieu d'un écran noir).
-    frame: Option<PipFrame>,
+    frames: HashMap<String, PipFrame>,
+    streams: Vec<PipSource>,
+    focus: Option<String>,
+    generation: u64,
     /// Dernière génération peinte par la boucle d'événements.
     painted: u64,
     /// Position mémorisée de la fenêtre (retrouvée à la réouverture).
@@ -72,6 +159,42 @@ struct PipState {
     /// — le moteur peut être tenu par le décodage vidéo).
     share_audio_muted: bool,
     cursor_enabled: bool,
+}
+
+impl PipState {
+    fn configure(&mut self, streams: Vec<PipSource>, focus: Option<String>) {
+        let focus = match focus.as_deref() {
+            Some("") => None,
+            Some(key) if streams.iter().any(|s| s.sender == key) => focus,
+            _ => streams
+                .iter()
+                .find(|s| !s.sender.starts_with("camera:"))
+                .map(|s| s.sender.clone()),
+        };
+        let sender = focus
+            .clone()
+            .or_else(|| streams.first().map(|s| s.sender.clone()));
+        if self.sender != sender {
+            self.cursor_enabled = false;
+            self.share_audio_muted = false;
+        }
+        self.sender = sender;
+        self.focus = focus;
+        self.frames
+            .retain(|key, _| streams.iter().any(|s| &s.sender == key));
+        self.streams = streams;
+        self.generation = self.generation.wrapping_add(1);
+        self.painted = 0;
+    }
+    fn rects(&self, size: (u32, u32)) -> Vec<TileRect> {
+        tile_rects(
+            self.streams.len(),
+            self.focus
+                .as_ref()
+                .and_then(|key| self.streams.iter().position(|s| &s.sender == key)),
+            size,
+        )
+    }
 }
 
 #[derive(Debug)]
@@ -217,10 +340,14 @@ fn snap_pos_to_corner(
 }
 
 /// Coins haut-gauche des trois boutons (retour, son, pointeur).
-fn button_rects(w: u32, _h: u32) -> ((u32, u32), (u32, u32), (u32, u32)) {
+fn button_rects(w: u32, _h: u32, share_controls: bool) -> ((u32, u32), (u32, u32), (u32, u32)) {
     let mute_x = w.saturating_sub(BTN_MARGIN + BTN);
     let cursor_x = mute_x.saturating_sub(BTN_GAP + BTN);
-    let back_x = cursor_x.saturating_sub(BTN_GAP + BTN);
+    let back_x = if share_controls {
+        cursor_x.saturating_sub(BTN_GAP + BTN)
+    } else {
+        mute_x
+    };
     (
         (back_x, BTN_MARGIN),
         (mute_x, BTN_MARGIN),
@@ -236,8 +363,8 @@ enum PipButton {
 }
 
 /// Bouton sous le curseur (position en pixels physiques, comme la fenêtre).
-fn hit_button(pos: (f64, f64), w: u32, h: u32) -> Option<PipButton> {
-    let (back, mute, cursor) = button_rects(w, h);
+fn hit_button(pos: (f64, f64), w: u32, h: u32, share_controls: bool) -> Option<PipButton> {
+    let (back, mute, cursor) = button_rects(w, h, share_controls);
     let inside = |(x, y): (u32, u32)| {
         pos.0 >= x as f64
             && pos.0 < (x + BTN) as f64
@@ -246,9 +373,9 @@ fn hit_button(pos: (f64, f64), w: u32, h: u32) -> Option<PipButton> {
     };
     if inside(back) {
         Some(PipButton::BackToApp)
-    } else if inside(mute) {
+    } else if share_controls && inside(mute) {
         Some(PipButton::ToggleShareAudio)
-    } else if inside(cursor) {
+    } else if share_controls && inside(cursor) {
         Some(PipButton::ToggleCursor)
     } else {
         None
@@ -265,6 +392,18 @@ pub fn is_open() -> bool {
             .get()
             .map(|h| h.thread_alive.load(Ordering::Acquire))
             .unwrap_or(false)
+}
+
+fn supports_share_controls(sender: Option<&str>) -> bool {
+    !sender.is_some_and(|key| key.starts_with("camera:"))
+}
+
+/// La clé du flux distingue la webcam du partage du même participant.
+pub fn source() -> Option<String> {
+    if !is_open() {
+        return None;
+    }
+    HANDLE.get()?.state.lock().ok()?.sender.clone()
 }
 
 /// Démarre le thread de l'event loop au premier usage (idempotent).
@@ -359,17 +498,22 @@ fn get_or_start_handle() -> Option<&'static PipHandle> {
 
 /// Ouvre (ou bascule vers) la fenêtre PIP pour le partage `sender`.
 pub fn open(sender: &str) -> bool {
+    open_streams(
+        vec![PipSource {
+            sender: sender.into(),
+            name: String::new(),
+        }],
+        Some(sender.into()),
+    )
+}
+
+fn open_streams(streams: Vec<PipSource>, focus: Option<String>) -> bool {
     let Some(handle) = get_or_start_handle() else {
         return false;
     };
     {
         let mut state = handle.state.lock().unwrap_or_else(|e| e.into_inner());
-        if state.sender.as_deref() != Some(sender) {
-            // Ne jamais montrer une frame de l'expéditeur précédent.
-            state.frame = None;
-            state.painted = 0;
-            state.sender = Some(sender.to_owned());
-        }
+        state.configure(streams, focus);
     }
     let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
     let sent = handle
@@ -382,19 +526,15 @@ pub fn open(sender: &str) -> bool {
             .unwrap_or(false);
     if !ready {
         let mut state = handle.state.lock().unwrap_or_else(|e| e.into_inner());
-        if state.sender.as_deref() == Some(sender) {
-            state.sender = None;
-            state.frame = None;
-            state.painted = 0;
-        }
+        state.configure(vec![], None);
         OPEN.store(false, Ordering::Release);
         let _ = handle.proxy.send_event(UserEvent::Hide);
-        log::warn!("[Sion][PIP] ouverture de la surface native échouée pour {sender}");
+        log::warn!("[Sion][PIP] ouverture de la surface native échouée");
         return false;
     }
     OPEN.store(true, Ordering::Release);
     emit_pip_state(true);
-    log::info!("[Sion][PIP] fenêtre native ouverte pour {sender}");
+    log::info!("[Sion][PIP] fenêtre de diffusion native ouverte");
     true
 }
 
@@ -403,7 +543,10 @@ pub fn open(sender: &str) -> bool {
 fn emit_pip_state(open: bool) {
     if let Some(app) = APP.get() {
         use tauri::Emitter;
-        let _ = app.emit("voice-native-pip", serde_json::json!({ "open": open }));
+        let _ = app.emit(
+            "voice-native-pip",
+            serde_json::json!({ "open": open, "sender": source(), "sources": sources() }),
+        );
     }
 }
 
@@ -486,9 +629,7 @@ pub fn close() {
     };
     {
         let mut state = handle.state.lock().unwrap_or_else(|e| e.into_inner());
-        state.sender = None;
-        state.frame = None;
-        state.painted = 0;
+        state.configure(vec![], None);
     }
     OPEN.store(false, Ordering::Release);
     let _ = handle.proxy.send_event(UserEvent::Hide);
@@ -505,7 +646,7 @@ pub fn wants_frames(sender: &str) -> bool {
     HANDLE
         .get()
         .and_then(|handle| handle.state.lock().ok())
-        .is_some_and(|state| state.sender.as_deref() == Some(sender))
+        .is_some_and(|state| state.streams.iter().any(|s| s.sender == sender))
 }
 
 /// Taille de rendu utile au PIP actuellement visible. Le moteur vidéo combine
@@ -516,14 +657,14 @@ pub fn preferred_frame_bounds(sender: &str) -> Option<(u32, u32)> {
     }
     let handle = HANDLE.get()?;
     let state = handle.state.lock().ok()?;
-    if state.sender.as_deref() != Some(sender) {
-        return None;
-    }
-    Some(state.size.unwrap_or(if state.large {
+    let index = state.streams.iter().position(|s| s.sender == sender)?;
+    let size = state.size.unwrap_or(if state.large {
         (LARGE_W, LARGE_H)
     } else {
         (DEFAULT_W, DEFAULT_H)
-    }))
+    });
+    let rect = state.rects(size)[index];
+    Some((rect.w.max(1), rect.h.max(1)))
 }
 
 /// Une image BGRA de partage vient d'arriver directement du moteur vocal.
@@ -544,32 +685,118 @@ pub fn on_bgra_frame(sender: &str, width: u32, height: u32, bgra: &[u8]) {
     // blitte que si une nouvelle génération est arrivée.
     {
         let mut state = handle.state.lock().unwrap_or_else(|e| e.into_inner());
-        if state.sender.as_deref() != Some(sender) {
+        if !state.streams.iter().any(|s| s.sender == sender) {
             return;
         }
-        let generation = state.frame.as_ref().map(|f| f.generation).unwrap_or(0) + 1;
-        state.frame = Some(PipFrame {
-            width,
-            height,
-            bgra: bgra.to_vec(),
-            generation,
-        });
+        state.generation = state.generation.wrapping_add(1);
+        state.frames.insert(
+            sender.into(),
+            PipFrame {
+                width,
+                height,
+                bgra: Arc::from(bgra),
+            },
+        );
     }
     let _ = handle.proxy.send_event(UserEvent::Frame);
 }
 
-/// Le partage `sender` est terminé : ferme la fenêtre si c'est celui-ci.
+/// Retire seulement le flux terminé ; le dernier ferme la fenêtre.
 pub fn on_share_removed(sender: &str) {
     let Some(handle) = HANDLE.get() else {
         return;
     };
-    let is_current = {
-        let state = handle.state.lock().unwrap_or_else(|e| e.into_inner());
-        state.sender.as_deref() == Some(sender)
+    let remaining = {
+        let mut state = handle.state.lock().unwrap_or_else(|e| e.into_inner());
+        if !state.streams.iter().any(|s| s.sender == sender) {
+            return;
+        }
+        let streams = state
+            .streams
+            .iter()
+            .filter(|s| s.sender != sender)
+            .cloned()
+            .collect();
+        let focus = Some(state.focus.clone().unwrap_or_default());
+        state.configure(streams, focus);
+        state.streams.len()
     };
-    if is_current {
+    if remaining == 0 {
         close();
+    } else {
+        emit_pip_state(true);
+        let _ = handle.proxy.send_event(UserEvent::Show(None));
     }
+}
+
+pub fn sources() -> Vec<String> {
+    if !is_open() {
+        return vec![];
+    }
+    HANDLE
+        .get()
+        .and_then(|h| h.state.lock().ok())
+        .map(|s| s.streams.iter().map(|v| v.sender.clone()).collect())
+        .unwrap_or_default()
+}
+
+#[tauri::command]
+pub fn pip_native_sources() -> Vec<String> {
+    sources()
+}
+
+#[tauri::command]
+pub fn pip_native_open_streams(
+    app: tauri::AppHandle<crate::TauriRuntime>,
+    streams: Vec<PipSource>,
+    focus: Option<String>,
+) -> Result<(), String> {
+    if streams.is_empty()
+        || streams.len() > 128
+        || streams
+            .iter()
+            .any(|s| s.sender.is_empty() || s.sender.len() > 1024 || s.name.chars().count() > 256)
+    {
+        return Err("sélection de flux invalide".into());
+    }
+    let mut unique = Vec::with_capacity(streams.len());
+    for stream in streams {
+        if !unique.iter().any(|s: &PipSource| s.sender == stream.sender) {
+            unique.push(stream);
+        }
+    }
+    if !open_streams(unique, focus) {
+        return Err("impossible d'ouvrir la diffusion native".into());
+    }
+    if let Some(sender) = source().filter(|s| supports_share_controls(Some(s))) {
+        sync_audio_state(app, sender);
+    }
+    Ok(())
+}
+
+fn sync_audio_state(app: tauri::AppHandle<crate::TauriRuntime>, sender_state: String) {
+    #[cfg(feature = "native-voice")]
+    let _ = thread::Builder::new()
+        .name("sion-pip-audio-state".into())
+        .spawn(move || {
+            let muted = crate::voice_native::voice_native_get_screenshare_audio_state(
+                app,
+                sender_state.clone(),
+            )
+            .map(|s| s.muted)
+            .unwrap_or(false);
+            if let Some(handle) = HANDLE.get() {
+                if let Ok(mut state) = handle.state.lock() {
+                    if state.sender.as_deref() == Some(sender_state.as_str()) {
+                        state.share_audio_muted = muted;
+                        state.generation = state.generation.wrapping_add(1);
+                    }
+                }
+                let _ = handle.proxy.send_event(UserEvent::Show(None));
+            }
+        });
+    #[cfg(not(feature = "native-voice"))]
+    let _ = (app, sender_state);
 }
 
 // ── Commandes Tauri ─────────────────────────────────────────────────────────
@@ -590,28 +817,8 @@ pub fn pip_native_open(
         state.share_audio_muted = false;
     }
     if open(&sender) {
-        #[cfg(feature = "native-voice")]
-        {
-            let app = app.clone();
-            let sender_state = sender.clone();
-            let _ = thread::Builder::new()
-                .name("sion-pip-audio-state".into())
-                .spawn(move || {
-                    let muted = crate::voice_native::voice_native_get_screenshare_audio_state(
-                        app,
-                        sender_state.clone(),
-                    )
-                    .map(|st| st.muted)
-                    .unwrap_or(false);
-                    if let Some(handle) = HANDLE.get() {
-                        if let Ok(mut state) = handle.state.lock() {
-                            if state.sender.as_deref() == Some(sender_state.as_str()) {
-                                state.share_audio_muted = muted;
-                            }
-                        }
-                        let _ = handle.proxy.send_event(UserEvent::Show(None));
-                    }
-                });
+        if supports_share_controls(Some(&sender)) {
+            sync_audio_state(app, sender);
         }
         Ok(())
     } else {
@@ -628,6 +835,11 @@ pub fn pip_native_close() -> Result<(), String> {
 #[tauri::command]
 pub fn pip_native_status() -> bool {
     is_open()
+}
+
+#[tauri::command]
+pub fn pip_native_source() -> Option<String> {
+    source()
 }
 
 // ── Rendu ───────────────────────────────────────────────────────────────────
@@ -667,20 +879,38 @@ fn blit_fit(dst: &mut [u32], ww: u32, wh: u32, img: &image::RgbImage) {
 
 /// Même ajustement, directement depuis les octets BGRA produits par libyuv.
 /// softbuffer attend 0x00RRGGBB : aucun décodeur ni allocation intermédiaire.
+#[cfg(test)]
 fn blit_fit_bgra(dst: &mut [u32], ww: u32, wh: u32, bgra: &[u8], iw: u32, ih: u32) {
+    dst.fill(0);
+    blit_tile_bgra(
+        dst,
+        ww,
+        TileRect {
+            x: 0,
+            y: 0,
+            w: ww,
+            h: wh,
+        },
+        bgra,
+        iw,
+        ih,
+    );
+}
+
+fn blit_tile_bgra(dst: &mut [u32], stride: u32, rect: TileRect, bgra: &[u8], iw: u32, ih: u32) {
+    let (ww, wh) = (rect.w, rect.h);
     if iw == 0 || ih == 0 || ww == 0 || wh == 0 || bgra.len() != iw as usize * ih as usize * 4 {
         return;
     }
     let scale = f64::min(ww as f64 / iw as f64, wh as f64 / ih as f64);
     let dw = ((iw as f64 * scale).round() as u32).clamp(1, ww);
     let dh = ((ih as f64 * scale).round() as u32).clamp(1, wh);
-    let x0 = (ww - dw) / 2;
-    let y0 = (wh - dh) / 2;
+    let x0 = rect.x + (ww - dw) / 2;
+    let y0 = rect.y + (wh - dh) / 2;
 
-    dst.fill(0);
     for dy in 0..dh {
         let sy = ((dy as u64 * ih as u64) / dh as u64) as usize;
-        let row = (y0 + dy) as usize * ww as usize;
+        let row = (y0 + dy) as usize * stride as usize;
         for dx in 0..dw {
             let sx = ((dx as u64 * iw as u64) / dw as u64) as usize;
             let source = (sy * iw as usize + sx) * 4;
@@ -830,17 +1060,26 @@ impl PipApp {
         let Some(app) = APP.get().cloned() else {
             return;
         };
-        let (sender, width, height) = {
+        let (sender, width, height, rect) = {
             let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             let Some(sender) = state.sender.clone() else {
                 return;
             };
             let (w, h) = state
-                .frame
-                .as_ref()
+                .frames
+                .get(&sender)
                 .map(|f| (f.width, f.height))
                 .unwrap_or((1, 1));
-            (sender, w, h)
+            let Some(index) = state.streams.iter().position(|s| s.sender == sender) else {
+                return;
+            };
+            let size = self
+                .window
+                .as_ref()
+                .map(|w| w.inner_size())
+                .map(|s| (s.width, s.height))
+                .unwrap_or((0, 0));
+            (sender, w, h, state.rects(size)[index])
         };
         let Some(status) = Some(crate::voice_native::voice_native_status()) else {
             return;
@@ -851,13 +1090,8 @@ impl PipApp {
         self.last_cursor_tx = Instant::now();
         self.last_cursor_activity = Instant::now();
         self.cursor_hidden = false;
-        let window_size = self
-            .window
-            .as_ref()
-            .map(|w| w.inner_size())
-            .map(|s| (s.width, s.height))
-            .unwrap_or((0, 0));
-        let Some((x, y)) = normalise_content_point(self.cursor, window_size, (width, height))
+        let local_point = (self.cursor.0 - rect.x as f64, self.cursor.1 - rect.y as f64);
+        let Some((x, y)) = normalise_content_point(local_point, (rect.w, rect.h), (width, height))
         else {
             self.publish_cursor_hide();
             return;
@@ -915,6 +1149,7 @@ impl PipApp {
     fn toggle_cursor(&mut self) {
         if let Ok(mut state) = self.state.lock() {
             state.cursor_enabled = !state.cursor_enabled;
+            state.generation = state.generation.wrapping_add(1);
             if state.cursor_enabled {
                 self.last_cursor_activity = Instant::now();
             }
@@ -972,6 +1207,10 @@ impl PipApp {
         let Some(sender) = sender else { return };
         let wanted = !self.muted;
         self.muted = wanted;
+        if let Ok(mut state) = self.state.lock() {
+            state.share_audio_muted = wanted;
+            state.generation = state.generation.wrapping_add(1);
+        }
         if let Some(window) = self.window.as_ref() {
             window.request_redraw();
         }
@@ -1051,59 +1290,57 @@ impl PipApp {
     /// Décode la dernière image non peinte et blitte. Silencieux si rien de
     /// neuf (le throttle comme la source en pause arrivent ici).
     fn paint(&mut self) {
-        let cursor_enabled = self.cursor_enabled();
         let (Some(window), Some(surface)) = (self.window.as_ref(), self.surface.as_mut()) else {
             return;
         };
         self.last_paint = Instant::now();
         self.pending_redraw_at = None;
-
-        let frame = {
-            let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-            match &state.frame {
-                Some(f) if f.generation > state.painted => f.clone(),
-                _ => return,
-            }
-        };
-
         let size = window.inner_size();
+        let (generation, streams, rects, frames, muted, cursor, share_controls) = {
+            let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            if state.generation == state.painted {
+                return;
+            }
+            (
+                state.generation,
+                state.streams.clone(),
+                state.rects((size.width, size.height)),
+                state.frames.clone(),
+                state.share_audio_muted,
+                state.cursor_enabled,
+                supports_share_controls(state.sender.as_deref()),
+            )
+        };
         let Ok(mut buffer) = surface.buffer_mut() else {
             return;
         };
-        blit_fit_bgra(
-            &mut buffer,
-            size.width,
-            size.height,
-            &frame.bgra,
-            frame.width,
-            frame.height,
-        );
-        // Boutons par-dessus l'image : maison = revenir sur Sion,
-        // haut-parleur = son du partage.
+        buffer.fill(0x0015191F);
+        for (stream, rect) in streams.iter().zip(rects) {
+            if let Some(frame) = frames.get(&stream.sender) {
+                blit_tile_bgra(
+                    &mut buffer,
+                    size.width,
+                    rect,
+                    &frame.bgra,
+                    frame.width,
+                    frame.height,
+                );
+            }
+            draw_stream_label(&mut buffer, size.width, size.height, rect, &stream.name);
+        }
         draw_controls(
             &mut buffer,
             size.width,
             size.height,
-            self.muted,
-            cursor_enabled,
+            muted,
+            cursor,
+            share_controls,
         );
         let _ = buffer.present();
-
-        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        state.painted = frame.generation;
-        drop(state);
-
-        self.painted_count = self.painted_count.wrapping_add(1);
-        if self.painted_count % 120 == 1 {
-            log::info!(
-                "[Sion][PIP] frame #{} ({}x{}) → {}x{}",
-                self.painted_count,
-                frame.width,
-                frame.height,
-                size.width,
-                size.height,
-            );
+        if let Ok(mut state) = self.state.lock() {
+            state.painted = generation;
         }
+        self.painted_count = self.painted_count.wrapping_add(1);
     }
 
     fn hide(&mut self) {
@@ -1169,6 +1406,7 @@ impl ApplicationHandler<UserEvent> for PipApp {
                         let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
                         state.share_audio_muted
                     };
+                    window.set_title("Sion — Diffusion");
                     window.set_visible(true);
                     window.request_redraw();
                     true
@@ -1258,7 +1496,12 @@ impl ApplicationHandler<UserEvent> for PipApp {
                 // revenir sur Sion, haut-parleur = son du partage. Ailleurs,
                 // fenêtre sans décoration → on déplace en glissant.
                 if let Some(size) = self.window.as_ref().map(|w| w.inner_size()) {
-                    match hit_button(self.cursor, size.width, size.height) {
+                    let share_controls = self
+                        .state
+                        .lock()
+                        .map(|s| supports_share_controls(s.sender.as_deref()))
+                        .unwrap_or(false);
+                    match hit_button(self.cursor, size.width, size.height, share_controls) {
                         Some(PipButton::BackToApp) => {
                             // Comme le PIP de Firefox : on rend la main à
                             // l'application et la vignette se referme.
@@ -1290,7 +1533,46 @@ impl ApplicationHandler<UserEvent> for PipApp {
                             let now = Instant::now();
                             if now.duration_since(self.last_click) < Duration::from_millis(400) {
                                 self.last_click = now - Duration::from_secs(1);
-                                self.toggle_large();
+                                self.publish_cursor_hide();
+                                let changed = {
+                                    let mut state =
+                                        self.state.lock().unwrap_or_else(|e| e.into_inner());
+                                    let rects = state.rects((size.width, size.height));
+                                    let hit = rects.iter().position(|r| {
+                                        self.cursor.0 >= r.x as f64
+                                            && self.cursor.0 < (r.x + r.w) as f64
+                                            && self.cursor.1 >= r.y as f64
+                                            && self.cursor.1 < (r.y + r.h) as f64
+                                    });
+                                    if let Some(index) = hit {
+                                        let key = state.streams[index].sender.clone();
+                                        if state.focus.as_deref() != Some(&key)
+                                            && state.streams.len() > 1
+                                        {
+                                            let streams = state.streams.clone();
+                                            state.configure(streams, Some(key));
+                                            true
+                                        } else {
+                                            false
+                                        }
+                                    } else {
+                                        false
+                                    }
+                                };
+                                if changed {
+                                    emit_pip_state(true);
+                                    if let (Some(app), Some(sender)) = (
+                                        APP.get(),
+                                        source().filter(|s| supports_share_controls(Some(s))),
+                                    ) {
+                                        sync_audio_state(app.clone(), sender);
+                                    }
+                                    if let Some(window) = self.window.as_ref() {
+                                        window.request_redraw();
+                                    }
+                                } else {
+                                    self.toggle_large();
+                                }
                                 return;
                             }
                             self.last_click = now;
@@ -1350,6 +1632,58 @@ impl ApplicationHandler<UserEvent> for PipApp {
     }
 }
 
+fn draw_stream_label(buf: &mut [u32], w: u32, h: u32, rect: TileRect, name: &str) {
+    if name.is_empty() || rect.h < 24 || rect.w < 40 {
+        return;
+    }
+    static FONT: OnceLock<Option<FontRef<'static>>> = OnceLock::new();
+    let Some(font) = FONT.get_or_init(|| {
+        FontRef::try_from_slice(include_bytes!("../assets/DejaVuSans-Bold.ttf")).ok()
+    }) else {
+        return;
+    };
+    let scaled = font.as_scaled(PxScale::from(16.0));
+    let mut pen = rect.x as f32 + 6.0;
+    let baseline = (rect.y + rect.h - 7) as f32;
+    for y in rect.y + rect.h - 22..rect.y + rect.h {
+        for x in rect.x..rect.x + rect.w {
+            darken(buf, w, h, x, y);
+        }
+    }
+    for ch in name.chars().take(64) {
+        let id = scaled.glyph_id(ch);
+        let advance = scaled.h_advance(id);
+        if pen + advance > (rect.x + rect.w - 5) as f32 {
+            break;
+        }
+        let glyph = id.with_scale_and_position(PxScale::from(16.0), ab_glyph::point(pen, baseline));
+        if let Some(outline) = font.outline_glyph(glyph) {
+            let bounds = outline.px_bounds();
+            outline.draw(|x, y, alpha| {
+                let x = bounds.min.x as i32 + x as i32;
+                let y = bounds.min.y as i32 + y as i32;
+                if x < rect.x as i32
+                    || y < rect.y as i32
+                    || x >= (rect.x + rect.w) as i32
+                    || y >= (rect.y + rect.h) as i32
+                {
+                    return;
+                }
+                let index = y as usize * w as usize + x as usize;
+                if let Some(pixel) = buf.get_mut(index) {
+                    let a = (alpha * 255.0) as u32;
+                    let channel = |shift: u32| {
+                        let old = (*pixel >> shift) & 255u32;
+                        (255 * a + old * (255 - a)) / 255
+                    };
+                    *pixel = (channel(16) << 16) | (channel(8) << 8) | channel(0);
+                }
+            });
+        }
+        pen += advance;
+    }
+}
+
 // ── Boutons dessinés (retour à Sion, son du partage) ───────────────────────
 //
 // La fenêtre n'embarque pas de fonte : les affordances sont dessinées en
@@ -1358,14 +1692,17 @@ impl ApplicationHandler<UserEvent> for PipApp {
 
 fn put(buf: &mut [u32], w: u32, h: u32, x: u32, y: u32, color: u32) {
     if x < w && y < h {
-        buf[(y * w + x) as usize] = color;
+        if let Some(pixel) = buf.get_mut((y * w + x) as usize) {
+            *pixel = color;
+        }
     }
 }
 
 fn darken(buf: &mut [u32], w: u32, h: u32, x: u32, y: u32) {
     if x < w && y < h {
-        let i = (y * w + x) as usize;
-        buf[i] = (buf[i] >> 1) & 0x007F7F7F;
+        if let Some(pixel) = buf.get_mut((y * w + x) as usize) {
+            *pixel = (*pixel >> 1) & 0x007F7F7F;
+        }
     }
 }
 
@@ -1443,9 +1780,19 @@ fn speaker_glyph(buf: &mut [u32], w: u32, h: u32, bx: u32, by: u32, muted: bool)
 }
 
 /// Peint les deux boutons par-dessus l'image déjà blittée.
-fn draw_controls(buf: &mut [u32], w: u32, h: u32, muted: bool, cursor_enabled: bool) {
-    let (back, mute, cursor) = button_rects(w, h);
+fn draw_controls(
+    buf: &mut [u32],
+    w: u32,
+    h: u32,
+    muted: bool,
+    cursor_enabled: bool,
+    share_controls: bool,
+) {
+    let (back, mute, cursor) = button_rects(w, h, share_controls);
     draw_button(buf, w, h, back, house_glyph);
+    if !share_controls {
+        return;
+    }
     draw_button(buf, w, h, mute, |b, ww, hh, x, y| {
         speaker_glyph(b, ww, hh, x, y, muted)
     });
@@ -1472,27 +1819,56 @@ mod tests {
     /// mêmes zones (source de vérité unique).
     #[test]
     fn boutons_du_pip_dans_le_coin() {
-        let (back, mute, cursor) = button_rects(480, 270);
+        let (back, mute, cursor) = button_rects(480, 270, true);
         assert_eq!(mute, (480 - BTN_MARGIN - BTN, BTN_MARGIN));
         assert_eq!(back, (cursor.0 - BTN_GAP - BTN, BTN_MARGIN));
         // Centres des boutons → la bonne action ; le milieu de l'image → rien.
         let center =
             |(x, y): (u32, u32)| (x as f64 + BTN as f64 / 2.0, y as f64 + BTN as f64 / 2.0);
         assert_eq!(
-            hit_button(center(back), 480, 270),
+            hit_button(center(back), 480, 270, true),
             Some(PipButton::BackToApp)
         );
         assert_eq!(
-            hit_button(center(mute), 480, 270),
+            hit_button(center(mute), 480, 270, true),
             Some(PipButton::ToggleShareAudio)
         );
         assert_eq!(
-            hit_button(center(cursor), 480, 270),
+            hit_button(center(cursor), 480, 270, true),
             Some(PipButton::ToggleCursor)
         );
-        assert_eq!(hit_button((240.0, 135.0), 480, 270), None);
+        assert_eq!(hit_button((240.0, 135.0), 480, 270, true), None);
         // Hors zone (coin opposé) → aucun bouton.
-        assert_eq!(hit_button((5.0, 5.0), 480, 270), None);
+        assert_eq!(hit_button((5.0, 5.0), 480, 270, true), None);
+    }
+
+    #[test]
+    fn webcam_sans_commandes_de_son_du_partage_ni_pointeur() {
+        assert!(!supports_share_controls(Some(
+            "camera:@alice:example.org:PC"
+        )));
+        assert!(!supports_share_controls(Some("camera:local-preview")));
+        assert!(supports_share_controls(Some("@alice:example.org:PC")));
+        let (back, _, cursor) = button_rects(480, 270, false);
+        assert_eq!(back.0, 480 - BTN_MARGIN - BTN);
+        assert_eq!(
+            hit_button(
+                (back.0 as f64 + 12.0, back.1 as f64 + 12.0),
+                480,
+                270,
+                false
+            ),
+            Some(PipButton::BackToApp)
+        );
+        assert_eq!(
+            hit_button(
+                (cursor.0 as f64 + 12.0, cursor.1 as f64 + 12.0),
+                480,
+                270,
+                false
+            ),
+            None
+        );
     }
 
     /// Test fenêtré (opt-in) : vérifie que l'event loop winit se construit
@@ -1515,6 +1891,139 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(1500));
         close();
         assert!(!is_open(), "la fenêtre devrait être fermée");
+        assert!(source().is_none());
+        assert!(open("camera:@test:sion"));
+        assert_eq!(source().as_deref(), Some("camera:@test:sion"));
+        assert!(wants_frames("camera:@test:sion"));
+        assert!(!wants_frames("@test:sion"));
+        on_bgra_frame("camera:@test:sion", 320, 180, &red_bgra);
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        on_share_removed("@test:sion");
+        assert!(is_open(), "la fin du partage ne ferme pas la webcam");
+        on_share_removed("camera:@test:sion");
+        assert!(!is_open(), "la fin de la webcam ferme son PIP");
+        assert!(open_streams(
+            vec![
+                PipSource {
+                    sender: "@test:sion".into(),
+                    name: "Partage".into()
+                },
+                PipSource {
+                    sender: "camera:@test:sion".into(),
+                    name: "Alice".into()
+                },
+                PipSource {
+                    sender: "camera:@bob:sion".into(),
+                    name: "Bob".into()
+                },
+            ],
+            None
+        ));
+        on_bgra_frame("@test:sion", 320, 180, &red_bgra);
+        let blue = [255u8, 0, 0, 255].repeat(320 * 180);
+        on_bgra_frame("camera:@test:sion", 320, 180, &blue);
+        on_bgra_frame("camera:@bob:sion", 320, 180, &blue);
+        std::thread::sleep(Duration::from_millis(700));
+        assert_eq!(sources().len(), 3);
+        assert!(wants_frames("@test:sion") && wants_frames("camera:@test:sion"));
+        on_share_removed("@test:sion");
+        assert!(is_open());
+        assert_eq!(sources().len(), 2);
+        on_share_removed("camera:@test:sion");
+        assert!(is_open());
+        on_share_removed("camera:@bob:sion");
+        assert!(!is_open());
+    }
+
+    #[test]
+    fn selection_conserve_seulement_les_frames_utiles_et_separe_camera_et_partage() {
+        let camera = PipSource {
+            sender: "camera:@alice:sion".into(),
+            name: "Alice".into(),
+        };
+        let screen = PipSource {
+            sender: "@alice:sion".into(),
+            name: "Écran".into(),
+        };
+        let mut state = PipState::default();
+        state.configure(vec![camera.clone(), screen.clone()], None);
+        assert_eq!(state.focus, Some(screen.sender.clone()));
+        let frame = PipFrame {
+            width: 1,
+            height: 1,
+            bgra: Arc::from([0u8, 0, 255, 255]),
+        };
+        state.frames.insert(camera.sender.clone(), frame.clone());
+        state.frames.insert(screen.sender.clone(), frame);
+        let before = state.frames[&camera.sender].bgra.clone();
+        state.configure(vec![camera.clone()], None);
+        assert_eq!(state.frames.len(), 1);
+        assert!(Arc::ptr_eq(&before, &state.frames[&camera.sender].bgra));
+        state.configure(vec![], None);
+        assert!(state.frames.is_empty());
+        assert!(state.sender.is_none());
+    }
+
+    #[test]
+    fn disposition_groupee_reste_dans_la_fenetre_sans_chevauchement() {
+        for size in [(480, 270), (270, 480), (1920, 1080)] {
+            for count in [1, 2, 3, 9, 32, 128] {
+                for focus in [None, Some(0), Some(count - 1)] {
+                    let rects = tile_rects(count, focus, size);
+                    assert_eq!(rects.len(), count);
+                    for (i, a) in rects.iter().enumerate() {
+                        assert!(a.w > 0 && a.h > 0);
+                        assert!(a.x + a.w <= size.0 && a.y + a.h <= size.1);
+                        for b in &rects[i + 1..] {
+                            assert!(
+                                a.x + a.w <= b.x
+                                    || b.x + b.w <= a.x
+                                    || a.y + a.h <= b.y
+                                    || b.y + b.h <= a.y
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn compositor_deux_flux_ne_peint_pas_sur_la_tuile_voisine() {
+        let mut dst = vec![0x0015191F; 8];
+        blit_tile_bgra(
+            &mut dst,
+            4,
+            TileRect {
+                x: 0,
+                y: 0,
+                w: 2,
+                h: 2,
+            },
+            &[0, 0, 255, 255],
+            1,
+            1,
+        );
+        blit_tile_bgra(
+            &mut dst,
+            4,
+            TileRect {
+                x: 2,
+                y: 0,
+                w: 2,
+                h: 2,
+            },
+            &[255, 0, 0, 255],
+            1,
+            1,
+        );
+        assert_eq!(
+            dst,
+            vec![
+                0x00FF0000, 0x00FF0000, 0x000000FF, 0x000000FF, 0x00FF0000, 0x00FF0000, 0x000000FF,
+                0x000000FF
+            ]
+        );
     }
 
     #[test]
