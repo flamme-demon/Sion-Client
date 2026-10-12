@@ -1,0 +1,3 @@
+# ONNX contient parfois uniquement du texte dans ses premiers kilo-octets.
+# Empêcher Git de convertir les retours à la ligne des poids sous Windows.
+*.onnx binary
