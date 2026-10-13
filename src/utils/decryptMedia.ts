@@ -1,8 +1,6 @@
 /**
- * Décryption des médias E2EE Matrix (spec v2).
- *
- * Les fichiers chiffrés utilisent AES-256-CTR.
- * Référence : https://spec.matrix.org/v1.11/client-server-api/#sending-encrypted-attachments
+ * Decrypt Matrix v2 E2EE media using AES-256-CTR.
+ * Reference: https://spec.matrix.org/v1.11/client-server-api/#sending-encrypted-attachments
  */
 
 export interface EncryptedMediaFile {
@@ -28,9 +26,9 @@ function base64urlToBytes(base64url: string): Uint8Array {
   return bytes;
 }
 
-export async function decryptMedia(encryptedData: ArrayBuffer, encFile: EncryptedMediaFile): Promise<ArrayBuffer> {
+async function decryptMedia(encryptedData: ArrayBuffer, encFile: EncryptedMediaFile): Promise<ArrayBuffer> {
   const ivBytes = base64urlToBytes(encFile.iv);
-  // Garantir un ArrayBuffer pur (pas SharedArrayBuffer) pour Web Crypto
+  // Ensure a plain ArrayBuffer rather than SharedArrayBuffer for Web Crypto.
   const ivBuffer = ivBytes.buffer.slice(ivBytes.byteOffset, ivBytes.byteOffset + ivBytes.byteLength) as ArrayBuffer;
 
   const key = await crypto.subtle.importKey(
@@ -48,7 +46,7 @@ export async function decryptMedia(encryptedData: ArrayBuffer, encFile: Encrypte
   );
 }
 
-/** Télécharge, décrypte et retourne un Object URL blob prêt à l'emploi. */
+/** Download, decrypt and return a ready-to-use blob Object URL. */
 export async function createDecryptedObjectUrl(
   httpUrl: string,
   encFile: EncryptedMediaFile,

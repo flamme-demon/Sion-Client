@@ -5,9 +5,19 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: (...args: unknown[]) => invoke(
 
 import {
   moteurMatrix, connecter, fils, chargerHistorique, urlLecture, creerSondage, envoyerFichier, requeteAdmin, ErreurApiAdmin, appareils, detailsSalon, amorcer, modifierSon, modifierMeme, rechercherUtilisateurs,
+  envoyerTexte, repondre,
 } from "./matrixCore";
 
 describe("matrixCore", () => {
+  it("transmet la transaction de l'écho local et laisse les anciens appels sans transaction", async () => {
+    invoke.mockResolvedValue("$message");
+    await envoyerTexte("!salon", "bonjour", "sion-transaction");
+    expect(invoke).toHaveBeenLastCalledWith("matrix_envoyer_texte", { salon: "!salon", corps: "bonjour", transaction: "sion-transaction" });
+    await envoyerTexte("!salon", "bonjour");
+    expect(invoke).toHaveBeenLastCalledWith("matrix_envoyer_texte", { salon: "!salon", corps: "bonjour", transaction: null });
+    await repondre("!salon", "$origine", "réponse", "sion-reponse");
+    expect(invoke).toHaveBeenLastCalledWith("matrix_repondre", { salon: "!salon", cible: "$origine", corps: "réponse", transaction: "sion-reponse" });
+  });
   it("transmet le pseudo à la commande d'annuaire du cœur Rust", async () => {
     invoke.mockResolvedValue({ utilisateurs: [], limite: false });
     expect(await rechercherUtilisateurs("Alice")).toEqual({ utilisateurs: [], limite: false });
@@ -72,8 +82,44 @@ describe("matrixCore", () => {
     expect(depot?.[1]).toBeInstanceOf(Uint8Array);
     expect(depot?.[2]).toEqual({ headers: { "x-sion-ext": "png" } });
     expect(invoke).toHaveBeenLastCalledWith("matrix_envoyer_fichier", {
-      salon: "!a:hs", chemin: "/tmp/sion-media/x.png", nom: "x.png", mime: "image/png", largeur: null, hauteur: null, dureeMs: null,
+      salon: "!a:hs", chemin: "/tmp/sion-media/x.png", nom: "x.png", mime: "image/png", largeur: null, hauteur: null, dureeMs: null, legende: null,
     });
+  });
+
+  it("transmet la légende avec le fichier au cœur Rust", async () => {
+    invoke.mockImplementation((commande: string) => Promise.resolve(commande === "stage_media" ? "/tmp/sion-media/photo.png" : "$photo"));
+    await envoyerFichier("!a:hs", new File([new Uint8Array([1])], "photo.png", { type: "image/png" }), { legende: "Pour avoir la bêta !" });
+    expect(invoke).toHaveBeenLastCalledWith("matrix_envoyer_fichier", expect.objectContaining({ nom: "photo.png", legende: "Pour avoir la bêta !" }));
+  });
+
+  it("dépose séparément la petite miniature et la vidéo avant un seul message", async () => {
+    invoke.mockClear();
+    invoke.mockImplementation((commande: string, _args: unknown, options?: { headers: Record<string, string> }) =>
+      Promise.resolve(commande === "stage_media" ? `/tmp/sion-media/depot.${options?.headers["x-sion-ext"]}` : "$video"));
+    await envoyerFichier("!a:hs", new File([new Uint8Array([1, 2, 3])], "clip.webm", { type: "video/webm" }), {
+      largeur: 1920, hauteur: 1080, dureeMs: 100_000,
+      miniature: new File([new Uint8Array([255, 216, 255])], "preview.jpg", { type: "image/jpeg" }),
+    });
+    expect(invoke.mock.calls.map((c) => c[0])).toEqual(["stage_media", "stage_media", "matrix_envoyer_fichier"]);
+    expect(invoke).toHaveBeenLastCalledWith("matrix_envoyer_fichier", expect.objectContaining({
+      chemin: "/tmp/sion-media/depot.webm", miniatureChemin: "/tmp/sion-media/depot.jpg",
+      largeur: 1920, hauteur: 1080, dureeMs: 100_000,
+    }));
+  });
+
+  it("envoie encore la vidéo si le dépôt de sa miniature échoue", async () => {
+    invoke.mockClear();
+    invoke.mockImplementation((commande: string, _args: unknown, options?: { headers: Record<string, string> }) => {
+      if (commande !== "stage_media") return Promise.resolve("$video");
+      return options?.headers["x-sion-ext"] === "jpg"
+        ? Promise.reject(new Error("dépôt indisponible"))
+        : Promise.resolve("/tmp/sion-media/clip.webm");
+    });
+    expect(await envoyerFichier("!a:hs", new File([new Uint8Array([1])], "clip.webm", { type: "video/webm" }), {
+      miniature: new File([new Uint8Array([255, 216, 255])], "preview.jpg", { type: "image/jpeg" }),
+    })).toBe("$video");
+    expect(invoke).toHaveBeenLastCalledWith("matrix_envoyer_fichier", expect.objectContaining({ chemin: "/tmp/sion-media/clip.webm" }));
+    expect(invoke.mock.lastCall?.[1]).not.toHaveProperty("miniatureChemin");
   });
 
   it("le mandataire d'administration lève l'erreur d'adminService, errcode compris", async () => {

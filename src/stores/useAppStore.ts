@@ -246,7 +246,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       ? settings.screenShareSourceId?.match(/^screen:(\d+):/)
       : null;
     const sourceId = sourceMatch ? Number(sourceMatch[1]) : undefined;
-    let audioPublished = false;
+    let audioPublished: boolean;
     try {
       const autoQuality = settings.screenShareQualityMode === "auto";
         const result = await voiceNativeService.setVoiceNativeScreensharing(newSharing, {

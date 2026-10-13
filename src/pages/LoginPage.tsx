@@ -5,7 +5,6 @@ import { useAuthStore } from "../stores/useAuthStore";
 import { useSettingsStore } from "../stores/useSettingsStore";
 import { EyeIcon, EyeOffIcon } from "../components/icons";
 import { moteurRust } from "../services/moteur";
-import { ancienneSession } from "../services/migrationMoteur";
 import { lireConnexionQr, type ConnexionQr } from "../services/connexionQr";
 import { ScannerQr, type QrLu } from "../components/qr/ScannerQr";
 import { SUR_ANDROID } from "../utils/plateforme";
@@ -17,7 +16,7 @@ export function LoginPage() {
   useEffect(terminerDemarrage, []);
   const { t } = useTranslation();
   const { login, loginJeton, register, isLoading, error, clearError, fetchRegistrationFlows, registrationFlows, isLoadingFlows, keyringUnavailable, restoreSession } = useAuthStore();
-  // Téléphone : connexion par le QR code affiché sur le PC (connexionQr.ts).
+  // Mobile sign-in using a QR code displayed by another device.
   const [scanConnexion, setScanConnexion] = useState(false);
   const [connexionQr, setConnexionQr] = useState<ConnexionQr | null>(null);
   const lireQrConnexion = ({ texte }: QrLu): string | null => {
@@ -41,9 +40,6 @@ export function LoginPage() {
     return saved;
   });
   const [password, setPassword] = useState("");
-  // Première connexion sur le moteur Rust d'un compte de l'ancien moteur : le
-  // mot de passe est redemandé une fois (voir migrationMoteur.ts).
-  const [migration] = useState(() => moteurRust() && ancienneSession() !== null);
   const [displayName, setDisplayName] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [regToken, setRegToken] = useState("");
@@ -307,11 +303,10 @@ export function LoginPage() {
           </button>
         </div>
 
-        {migration && mode === "login" && <div style={styles.noticeBox}>{t("auth.migrationNotice")}</div>}
         {connexionQr && isLoading && (
           <div style={styles.noticeBox}>{t("qr.loggingInAs", { user: connexionQr.utilisateur })}</div>
         )}
-        {SUR_ANDROID && moteurRust() && mode === "login" && !migration && (
+        {SUR_ANDROID && moteurRust() && mode === "login" && (
           <>
             <button
               type="button"
@@ -363,8 +358,7 @@ export function LoginPage() {
               onChange={(e) => setUsername(e.target.value)}
               placeholder="neo"
               required
-              // Téléphone : le remplissage automatique d'Android (gestionnaire
-              // de mots de passe) reconnaît l'identifiant et le mot de passe.
+              // Use standard field metadata for Android password-manager autofill.
               autoComplete={SUR_ANDROID ? "username" : "off"}
               name={SUR_ANDROID ? "username" : "sion-identity"}
             />
@@ -378,8 +372,7 @@ export function LoginPage() {
                   ...styles.inputPassword,
                   ...(!showPassword && !SUR_ANDROID ? { WebkitTextSecurity: 'disc' as never } : {}),
                 }}
-                // Android : un vrai champ mot de passe, que le remplissage
-                // automatique reconnaît (un champ texte masqué ne l'est pas).
+                // Android autofill requires a real password input, not masked text.
                 type={SUR_ANDROID && !showPassword ? "password" : "text"}
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}

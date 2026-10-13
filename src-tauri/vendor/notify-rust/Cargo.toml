@@ -13,7 +13,7 @@
 edition = "2021"
 rust-version = "1.89.0"
 name = "notify-rust"
-version = "4.18.0"
+version = "4.18.2"
 authors = ["Hendrik Sollich <hendrik@hoodie.de>"]
 build = false
 include = [
@@ -160,5 +160,5 @@ version = "0.3.2"
 version = "0.2"
 
 [target.'cfg(target_os="windows")'.dependencies.winrt-notification]
-version = "0.7"
+version = "0.8"
 package = "tauri-winrt-notification"

@@ -4,7 +4,8 @@ import { beforeEach, expect, it, vi } from "vitest";
 import { ChatInput } from "./ChatInput";
 import { useAppStore } from "../../stores/useAppStore";
 import { useMatrixStore } from "../../stores/useMatrixStore";
-const contexte = vi.hoisted(() => ({ mobile: false, autorise: true, android: false }));
+const contexte = vi.hoisted(() => ({ mobile: false, autorise: true, android: false, lirePressePapiers: vi.fn() }));
+vi.mock("../../utils/clipboardImage", () => ({ readClipboardFiles: contexte.lirePressePapiers }));
 vi.mock("../../i18n", () => ({ default: { t: (key: string) => key, changeLanguage: vi.fn() } }));
 vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 vi.mock("../../hooks/useIsMobile", () => ({ useIsMobile: () => contexte.mobile }));
@@ -22,11 +23,14 @@ vi.mock("./LargeMessageModal", () => ({ LargeMessageModal: () => null }));
 const vue = montage();
 const envoyer = vi.fn().mockResolvedValue(undefined);
 const joindre = vi.fn();
+const envoyerFichier = vi.fn().mockResolvedValue(undefined);
 beforeEach(() => {
-  contexte.mobile = false; contexte.autorise = true; contexte.android = false; envoyer.mockClear(); joindre.mockClear();
+  contexte.mobile = false; contexte.autorise = true; contexte.android = false; envoyer.mockReset().mockResolvedValue(undefined); joindre.mockClear();
+  contexte.lirePressePapiers.mockReset().mockResolvedValue([]);
+  envoyerFichier.mockClear();
   vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => window.setTimeout(() => cb(0), 0));
-  useAppStore.setState({ activeChannel: "!salon", pendingFiles: [], editingMessage: null, replyingTo: null, kickMessage: null, addPendingFile: joindre });
-  useMatrixStore.setState({ channels: [], sendMessage: envoyer });
+  useAppStore.setState({ activeChannel: "!salon", pendingFiles: [], editingMessage: null, replyingTo: null, kickMessage: null, fileError: null, addPendingFile: joindre });
+  useMatrixStore.setState({ channels: [], sendMessage: envoyer, sendFile: envoyerFichier });
 });
 async function saisir(texte: string) {
   const input = vue.container.querySelector("textarea")!;
@@ -59,6 +63,47 @@ it("Envoyer est désactivé à vide, envoie le texte puis revient à vide", asyn
   await vue.click('[aria-label="chat.send"]');
   expect(envoyer).toHaveBeenCalledWith("!salon", "Bonjour");
   expect(vue.container.querySelector("textarea")!.value).toBe("");
+});
+it("un envoi lent bloque les doubles envois et conserve le nouveau brouillon", async () => {
+  let confirmer!: () => void;
+  envoyer.mockImplementation(() => new Promise<void>((resolve) => { confirmer = resolve; }));
+  await vue.render(<ChatInput />);
+  await saisir("https://store.steampowered.com/app/4536610/City_Masterplan/");
+  await vue.click('[aria-label="chat.send"]');
+  expect(vue.container.querySelector<HTMLButtonElement>('[aria-label="chat.send"]')!.disabled).toBe(true);
+  await act(async () => {
+    vue.container.querySelector("textarea")!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+  });
+  expect(envoyer).toHaveBeenCalledOnce();
+  await saisir("Mon message suivant");
+  await act(async () => confirmer());
+  expect(vue.container.querySelector("textarea")!.value).toBe("Mon message suivant");
+  expect(vue.container.querySelector<HTMLButtonElement>('[aria-label="chat.send"]')!.disabled).toBe(false);
+});
+it("un envoi échoué affiche l'erreur et garde le texte pour réessayer", async () => {
+  envoyer.mockRejectedValue(new Error("hors ligne"));
+  await vue.render(<ChatInput />);
+  await saisir("Lien à réessayer");
+  await vue.click('[aria-label="chat.send"]');
+  expect(vue.container.querySelector("textarea")!.value).toBe("Lien à réessayer");
+  expect(vue.container.textContent).toContain("hors ligne");
+  expect(vue.container.querySelector<HTMLButtonElement>('[aria-label="chat.send"]')!.disabled).toBe(false);
+});
+it("une reprise ne renvoie pas un fichier déjà transmis avant l'échec du texte", async () => {
+  const file = new File(["image"], "photo.png", { type: "image/png" });
+  useAppStore.setState({ pendingFiles: [{ id: "photo", file, name: file.name, size: file.size, mimeType: file.type }] });
+  useAppStore.setState({ replyingTo: { eventId: "$origine", senderId: "@alice:sion", user: "Alice", text: "salut" } });
+  const repondre = vi.fn().mockRejectedValue(new Error("hors ligne"));
+  useMatrixStore.setState({ sendReply: repondre });
+  await vue.render(<ChatInput />);
+  await saisir("Mon texte");
+  await vue.click('[aria-label="chat.send"]');
+  expect(envoyerFichier).toHaveBeenCalledOnce();
+  expect(useAppStore.getState().pendingFiles).toEqual([]);
+  expect(vue.container.querySelector("textarea")!.value).toBe("Mon texte");
+  repondre.mockResolvedValue(undefined);
+  await vue.click('[aria-label="chat.send"]');
+  expect(envoyerFichier).toHaveBeenCalledOnce();
 });
 it("ajuste la hauteur aux retours à la ligne, la plafonne puis la réduit sans relire scrollHeight", async () => {
   let redimensionner!: ResizeObserverCallback;
@@ -149,4 +194,65 @@ it("le téléphone conserve la saisie sur une ligne", async () => {
   await vue.click('[aria-label="chat.attachFile"]');
   expect(vue.container.textContent).toContain("chat.attachFileItem");
   expect(vue.container.textContent).toContain("poll.menuItem");
+});
+
+async function coller({ texte = "", uris = "", files = [] }: { texte?: string; uris?: string; files?: File[] } = {}) {
+  const event = new Event("paste", { bubbles: true, cancelable: true });
+  Object.defineProperty(event, "clipboardData", { value: {
+    items: files.map((file) => ({ kind: "file", getAsFile: () => file })),
+    getData: (type: string) => type === "text/plain" ? texte : type === "text/uri-list" ? uris : "",
+  } });
+  await act(async () => { vue.container.querySelector("textarea")!.dispatchEvent(event); });
+  return event;
+}
+
+it("colle les images de l’explorateur dans le brouillon sans insérer leurs chemins ni envoyer", async () => {
+  const files = [new File(["image"], "photo.png", { type: "image/png" }), new File(["gif"], "anim.gif", { type: "image/gif" })];
+  contexte.lirePressePapiers.mockResolvedValue(files);
+  await vue.render(<ChatInput />);
+  await saisir("Mes photos");
+  const event = await coller({ texte: "file:///tmp/photo.png", uris: "file:///tmp/photo.png\r\nfile:///tmp/anim.gif\r\n" });
+  expect(event.defaultPrevented).toBe(true);
+  expect(joindre.mock.calls.map(([file]) => file.name)).toEqual(["photo.png", "anim.gif"]);
+  expect(vue.container.querySelector("textarea")!.value).toBe("Mes photos");
+  expect(envoyer).not.toHaveBeenCalled();
+});
+
+it("privilégie les fichiers du navigateur pour éviter des images en double", async () => {
+  await vue.render(<ChatInput />);
+  const image = new File(["image"], "capture.png", { type: "image/png" });
+  expect((await coller({ files: [image] })).defaultPrevented).toBe(true);
+  expect(joindre).toHaveBeenCalledExactlyOnceWith(image);
+  expect(contexte.lirePressePapiers).not.toHaveBeenCalled();
+});
+
+it("laisse le collage normal du texte et des liens", async () => {
+  await vue.render(<ChatInput />);
+  const event = await coller({ texte: "https://example.test/image.png", uris: "https://example.test/image.png" });
+  expect(event.defaultPrevented).toBe(false);
+  expect(joindre).not.toHaveBeenCalled();
+});
+
+it("ne colle pas dans un autre salon si la lecture du presse-papiers finit après la navigation", async () => {
+  let terminer!: (files: File[]) => void;
+  contexte.lirePressePapiers.mockImplementation(() => new Promise<File[]>((resolve) => { terminer = resolve; }));
+  await vue.render(<ChatInput />);
+  await coller();
+  await act(async () => {
+    useAppStore.setState({ activeChannel: "!autre-salon" });
+    terminer([new File(["image"], "capture.png", { type: "image/png" })]);
+  });
+  expect(joindre).not.toHaveBeenCalled();
+});
+
+it.each([1, 3])("envoie le texte comme légende de la première pièce jointe, sans message séparé (%i images)", async (count) => {
+  const files = Array.from({ length: count }, (_, i) => new File(["image"], `photo${i}.png`, { type: "image/png" }));
+  useAppStore.setState({ pendingFiles: files.map((file, i) => ({ id: String(i), file, name: file.name, size: file.size, mimeType: file.type })) });
+  await vue.render(<ChatInput />);
+  await saisir("Pour avoir la bêta !");
+  await vue.click('[aria-label="chat.send"]');
+  expect(envoyerFichier.mock.calls).toEqual(files.map((file, i) => i === 0 ? ["!salon", file, "Pour avoir la bêta !"] : ["!salon", file]));
+  expect(envoyer).not.toHaveBeenCalled();
+  expect(useAppStore.getState().pendingFiles).toHaveLength(0);
+  expect(vue.container.querySelector("textarea")!.value).toBe("");
 });

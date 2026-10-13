@@ -5,6 +5,8 @@
 # - Salon chiffré couvert par le pont E2EE MatrixRTC → Rust.
 #
 # Usage: ./build-scripts/run-native.sh [-- <args cargo>]
+#        ./build-scripts/run-native.sh --no-build [<args application>]
+# --no-build lance le binaire déjà compilé, sans attendre un build Android.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -32,4 +34,9 @@ trap cleanup EXIT INT TERM
 # RUST_BACKTRACE=1 : la panique tokio "Cannot start a runtime from within a
 # runtime" tue l'app sans stack sinon — intraçable (crash du 08/09 18h51).
 cd "$PROJECT_DIR/src-tauri"
-RUST_BACKTRACE=1 cargo run -j4 "$@"
+if [ "${1:-}" = "--no-build" ]; then
+    shift
+    RUST_BACKTRACE=1 ./target/debug/sion-client "$@"
+else
+    RUST_BACKTRACE=1 cargo run -j4 "$@"
+fi

@@ -1,3 +1,5 @@
+import { ImageAvatar } from "./ImageAvatar";
+
 interface UserAvatarProps {
   name: string;
   speaking: boolean;
@@ -31,12 +33,30 @@ export function UserAvatar({ name, speaking, size = "sm", avatarUrl, className, 
   const badgeDim = Math.round(dim * 0.6);
   const badgeFontSize = Math.round(badgeDim * 0.7);
 
+  const placeholder = <div style={{
+    width: `var(--sion-avatar-taille, ${dim}px)`,
+    height: `var(--sion-avatar-taille, ${dim}px)`,
+    borderRadius: '50%',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    fontWeight: 600,
+    fontSize: `var(--sion-avatar-police, ${fontSize}px)`,
+    transition: 'all 200ms',
+    background: speaking ? 'rgba(125, 220, 135, 0.15)' : 'var(--color-surface-container-highest)',
+    color: speaking ? 'var(--color-green)' : 'var(--color-on-surface-variant)',
+    outline,
+    outlineOffset: 1,
+    animation: glow,
+  }}>{initial}</div>;
+
   return (
     <div className={className} style={{ position: 'relative', display: 'inline-flex', flexShrink: 0 }}>
       {avatarUrl ? (
-        <img
+        <ImageAvatar
           src={avatarUrl}
           alt={name}
+          fallback={placeholder}
           style={{
             width: `var(--sion-avatar-taille, ${dim}px)`,
             height: `var(--sion-avatar-taille, ${dim}px)`,
@@ -48,26 +68,7 @@ export function UserAvatar({ name, speaking, size = "sm", avatarUrl, className, 
             animation: glow,
           }}
         />
-      ) : (
-        <div style={{
-          width: `var(--sion-avatar-taille, ${dim}px)`,
-          height: `var(--sion-avatar-taille, ${dim}px)`,
-          borderRadius: '50%',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          fontWeight: 600,
-          fontSize: `var(--sion-avatar-police, ${fontSize}px)`,
-          transition: 'all 200ms',
-          background: speaking ? 'rgba(125, 220, 135, 0.15)' : 'var(--color-surface-container-highest)',
-          color: speaking ? 'var(--color-green)' : 'var(--color-on-surface-variant)',
-          outline,
-          outlineOffset: 1,
-          animation: glow,
-        }}>
-          {initial}
-        </div>
-      )}
+      ) : placeholder}
       {presence && (
         <span title={presenceLabel} role={presenceLabel ? "img" : undefined} aria-label={presenceLabel} data-presence={presence} style={{
           position: 'absolute' as const,

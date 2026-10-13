@@ -1,25 +1,21 @@
 /**
- * Contraste WCAG 2.1 des thèmes.
- *
- * Un thème — livré ou importé — doit rester lisible. On vérifie les paires
- * (couleur de texte, fond) que l'interface emploie réellement, avec le
- * minimum WCAG qui leur revient : 4,5:1 pour du texte (niveau AA), 3:1 pour
- * un élément d'interface ou une couleur d'état (critère 1.4.11).
- *
- * Seules les couleurs opaques se comparent : une couleur translucide
- * (bordures, halos) dépend de ce qu'elle recouvre, elle est ignorée.
+ * Validate WCAG 2.1 contrast for actual UI foreground/background pairs.
+ * Require 4.5:1 for AA text and 3:1 for UI/status colors (criterion 1.4.11).
+ * Compare only opaque colors; translucent borders and halos depend on content underneath.
  */
 import type { ThemeTokenName } from "./types";
 
 /** Texte courant (AA). */
 export const CONTRASTE_TEXTE = 4.5;
-/** Élément d'interface ou couleur d'état (AA, 1.4.11). */
-export const CONTRASTE_INTERFACE = 3;
+/** UI or status-color contrast minimum (AA, 1.4.11). */
+const CONTRASTE_INTERFACE = 3;
 
 type Rgb = [number, number, number];
 
-/** `#rgb`, `#rrggbb`, `rgb(…)` ou `rgba(…, 1)` → composantes 0-255 ; `null`
- *  pour tout le reste, translucide compris. */
+/**
+ * Parse #rgb, #rrggbb, rgb(...) or opaque rgba(...,1) into 0-255 components.
+ * Return null for other formats, including translucent colors.
+ */
 export function couleurOpaque(valeur: string): Rgb | null {
   const v = valeur.trim().toLowerCase();
   const court = /^#([0-9a-f])([0-9a-f])([0-9a-f])$/.exec(v);
@@ -44,7 +40,7 @@ function luminance([r, g, b]: Rgb): number {
   return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
 }
 
-/** Rapport de contraste, de 1 à 21. */
+/** Contrast ratio from 1 to 21. */
 export function rapportContraste(a: Rgb, b: Rgb): number {
   const [clair, sombre] = [luminance(a), luminance(b)].sort((x, y) => y - x);
   return (clair + 0.05) / (sombre + 0.05);
@@ -64,9 +60,11 @@ const SURFACES: ThemeTokenName[] = [
   "color-surface-container-highest",
 ];
 
-/** Les paires que l'interface emploie. `outline` sert aussi de texte
- *  secondaire (horodatages, indications) : il doit se lire comme tel. */
-export const PAIRES_CONTROLEES: Paire[] = [
+/**
+ * UI color pairs. outline also serves as secondary text
+ * for timestamps and hints, so it must meet text contrast requirements.
+ */
+const PAIRES_CONTROLEES: Paire[] = [
   ...SURFACES.flatMap((fond): Paire[] => [
     { texte: "color-on-surface", fond, minimum: CONTRASTE_TEXTE },
     { texte: "color-on-surface-variant", fond, minimum: CONTRASTE_TEXTE },
@@ -91,8 +89,10 @@ export interface DefautContraste {
   minimum: number;
 }
 
-/** Les paires sous leur minimum, de la pire à la moins grave. Une paire dont
- *  une couleur n'est pas opaque n'est pas jugée. */
+/**
+ * Pairs below their required minimum, ordered worst first.
+ * Skip pairs containing a non-opaque color.
+ */
 export function defautsDeContraste(tokens: Record<ThemeTokenName, string>): DefautContraste[] {
   const defauts: DefautContraste[] = [];
   for (const { texte, fond, minimum } of PAIRES_CONTROLEES) {

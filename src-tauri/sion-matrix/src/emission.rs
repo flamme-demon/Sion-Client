@@ -3,13 +3,14 @@
 //! Tout part par `send_raw` : le JSON est exactement celui du moteur JS, et
 //! matrix-sdk le chiffre d'office dans un salon chiffré. Le message revient
 //! ensuite par la synchro, dans le fil du salon. Chaque envoi rend
-//! l'identifiant serveur de l'événement (plus d'écho local `~…` à résoudre,
-//! contrairement au JS : `resolveServerEventId` n'a pas d'équivalent).
+//! l'identifiant serveur de l'événement. Les textes et réponses peuvent
+//! recevoir la transaction de l'écho local de l'interface : la synchro la
+//! restitue pour remplacer cet écho, même si elle arrive avant l'accusé.
 use std::future::IntoFuture;
 use std::io::Cursor;
 
 use matrix_sdk::ruma::events::room::member::MembershipState;
-use matrix_sdk::ruma::{EventId, OwnedEventId};
+use matrix_sdk::ruma::{EventId, OwnedEventId, OwnedTransactionId};
 use matrix_sdk::{Room, RoomMemberships};
 use serde_json::Value;
 
@@ -35,24 +36,46 @@ async fn membres_rejoints(salon: &Room) -> Vec<Membre> {
 }
 
 async fn envoyer(salon: &Room, type_: &str, contenu: Value) -> Resultat<String> {
-    let resultat = Box::pin(salon.send_raw(type_, contenu).into_future()).await?;
+    envoyer_transaction(salon, type_, contenu, None).await
+}
+
+async fn envoyer_transaction(salon: &Room, type_: &str, contenu: Value, transaction: Option<&str>) -> Resultat<String> {
+    let mut requete = salon.send_raw(type_, contenu);
+    if let Some(transaction) = transaction {
+        requete = requete.with_transaction_id(&OwnedTransactionId::from(transaction));
+    }
+    let resultat = Box::pin(requete.into_future()).await?;
     Ok(resultat.response.event_id.to_string())
 }
 
 impl CoeurMatrix {
     /// Message texte, avec mentions (`sendTextMessage`).
     pub async fn envoyer_texte(&self, salon: &str, corps: &str) -> Resultat<String> {
+        self.envoyer_texte_transaction(salon, corps, None).await
+    }
+
+    pub async fn envoyer_texte_transaction(&self, salon: &str, corps: &str, transaction: Option<&str>) -> Resultat<String> {
+        let debut = std::time::Instant::now();
         let salon = self.salon(salon).await?;
-        let contenu = envoi::texte(corps, &membres_rejoints(&salon).await);
-        envoyer(&salon, "m.room.message", contenu).await
+        let membres = if corps.contains('@') { membres_rejoints(&salon).await } else { Vec::new() };
+        let preparation_ms = debut.elapsed().as_millis();
+        let contenu = envoi::texte(corps, &membres);
+        let resultat = envoyer_transaction(&salon, "m.room.message", contenu, transaction).await;
+        log::info!("[Sion][envoi] texte salon={} préparation={} ms total={} ms succès={}", salon.room_id(), preparation_ms, debut.elapsed().as_millis(), resultat.is_ok());
+        resultat
     }
 
     /// Réponse à un message (`sendReply`).
     pub async fn repondre(&self, salon: &str, cible: &str, corps: &str) -> Resultat<String> {
+        self.repondre_transaction(salon, cible, corps, None).await
+    }
+
+    pub async fn repondre_transaction(&self, salon: &str, cible: &str, corps: &str, transaction: Option<&str>) -> Resultat<String> {
         let cible = id_evenement(cible)?;
         let salon = self.salon(salon).await?;
-        let contenu = envoi::reponse(cible.as_str(), corps, &membres_rejoints(&salon).await);
-        envoyer(&salon, "m.room.message", contenu).await
+        let membres = if corps.contains('@') { membres_rejoints(&salon).await } else { Vec::new() };
+        let contenu = envoi::reponse(cible.as_str(), corps, &membres);
+        envoyer_transaction(&salon, "m.room.message", contenu, transaction).await
     }
 
     /// Édition d'un message (`editMessage`) — chiffrée dans un salon chiffré.
@@ -167,13 +190,25 @@ async fn televerser(salon: &Room, octets: Vec<u8>, corps: &str, mime: &str, info
     let client = salon.client();
     let taille = octets.len() as u64;
     let chiffre = Box::pin(salon.latest_encryption_state()).await?.is_encrypted();
-    let source = if chiffre {
+    let source = televerser_octets(&client, octets, mime, chiffre).await?;
+    let mut contenu = envoi::fichier(corps, mime, taille, source, infos);
+    if let Some(miniature) = infos.miniature.as_ref().filter(|m| !m.octets.is_empty()) {
+        match televerser_octets(&client, miniature.octets.clone(), "image/jpeg", chiffre).await {
+            Ok(source) => envoi::avec_miniature(&mut contenu, source, miniature),
+            // L'aperçu est facultatif : son échec ne fait pas perdre l'envoi.
+            Err(e) => log::debug!("[Sion][envoi] miniature indisponible : {e}"),
+        }
+    }
+    Ok(contenu)
+}
+
+async fn televerser_octets(client: &matrix_sdk::Client, octets: Vec<u8>, mime: &str, chiffre: bool) -> Resultat<Televerse> {
+    Ok(if chiffre {
         let fichier = Box::pin(client.upload_encrypted_file(&mut Cursor::new(&octets)).into_future()).await?;
         Televerse::Chiffre(serde_json::to_value(fichier)?)
     } else {
         let type_: mime::Mime = mime.parse().unwrap_or(mime::APPLICATION_OCTET_STREAM);
         let reponse = Box::pin(client.media().upload(&type_, octets, None).into_future()).await?;
         Televerse::Clair(reponse.content_uri.to_string())
-    };
-    Ok(envoi::fichier(corps, mime, taille, source, infos))
+    })
 }

@@ -81,7 +81,7 @@ export async function lireConservation(scopeId: string): Promise<VueConservation
       || !([404, 405, 501].includes(e.status) || (e.status === 403 && !e.errcode))) throw e;
     const channels = useMatrixStore.getState().channels;
     const scope = channels.find((c) => c.id === scopeId);
-    if (!scope) throw new Error("conservation.loadFailed");
+    if (!scope) throw new Error("conservation.loadFailed", { cause: e });
     const salon = (c: typeof scope): SalonConservation => ({ id: c.id, name: c.name, isSpace: !!c.isSpace,
       policy: { mode: "unlimited" }, effectiveDays: null, parentId: null, parentName: null, editable: false,
       protected: !!c.isSoundboard || channels.some((s) => s.boardRoomId === c.id),

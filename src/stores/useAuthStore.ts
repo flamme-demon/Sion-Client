@@ -6,6 +6,7 @@ import type { RegistrationFlowInfo } from "../services/matrixService";
 import { useAdminStore } from "./useAdminStore";
 import { mirrorSessionToAppData } from "../services/sessionPersist";
 import { moteurRust } from "../services/moteur";
+import { viderCachesRendusMessages } from "../utils/cacheRendusMessages";
 
 const STORAGE_KEY = "sion_auth_credentials";
 /** Moteur Rust : clé distincte, sans jeton (il reste dans le cœur), jamais
@@ -134,24 +135,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       try {
         cachedLoginPassword = password;
         const core = await import("../services/matrixCore");
-        const migration = await import("../services/migrationMoteur");
-        let precedents: Partial<AuthCredentials> | null = getLiveKitFromExisting(get().credentials);
-        const ancienne = migration.ancienneSession();
-        const saisi = username.trim();
-        const memeCompte = ancienne !== null
-          && (saisi.startsWith("@") ? ancienne.userId === saisi : ancienne.userId.startsWith(`@${saisi}:`));
-        if (ancienne && memeCompte) {
-          // Étape 4 : le nouvel appareil reprend l'ancien (secrets, clés des
-          // salons), puis l'ancien est déconnecté et effacé.
-          const exporte = await migration.exporterAncienneSession(ancienne);
-          const rapport = await core.connecterMigration(homeserver, username, password, exporte.secrets, exporte.cles);
-          const { info } = await import("@tauri-apps/plugin-log");
-          void info(`[Sion][migration] ancien appareil ${ancienne.deviceId} repris : secrets ${rapport.secretsImportes ? "oui" : "non"}, clés ${rapport.clesImportees}/${rapport.clesTotal}`).catch(() => {});
-          await migration.terminerAncienneSession(ancienne);
-          precedents = { ...precedents, displayName: ancienne.displayName, avatarUrl: ancienne.avatarUrl, livekitUrl: ancienne.livekitUrl, livekitApiKey: ancienne.livekitApiKey, livekitApiSecret: ancienne.livekitApiSecret, userId: ancienne.userId };
-        } else {
-          await core.connecter(homeserver, username, password);
-        }
+        const precedents = getLiveKitFromExisting(get().credentials);
+        await core.connecter(homeserver, username, password);
         const credentials = await identifiantsRust(homeserver, precedents);
         if (!credentials) throw new Error("connexion sans utilisateur");
         saveCredentials(credentials);
@@ -281,12 +266,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
           set({ isLoading: false, credentials: null });
           return;
         }
-        const migration = await import("../services/migrationMoteur");
-        const ancienne = migration.ancienneSession();
-        // À défaut d'identifiants du moteur Rust, ceux de l'ancien moteur
-        // (nom local avec emojis, réglages LiveKit) — écartés par
-        // `identifiantsRust` s'ils sont d'un autre compte.
-        const precedents = loadCredentials() ?? ancienne;
+        const precedents = loadCredentials();
         const { info } = await import("@tauri-apps/plugin-log");
         void info(`[Sion][auth] reprise (moteur Rust) : identifiants locaux de ${precedents?.userId ?? "personne"}`).catch(() => {});
         const credentials = await identifiantsRust(undefined, precedents);
@@ -296,13 +276,6 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         }
         saveCredentials(credentials);
         set({ credentials, isLoading: false });
-        // Une session de l'ancien moteur du MÊME compte qui traîne encore (le
-        // cœur avait déjà sa session) : son appareil ne servira plus, il est
-        // déconnecté et ses données effacées, comme après une migration.
-        if (ancienne && ancienne.userId === credentials.userId && ancienne.deviceId !== credentials.deviceId) {
-          void info(`[Sion][migration] ancien appareil ${ancienne.deviceId} retiré (session Rust déjà présente)`).catch(() => {});
-          void migration.terminerAncienneSession(ancienne);
-        }
         if (await matrixService.checkSuspended().catch(() => false)) set({ isSuspended: true });
       } catch (err) {
         set({ error: mapMatrixError(err), isLoading: false, credentials: null, keyringUnavailable: estTrousseauIndisponible(err) });
@@ -465,3 +438,11 @@ function getLiveKitFromExisting(credentials: AuthCredentials | null) {
     livekitApiSecret: credentials.livekitApiSecret,
   };
 }
+
+// Les transformations du chat ne doivent pas conserver le texte d'une session
+// fermée, ni le partager avec un autre compte ou un autre serveur.
+const arreterCacheRendus = useAuthStore.subscribe((etat, avant) => {
+  if (etat.credentials?.userId !== avant.credentials?.userId
+    || etat.credentials?.homeserverUrl !== avant.credentials?.homeserverUrl) viderCachesRendusMessages();
+});
+if (import.meta.hot) import.meta.hot.dispose(arreterCacheRendus);

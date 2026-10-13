@@ -6,8 +6,8 @@
 //! room, encrypted when the room is).
 //!
 //! Pipeline (moteur natif) : le tap post-APM de `sion-native-audio` pousse le
-//! micro traité en 16 kHz mono f32 (`transcription_tap`) → [ici] VAD WebRTC
-//! (earshot) segmente la parole (pre-roll + hangover) → whisper/parakeet
+//! micro traité en 16 kHz mono f32 (`transcription_tap`) → VAD Silero
+//! (earshot en repli) segmente la parole (pre-roll + hangover) → whisper/parakeet
 //! transcrit chaque segment fermé → `{"type":"segment",...}` JSON diffusé sur
 //! le WebSocket local → le front publie un événement Matrix
 //! `com.sion.transcript` dans le salon.
@@ -34,15 +34,16 @@ use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use earshot::{VoiceActivityDetector, VoiceActivityProfile};
+use tauri::Manager;
 use transcribe_cpp::{
-    Model, RunExtension, RunOptions, SessionOptions, TimestampKind, WhisperRunOptions,
+    CancelToken, Model, RunExtension, RunOptions, SessionOptions, TimestampKind, WhisperRunOptions,
 };
 use tungstenite::Message;
 
 const SAMPLE_RATE: usize = 16_000;
-/// 20 ms VAD frames (earshot accepts 10/20/30 ms at 16 kHz).
-const VAD_FRAME: usize = SAMPLE_RATE / 50;
+mod vad;
+/// Silero scores 512 samples (32 ms); earshot fallback scores two 16 ms frames.
+const VAD_FRAME: usize = vad::FRAME_SAMPLES;
 /// Speech kept before the trigger frame so word onsets aren't clipped.
 const PRE_ROLL_MS: usize = 300;
 /// Continuous non-speech that closes a segment.
@@ -56,10 +57,13 @@ const MIN_SPEECH_MS: usize = 350;
 
 static WS_PORT: AtomicU16 = AtomicU16::new(0);
 static ENGINE_RUNNING: AtomicBool = AtomicBool::new(false);
+static VAD_MODEL_PATH: Mutex<Option<std::path::PathBuf>> = Mutex::new(None);
 /// Micro non muet pendant une session native (mis à jour par `voice_engine`).
 static NATIVE_MIC_ENABLED: AtomicBool = AtomicBool::new(false);
 /// Flag d'arrêt du thread d'ingestion natif (None = pas de session native).
 static NATIVE_INGEST_STOP: Mutex<Option<std::sync::Arc<AtomicBool>>> = Mutex::new(None);
+static NATIVE_INGEST_THREAD: Mutex<Option<thread::JoinHandle<()>>> = Mutex::new(None);
+static ENGINE_CANCEL: Mutex<Option<CancelToken>> = Mutex::new(None);
 /// Jobs (closed speech segments) from the segmenter to the whisper worker.
 static SEG_TX: Mutex<Option<SyncSender<SegJob>>> = Mutex::new(None);
 /// Outgoing JSON lines, one sender per connected WS client (broadcast).
@@ -86,11 +90,11 @@ fn broadcast_json(line: &str) {
 // ---------------------------------------------------------------------------
 // Segmenter: VAD state machine turning a continuous 16 kHz stream into
 // discrete speech segments. One instance per WS connection, fed on the WS
-// reader thread (cheap — earshot is a few µs per 20 ms frame).
+// reader thread, outside the real-time audio callback.
 // ---------------------------------------------------------------------------
 
 struct Segmenter {
-    vad: VoiceActivityDetector,
+    vad: vad::SpeechDetector,
     /// Samples not yet forming a full VAD frame.
     pending: Vec<f32>,
     /// Rolling pre-roll kept while idle.
@@ -107,8 +111,12 @@ struct Segmenter {
 
 impl Segmenter {
     fn new() -> Self {
+        let vad_path = VAD_MODEL_PATH
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
         Self {
-            vad: VoiceActivityDetector::new(VoiceActivityProfile::VERY_AGGRESSIVE),
+            vad: vad::SpeechDetector::new(vad_path.as_deref()),
             pending: Vec::with_capacity(VAD_FRAME * 4),
             pre_roll: Vec::with_capacity(PRE_ROLL_MS * SAMPLE_RATE / 1000),
             segment: Vec::new(),
@@ -127,12 +135,7 @@ impl Segmenter {
     }
 
     fn process_frame(&mut self, frame: &[f32]) {
-        // earshot works on i16 PCM.
-        let i16_frame: Vec<i16> = frame
-            .iter()
-            .map(|s| (s.clamp(-1.0, 1.0) * 32767.0) as i16)
-            .collect();
-        let is_speech = self.vad.predict_16khz(&i16_frame).unwrap_or(false);
+        let is_speech = self.vad.predict(frame, !self.segment.is_empty());
         let frame_ms = VAD_FRAME * 1000 / SAMPLE_RATE;
 
         if self.segment.is_empty() {
@@ -260,17 +263,22 @@ fn ensure_backends() {
     });
 }
 
-fn asr_worker(model_path: String, lang: String, rx: Receiver<SegJob>) {
+fn asr_worker(model_path: String, lang: String, rx: Receiver<SegJob>, cancel: CancelToken) {
     ensure_backends();
     let model = match Model::load(&model_path) {
         Ok(m) => m,
         Err(e) => {
+            if cancel.is_cancelled() {
+                return;
+            }
             log::error!("[Sion][transcribe] model load failed: {e}");
             broadcast_json(&format!(
                 "{{\"type\":\"error\",\"message\":{}}}",
                 json_escape(&format!("model load failed: {e}"))
             ));
-            ENGINE_RUNNING.store(false, Ordering::Relaxed);
+            if !cancel.is_cancelled() {
+                ENGINE_RUNNING.store(false, Ordering::Relaxed);
+            }
             return;
         }
     };
@@ -284,10 +292,16 @@ fn asr_worker(model_path: String, lang: String, rx: Receiver<SegJob>) {
         Ok(s) => s,
         Err(e) => {
             log::error!("[Sion][transcribe] session init failed: {e}");
-            ENGINE_RUNNING.store(false, Ordering::Relaxed);
+            if !cancel.is_cancelled() {
+                ENGINE_RUNNING.store(false, Ordering::Relaxed);
+            }
             return;
         }
     };
+    session.set_cancel_token(&cancel);
+    if cancel.is_cancelled() {
+        return;
+    }
 
     // Options shared by every run. Text-only output (timestamps come from
     // our own segmenter's wall clock). The language hint and the decode
@@ -316,14 +330,14 @@ fn asr_worker(model_path: String, lang: String, rx: Receiver<SegJob>) {
         let job = match rx.recv_timeout(Duration::from_millis(300)) {
             Ok(j) => j,
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                if !ENGINE_RUNNING.load(Ordering::Relaxed) {
+                if cancel.is_cancelled() || !ENGINE_RUNNING.load(Ordering::Relaxed) {
                     break;
                 }
                 continue;
             }
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
         };
-        if !ENGINE_RUNNING.load(Ordering::Relaxed) {
+        if cancel.is_cancelled() || !ENGINE_RUNNING.load(Ordering::Relaxed) {
             break;
         }
 
@@ -336,6 +350,9 @@ fn asr_worker(model_path: String, lang: String, rx: Receiver<SegJob>) {
                 continue;
             }
         };
+        if cancel.is_cancelled() {
+            break;
+        }
         log::info!(
             "[Sion][transcribe] {:.1}s audio → {} chars in {} ms",
             seg_secs,
@@ -441,10 +458,21 @@ fn ensure_ws_server() {
 /// au démarrage (armement muet = tap fermé jusqu'au prochain unmute).
 #[tauri::command]
 pub fn transcribe_start_native(
+    app: tauri::AppHandle<crate::TauriRuntime>,
     model_path: String,
     lang: String,
     mic_enabled: bool,
 ) -> Result<u16, String> {
+    start_native(model_path, lang, mic_enabled, bundled_vad_path(&app))
+}
+
+fn start_native(
+    model_path: String,
+    lang: String,
+    mic_enabled: bool,
+    vad_path: Option<std::path::PathBuf>,
+) -> Result<u16, String> {
+    *VAD_MODEL_PATH.lock().unwrap_or_else(|e| e.into_inner()) = vad_path;
     let port = start_engine(model_path, lang)?;
     let rx = sion_native_audio::transcription_tap::subscribe();
     sion_native_audio::transcription_tap::enable();
@@ -452,10 +480,13 @@ pub fn transcribe_start_native(
     NATIVE_MIC_ENABLED.store(mic_enabled, Ordering::Release);
     let stop = std::sync::Arc::new(AtomicBool::new(false));
     *NATIVE_INGEST_STOP.lock().unwrap_or_else(|e| e.into_inner()) = Some(stop.clone());
-    thread::Builder::new()
+    let handle = thread::Builder::new()
         .name("sion-transcribe-native".into())
         .spawn(move || native_ingest_worker(rx, stop))
         .map_err(|e| format!("thread transcription: {e}"))?;
+    *NATIVE_INGEST_THREAD
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) = Some(handle);
     log::info!(
         "[Sion][transcribe] ingestion native démarrée (micro={})",
         mic_enabled
@@ -485,6 +516,13 @@ fn stop_native_ingest() {
         stop.store(true, Ordering::Release);
     }
     sion_native_audio::transcription_tap::unsubscribe();
+    if let Some(handle) = NATIVE_INGEST_THREAD
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .take()
+    {
+        let _ = handle.join();
+    }
 }
 
 /// Segmenter global du tap natif : rééchantillonné en 16 kHz par
@@ -505,12 +543,27 @@ fn native_ingest_worker(rx: Receiver<Vec<f32>>, stop: std::sync::Arc<AtomicBool>
         let now = NATIVE_MIC_ENABLED.load(Ordering::Acquire);
         if mic_enabled && !now {
             segmenter.close_segment();
+            segmenter.vad.reset();
         }
         mic_enabled = now;
     }
     segmenter.close_segment();
-    sion_native_audio::transcription_tap::unsubscribe();
     log::info!("[Sion][transcribe] ingestion native arrêtée");
+}
+
+fn bundled_vad_path(app: &tauri::AppHandle<crate::TauriRuntime>) -> Option<std::path::PathBuf> {
+    // AppImage and development resources retain the directory; NSIS flattens it.
+    [
+        "resources/silero-vad-v6.2-F32.gguf",
+        "silero-vad-v6.2-F32.gguf",
+    ]
+    .into_iter()
+    .filter_map(|name| {
+        app.path()
+            .resolve(name, tauri::path::BaseDirectory::Resource)
+            .ok()
+    })
+    .find(|path| path.is_file())
 }
 
 /// Start the transcription engine: boots the WS server if needed, loads the
@@ -537,6 +590,13 @@ fn start_engine(model_path: String, lang: String) -> Result<u16, String> {
 
     // Stop a previous worker (drops its SEG_TX → recv disconnects).
     ENGINE_RUNNING.store(false, Ordering::Relaxed);
+    if let Some(cancel) = ENGINE_CANCEL
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .take()
+    {
+        cancel.cancel();
+    }
     *SEG_TX.lock().unwrap() = None;
 
     // Bounded to a handful of pending segments (~1 min of speech max) —
@@ -544,7 +604,9 @@ fn start_engine(model_path: String, lang: String) -> Result<u16, String> {
     let (tx, rx) = std::sync::mpsc::sync_channel::<SegJob>(6);
     *SEG_TX.lock().unwrap() = Some(tx);
     ENGINE_RUNNING.store(true, Ordering::Relaxed);
-    thread::spawn(move || asr_worker(model_path, lang, rx));
+    let cancel = CancelToken::new();
+    *ENGINE_CANCEL.lock().unwrap_or_else(|e| e.into_inner()) = Some(cancel.clone());
+    thread::spawn(move || asr_worker(model_path, lang, rx, cancel));
     Ok(port)
 }
 
@@ -554,6 +616,13 @@ fn start_engine(model_path: String, lang: String) -> Result<u16, String> {
 pub fn transcribe_stop() {
     stop_native_ingest();
     ENGINE_RUNNING.store(false, Ordering::Relaxed);
+    if let Some(cancel) = ENGINE_CANCEL
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .take()
+    {
+        cancel.cancel();
+    }
     *SEG_TX.lock().unwrap() = None;
     log::info!("[Sion][transcribe] stop requested");
 }
@@ -577,7 +646,9 @@ mod tests {
             .collect();
         assert!(samples.len() > 48_000, "PCM trop court");
 
-        let port = transcribe_start_native(model, "fr".into(), true).expect("start");
+        let vad_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("resources/silero-vad-v6.2-F32.gguf");
+        let port = start_native(model, "fr".into(), true, Some(vad_path)).expect("start");
         let (mut ws, _) =
             tungstenite::connect(format!("ws://127.0.0.1:{port}")).expect("connexion WS");
         if let tungstenite::stream::MaybeTlsStream::Plain(stream) = ws.get_ref() {

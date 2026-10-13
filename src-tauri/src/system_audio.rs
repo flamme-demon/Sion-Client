@@ -790,9 +790,7 @@ mod windows_impl {
     const KSAUDIO_SPEAKER_STEREO: u32 = SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT;
     use windows::Win32::Media::Multimedia::KSDATAFORMAT_SUBTYPE_IEEE_FLOAT;
     use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_MULTITHREADED};
-    // PROPVARIANT moved to windows::core in 0.58 (was in
-    // windows::Win32::System::Com::StructuredStorage in earlier versions).
-    use windows::core::PROPVARIANT;
+    use windows::Win32::System::Com::StructuredStorage::PROPVARIANT;
     use windows::Win32::System::SystemInformation::OSVERSIONINFOW;
     use windows::Win32::System::Threading::{
         CreateEventW, GetCurrentProcessId, WaitForSingleObject, INFINITE,
@@ -867,12 +865,12 @@ mod windows_impl {
     impl IActivateAudioInterfaceCompletionHandler_Impl for CompletionHandler_Impl {
         fn ActivateCompleted(
             &self,
-            op: Option<&IActivateAudioInterfaceAsyncOperation>,
+            op: windows::core::Ref<'_, IActivateAudioInterfaceAsyncOperation>,
         ) -> WResult<()> {
             let outcome: WResult<IAudioClient> = unsafe {
                 let mut hr = windows::core::HRESULT(0);
                 let mut iface: Option<windows::core::IUnknown> = None;
-                op.unwrap()
+                op.ok()?
                     .GetActivateResult(&mut hr, &mut iface as *mut _)?;
                 hr.ok()?;
                 iface
@@ -925,17 +923,13 @@ mod windows_impl {
         // build it by hand because `windows` doesn't ship a high-level
         // helper for VT_BLOB.
         let mut prop = PROPVARIANT::default();
-        // PROPVARIANT is #[repr(transparent)] over windows::core::imp::PROPVARIANT
-        // in 0.58, so casting &mut PROPVARIANT directly to *mut imp::PROPVARIANT
-        // is sound (avoids the UB of going through as_raw()'s &T reference).
-        // Field access path (Anonymous.Anonymous.vt, Anonymous.Anonymous.Anonymous.blob)
-        // is unchanged from the older windows-rs PROPVARIANT_0 layout.
-        let prop_inner =
-            &mut *(&mut prop as *mut PROPVARIANT as *mut windows::core::imp::PROPVARIANT);
-        prop_inner.Anonymous.Anonymous.vt = VT_BLOB.0;
-        prop_inner.Anonymous.Anonymous.Anonymous.blob.cbSize =
+        // The generated Windows 0.62 structure owns no allocation here:
+        // the blob borrows activation for the asynchronous API call.
+        let prop_fields = &mut *prop.Anonymous.Anonymous;
+        prop_fields.vt = VT_BLOB;
+        prop_fields.Anonymous.blob.cbSize =
             std::mem::size_of::<AUDIOCLIENT_ACTIVATION_PARAMS>() as u32;
-        prop_inner.Anonymous.Anonymous.Anonymous.blob.pBlobData =
+        prop_fields.Anonymous.blob.pBlobData =
             &mut activation as *mut _ as *mut u8;
 
         let event_done = CreateEventW(None, false, false, None)?;

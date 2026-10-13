@@ -2,10 +2,10 @@ use super::*;
 
 #[test]
 fn matte_is_reused_until_segmentation_or_framing_changes() {
-    let mut pixels = vec![0.0; 192 * 192];
+    let mut pixels = vec![0.0; PERSON_SIZE * PERSON_SIZE];
     for y in 40..150 {
         for x in 60..120 {
-            pixels[y * 192 + x] = 1.0;
+            pixels[y * PERSON_SIZE + x] = 1.0;
         }
     }
     let source = Arc::new(pixels);
@@ -24,7 +24,7 @@ fn matte_is_reused_until_segmentation_or_framing_changes() {
 }
 
 #[test]
-fn background_never_returns_the_unprocessed_room_during_warmup() {
+fn background_masks_the_room_on_the_first_processed_frame() {
     let control = Arc::new(Control::default());
     control
         .configure(Settings {
@@ -37,15 +37,16 @@ fn background_never_returns_the_unprocessed_room_during_warmup() {
     let output = processor.process(source.clone());
     assert_ne!(output, source);
     assert!(output.pixels().all(|p| p[0] < 200 && p[3] == 255));
-    assert!(!control.status.lock().unwrap().ready);
+    assert!(control.status.lock().unwrap().ready);
     control.configure(Settings::default()).unwrap();
     assert!(!processor.enabled());
     assert!(processor.worker.is_none());
+    assert!(processor.segmenter.is_none());
     assert_eq!(processor.process(source.clone()), source);
 }
 
 #[test]
-fn face_readiness_is_not_inherited_from_a_person_only_result() {
+fn face_readiness_requires_a_completed_face_analysis() {
     let control = Arc::new(Control::default());
     control
         .configure(Settings {
@@ -56,7 +57,6 @@ fn face_readiness_is_not_inherited_from_a_person_only_result() {
     let mut processor = Processor::new(control.clone());
     let worker = Worker::new();
     *worker.result.lock().unwrap() = Analysis {
-        mask: Some(Arc::new(vec![1.0; 192 * 192])),
         finished: Some(Instant::now()),
         ..Default::default()
     };
@@ -67,11 +67,20 @@ fn face_readiness_is_not_inherited_from_a_person_only_result() {
 
 #[test]
 fn both_bundled_models_produce_finite_results_and_stop() {
+    let segmenter = PersonSegmenter::new();
+    let mask = segmenter
+        .segment(vec![0.0; 3 * PERSON_SIZE * PERSON_SIZE])
+        .unwrap();
+    assert_eq!(mask.len(), PERSON_SIZE * PERSON_SIZE);
+    assert!(mask
+        .iter()
+        .all(|p| p.is_finite() && (0.0..=1.0).contains(p)));
+    assert!(
+        mask.iter().all(|p| *p < 0.1),
+        "Aucune personne sur une image noire"
+    );
     let worker = Worker::new();
-    worker.submit(Request {
-        person: Some(vec![-1.0; 3 * 192 * 192]),
-        face: Some(vec![0.0; 3 * 320 * 320]),
-    });
+    worker.submit(vec![0.0; 3 * 320 * 320]);
     let started = Instant::now();
     let result = loop {
         let result = worker.result.lock().unwrap().clone();
@@ -84,14 +93,55 @@ fn both_bundled_models_produce_finite_results_and_stop() {
     };
     assert!(result.face_analyzed);
     assert!(result.face.is_none(), "Aucun visage sur une image noire");
-    let mask = result.mask.unwrap();
-    assert_eq!(mask.len(), 192 * 192);
-    assert!(mask
-        .iter()
-        .all(|p| p.is_finite() && (0.0..=1.0).contains(p)));
     let shutdown = Instant::now();
     drop(worker);
     assert!(shutdown.elapsed() < Duration::from_secs(1));
+}
+
+#[test]
+fn every_background_frame_uses_its_own_segmentation() {
+    let control = Arc::new(Control::default());
+    control
+        .configure(Settings {
+            background: BackgroundMode::Aurora,
+            ..Default::default()
+        })
+        .unwrap();
+    let mut processor = Processor::new(control.clone());
+    let black = RgbaImage::from_pixel(64, 48, image::Rgba([0, 0, 0, 255]));
+    processor.process(black);
+    assert!(control.status.lock().unwrap().ready);
+    let first = processor.matte.as_ref().unwrap().source.clone();
+    let green = RgbaImage::from_pixel(64, 48, image::Rgba([0, 255, 0, 255]));
+    let output = processor.process(green.clone());
+    assert!(control.status.lock().unwrap().ready);
+    let second = &processor.matte.as_ref().unwrap().source;
+    assert!(
+        !Arc::ptr_eq(&first, second),
+        "Le masque précédent ne doit pas être réutilisé"
+    );
+    assert_ne!(
+        output, green,
+        "Le fond de la nouvelle image doit rester masqué"
+    );
+    assert!(
+        processor.worker.is_none(),
+        "Le visage ne doit pas retarder le détourage"
+    );
+}
+
+#[test]
+fn selfie_input_is_rgb_in_zero_one_and_yunet_remains_bgr() {
+    let image = RgbaImage::from_pixel(2, 2, image::Rgba([255, 128, 0, 255]));
+    let selfie = tensor_input(&image, PERSON_SIZE, true);
+    let plane = PERSON_SIZE * PERSON_SIZE;
+    assert_eq!(selfie[0], 1.0);
+    assert!((selfie[plane] - 128.0 / 255.0).abs() < 0.00001);
+    assert_eq!(selfie[plane * 2], 0.0);
+    let yunet = tensor_input(&image, 320, false);
+    assert_eq!(yunet[0], 0.0);
+    assert_eq!(yunet[320 * 320], 128.0);
+    assert_eq!(yunet[2 * 320 * 320], 255.0);
 }
 
 #[test]

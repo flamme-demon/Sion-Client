@@ -149,7 +149,7 @@ it("changer d'espace, afficher les MP ou les salons hors espace laisse le menu v
 });
 
 it("Retour ferme d'abord les fenêtres et feuilles ouvertes", async () => {
-  useAppStore.setState({ mobileView: "chat" });
+  useAppStore.setState({ mobileView: "chat", connectedVoiceChannel: "!vocal" });
   await vue.render(<Interface />);
   await act(async () => useEspacesStore.getState().ouvrir("gerer"));
   await retour("start", 0); await retour("progress", 360); await retour("commit");
@@ -159,6 +159,16 @@ it("Retour ferme d'abord les fenêtres et feuilles ouvertes", async () => {
   await retour("commit");
   expect(useLayoutStore.getState().panneau).toBeNull();
   expect(useAppStore.getState().mobileView).toBe("chat");
+});
+
+it("une board masquée hors vocal ne bloque pas le retour vers les salons", async () => {
+  useAppStore.setState({ mobileView: "chat", connectedVoiceChannel: null });
+  useLayoutStore.getState().ouvrirPanneau("soundboard");
+  await vue.render(<Interface />);
+  expect(document.querySelector(".sion-mobile-panel-sheet")).toBeNull();
+  await retour("start", 0); await retour("progress", 160); await retour("commit");
+  expect(useAppStore.getState().mobileView).toBe("channels");
+  expect(useLayoutStore.getState().panneaux).toEqual(["soundboard"]);
 });
 
 it("Retour ferme le menu d'un espace avant de naviguer", async () => {

@@ -4,6 +4,7 @@ import { useLayoutStore } from "../../stores/useLayoutStore";
 import { PANNEAU_CORPS, PANNEAU_TITRES } from "../layout/panneaux";
 import { CloseIcon } from "../icons";
 import { ContexteBoard } from "../chat/ContexteBoard";
+import { usePanneauxVisibles } from "../../hooks/usePanneauxVisibles";
 
 /**
  * Téléphone : le panneau courant s'ouvre en feuille qui monte du bas.
@@ -12,8 +13,9 @@ import { ContexteBoard } from "../chat/ContexteBoard";
 export function MobilePanelSheet() {
   const { t } = useTranslation();
   const courant = useLayoutStore((s) => s.panneau);
+  const panneauxVisibles = usePanneauxVisibles();
 
-  if (!courant) return null;
+  if (!courant || !panneauxVisibles.includes(courant)) return null;
   const Corps = PANNEAU_CORPS[courant];
   const fermer = () => useLayoutStore.getState().fermerPanneau();
 

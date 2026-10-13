@@ -5,8 +5,6 @@ import { useLayoutStore } from "../stores/useLayoutStore";
 
 import { keyEventToString, normalizeCombo } from "../utils/keyCombo";
 
-export { keyEventToString };
-
 let lastSyncedShortcuts = "";
 async function syncShortcutsToBackend(mute: string, deafen: string) {
   const key = `${mute}|${deafen}`;
@@ -46,11 +44,9 @@ export function useKeyboardShortcuts() {
     }
   };
 
-  // Ctrl+B — replie/déplie le menu latéral. Ctrl+Maj+P — bascule le partage
-  // d'écran en ligne ↔ carte flottante. Raccourcis LOCAUX (fenêtre), pas
-  // globaux : ils doivent fonctionner aussi dans un champ de saisie non
-  // concerné, donc on les installe indépendamment du chemin rdev/Tauri.
-  // Ignorés quand le focus est dans un champ éditable.
+  // Local window shortcuts: Ctrl+B toggles the sidebar; Ctrl+Shift+P toggles
+  // inline/floating screen share. Register independently of global shortcuts
+  // and ignore editable fields.
   useEffect(() => {
     function handleLayoutKeyDown(e: KeyboardEvent) {
       if (!(e.ctrlKey || e.metaKey) || e.altKey || e.repeat) return;
@@ -115,7 +111,7 @@ export function useKeyboardShortcuts() {
               const sound = sounds.find((s) => s.eventId === eventId);
               if (!sound) return;
               try {
-                // Durée mesurée à la lecture (cf. handlePlay de SoundboardPanel).
+                // Duration measured at playback; see SoundboardPanel.handlePlay.
                 const measuredMs = await playSoundLocal(sound.mxcUrl, sound.gain);
                 const { useAppStore } = await import("../stores/useAppStore");
                 if (useAppStore.getState().connectedVoiceChannel) broadcastSound(sound.mxcUrl, sound.emoji, measuredMs ?? sound.duration, sound.gain);

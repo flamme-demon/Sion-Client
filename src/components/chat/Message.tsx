@@ -324,15 +324,19 @@ function VideoCard({ resolvedUrl, attachment }: { resolvedUrl: string | null; at
   // autre carte prend la main, celle-ci doit revenir à son affiche — sinon
   // elle montrerait un cadre vide en prétendant lire.
   const estActive = useEstLecteurActif(attachment.id);
-  // Affiche extraite localement : le serveur ne sait pas en fabriquer pour
-  // une vidéo. Générée une seule fois puis gardée en cache côté Rust.
-  const [affiche, setAffiche] = useState<string | null>(attachment.thumbnailUrl ?? null);
+  // Les nouveaux envois contiennent leur petite image. Pour les anciens,
+  // on extrait encore une affiche localement, mise en cache côté Rust.
+  const [imageLocale, setImageLocale] = useState<{ source: string; image: string } | null>(null);
+  const [vignetteEchouee, setVignetteEchouee] = useState<string | null>(null);
+  const miniature = attachment.thumbnailUrl && attachment.thumbnailUrl !== vignetteEchouee
+    ? attachment.thumbnailUrl : null;
+  const affiche = miniature ?? (imageLocale?.source === attachment.url ? imageLocale.image : null);
   useEffect(() => {
     if (affiche || !attachment.url || attachment.encryptedFile) return;
     let vivant = true;
     void import("../../services/voiceNativeService")
       .then((m) => m.afficheLecteurVideo(attachment.url))
-      .then((data) => { if (vivant) setAffiche(data); })
+      .then((data) => { if (vivant) setImageLocale({ source: attachment.url, image: data }); })
       .catch(() => { /* ffmpeg absent, ou format sans image */ });
     return () => { vivant = false; };
   }, [affiche, attachment.url, attachment.encryptedFile]);
@@ -500,6 +504,7 @@ function VideoCard({ resolvedUrl, attachment }: { resolvedUrl: string | null; at
             <ImageDuFil
               src={affiche}
               alt={attachment.name}
+              onError={miniature ? () => setVignetteEchouee(miniature) : undefined}
               style={{ width: '100%', height: '100%' }}
             />
             <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
@@ -977,6 +982,7 @@ export const Message = React.memo(function Message({ message, showHeader, isFirs
       actionsContextuelles.push({ label: t("chat.deleteMessage"), icon: <TrashIcon />, action: handleDelete, close: false, tone: "error" });
     }
   }
+  if (message.sending) actionsContextuelles.length = 0;
   const ouvrirMenuMessage = (x: number, y: number) => {
     if (!actionsContextuelles.length) return;
     setShowReactionPicker(false);
@@ -997,7 +1003,7 @@ export const Message = React.memo(function Message({ message, showHeader, isFirs
     transition: 'background 150ms',
   };
 
-  const actionsMessage = !enSelection && (!isMobile || enMosaique || isHovered || showReactionPicker) && (
+  const actionsMessage = !message.sending && !enSelection && (!isMobile || enMosaique || isHovered || showReactionPicker) && (
         <div className={enMosaique ? "sion-actions-image" : undefined} style={{
           display: 'flex',
           gap: 2,
@@ -1222,7 +1228,7 @@ export const Message = React.memo(function Message({ message, showHeader, isFirs
 
         {/* M3 Bubble — surface-container-high pour les autres, primary-container pour soi */}
         {children ?? <>
-        <div ref={messageBubbleRef} className="sion-message-bulle" tabIndex={actionsContextuelles.length ? 0 : undefined}
+        <div ref={messageBubbleRef} className="sion-message-bulle" aria-busy={message.sending || undefined} tabIndex={actionsContextuelles.length ? 0 : undefined}
           onContextMenu={(event) => {
             if (!event.defaultPrevented && !cibleInteractive(event.target) && actionsContextuelles.length) gestesMessage.onContextMenu(event);
           }}
@@ -1339,7 +1345,7 @@ export const Message = React.memo(function Message({ message, showHeader, isFirs
               canEnd={isOwnMessage || myPowerLevel >= 50}
             />
           ) : (<>
-          <MarkdownRenderer content={message.text} formattedBody={message.formattedBody} msgtype={message.msgtype} />
+          {!message.attachments?.length && <MarkdownRenderer content={message.text} formattedBody={message.formattedBody} msgtype={message.msgtype} />}
           {(() => {
             // Strip code blocks and inline code before searching for URLs
             const textWithoutCode = message.text
@@ -1362,6 +1368,11 @@ export const Message = React.memo(function Message({ message, showHeader, isFirs
               ))}
             </div>
           )}
+          {!enMosaique && !!message.attachments?.length && !!(message.text.trim() || message.formattedBody) && (
+            <div className="sion-legende-media" style={{ marginTop: 8 }}>
+              <MarkdownRenderer content={message.text} formattedBody={message.formattedBody} msgtype={message.msgtype} />
+            </div>
+          )}
           </div>
           {/* Telegram-style in-bubble timestamp: absolute bottom-right, in
               the padding band reserved above. `pointerEvents: none` keeps
@@ -1377,7 +1388,7 @@ export const Message = React.memo(function Message({ message, showHeader, isFirs
             pointerEvents: 'none',
             whiteSpace: 'nowrap',
           }}>
-            {message.time}
+            {message.sending && <span role="status" aria-label={t("chat.sending")} title={t("chat.sending")}>⏳ </span>}{message.time}
           </span>}
         </div>
 

@@ -10,6 +10,8 @@ export interface PreparedVideo {
   durationMs: number;
   /** Faux quand la source était déjà au bon format et n'a pas été ré-encodée. */
   transcoded: boolean;
+  /** JPEG léger joint au message pour afficher l'aperçu sans charger la vidéo. */
+  thumbnail?: File;
 }
 
 interface RustPreparedVideo {
@@ -169,11 +171,21 @@ export async function prepareVideoForSend(file: File): Promise<PreparedVideo> {
   const name = prepared.transcoded
     ? `${file.name.replace(/\.[^.]+$/, "")}.${outExt}`
     : file.name;
+  let thumbnail: File | undefined;
+  try {
+    const { afficheLecteurVideo } = await import("./voiceNativeService");
+    // La source est encore locale : aucune requête réseau pour l'aperçu.
+    const image = await afficheLecteurVideo(prepared.path);
+    const bin = atob(image.slice(image.indexOf(",") + 1));
+    const jpeg = Uint8Array.from(bin, (c) => c.charCodeAt(0));
+    if (jpeg.length) thumbnail = new File([jpeg], "preview.jpg", { type: "image/jpeg" });
+  } catch { /* une vidéo sans image reste envoyable */ }
   return {
     file: new File([blob], name, { type: prepared.mimetype }),
     width: prepared.width,
     height: prepared.height,
     durationMs: prepared.durationMs,
     transcoded: prepared.transcoded,
+    thumbnail,
   };
 }

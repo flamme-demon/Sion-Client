@@ -28,6 +28,7 @@ pub mod ice_candidate;
 pub mod media_stream;
 pub mod media_stream_track;
 mod opus_sdp;
+mod video_sdp;
 pub mod packet_trailer;
 pub mod peer_connection;
 pub mod peer_connection_factory;

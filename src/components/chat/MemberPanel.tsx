@@ -1,7 +1,8 @@
 import { useEspacesStore } from "../../stores/useEspacesStore";
 import { salonsDansEspace } from "../../utils/espaces";
 import { useCompteurPanneau } from "../layout/panneauxCompteurs";
-import { useEffect, useState, useMemo, type CSSProperties } from "react";
+import { useContext, useEffect, useState, useMemo, type CSSProperties } from "react";
+import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import { UserEvent } from "matrix-js-sdk";
 import type { MatrixPresence } from "../../types/matrix";
@@ -11,6 +12,9 @@ import { useLiveKitStore } from "../../stores/useLiveKitStore";
 import { HeadphoneIcon } from "../icons";
 import { getMatrixClient, getMemberPowerLevel } from "../../services/matrixService";
 import { UserAvatar } from "../sidebar/UserAvatar";
+import { ListeMembres } from "./ListeMembres";
+import { RecherchePanneau } from "./RecherchePanneau";
+import { RechercheEntetePanneau } from "../layout/RechercheEntetePanneau";
 import * as cacheRust from "../../services/cacheRust";
 import { moteurRust } from "../../services/moteur";
 import { getRoomMembers } from "../../services/matrixService";
@@ -36,12 +40,15 @@ function plToRole(pl: number): Role {
   return "user";
 }
 
+const normaliserRecherche = (texte: string) => texte.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+
 /**
  * Liste des membres du salon courant ; le titre et la fermeture sont portés
  * par le panneau latéral ou la feuille mobile.
  */
 export function MemberPanel() {
   const { t, i18n } = useTranslation();
+  const enteteRecherche = useContext(RechercheEntetePanneau);
   const activeChannel = useAppStore((s) => s.activeChannel);
   const openUserContextMenu = useAppStore((s) => s.openUserContextMenu);
   const channels = useMatrixStore((s) => s.channels);
@@ -49,6 +56,10 @@ export function MemberPanel() {
   const espaceActif = useEspacesStore((s) => s.espaceActif);
   const hierarchies = useEspacesStore((s) => s.hierarchies);
   const salonMembres = channel?.isDM ? activeChannel : espaceActif ?? activeChannel;
+  const [recherche, setRecherche] = useState({ salon: salonMembres, valeur: "" });
+  if (recherche.salon !== salonMembres) setRecherche({ salon: salonMembres, valeur: "" });
+  const texteRecherche = recherche.salon === salonMembres ? recherche.valeur : "";
+  const filtre = normaliserRecherche(texteRecherche.trim());
   const [tick, setTick] = useState(0);
   // Moteur Rust : une réponse du cœur arrivée dans le cache fait redessiner.
   const versionCache = useMatrixStore((s) => s.pinnedVersion);
@@ -60,7 +71,7 @@ export function MemberPanel() {
   // Les fichiers publics changent en dev, mais i18next conserve le dictionnaire
   // déjà chargé. Relire les ressources si cette session ignore les nouveaux titres.
   useEffect(() => {
-    if (i18n.exists("members.groups.online")) return;
+    if (i18n.exists("members.groups.online") && i18n.exists("members.search")) return;
     let actif = true;
     void i18n.reloadResources().then(() => { if (actif) setTick((n) => n + 1); }).catch(() => {});
     return () => { actif = false; };
@@ -121,13 +132,17 @@ export function MemberPanel() {
     if (!salonMembres) return [];
     return getRoomMembers(salonMembres)
       .map((m) => {
-        const pl = getMemberPowerLevel(salonMembres, m.userId);
+        const pl = m.powerLevel ?? getMemberPowerLevel(salonMembres, m.userId);
         return { ...m, role: plToRole(pl), pl };
       })
       .sort((a, b) => (a.pl !== b.pl ? b.pl - a.pl : a.displayName.localeCompare(b.displayName)));
   }, [salonMembres, tick, versionCache]);
 
   useCompteurPanneau("members", entries.length);
+
+  const membresFiltres = useMemo(() => filtre ? entries.filter((e) =>
+    normaliserRecherche(e.displayName).includes(filtre) || normaliserRecherche(e.userId).includes(filtre)) : entries,
+  [entries, filtre]);
 
   if (!activeChannel || channel?.isDM) return null;
 
@@ -140,22 +155,30 @@ export function MemberPanel() {
     return "offline";
   };
   const sections = (["voice", "online", "afk", "offline"] as const)
-    .map((group) => ({ group, entries: entries.filter((e) => groupOf(e) === group) }));
+    .map((group) => ({ group, entries: membresFiltres.filter((e) => groupOf(e) === group) }));
   const groupLabel = (group: Group) => t(`members.groups.${group}`, { defaultValue: GROUP_LABELS[group] });
+  const champRecherche = <div className="sion-membres-recherche">
+    <RecherchePanneau valeur={texteRecherche} onChange={(valeur) => setRecherche({ salon: salonMembres, valeur })}
+      libelle={t("members.search", { defaultValue: "Rechercher un membre…" })}
+      effacer={t("members.clearSearch", { defaultValue: "Effacer la recherche" })} />
+  </div>;
 
   return (
     <div className="sion-membres">
-      <div className="sion-membres-groupes" style={{
+      {enteteRecherche ? createPortal(champRecherche, enteteRecherche) : champRecherche}
+      {/* Un nouveau filtre repart au début, même après avoir défilé loin dans une grande liste. */}
+      <div key={`${salonMembres}:${filtre}`} className="sion-membres-groupes" style={{
         "--sion-membres-colonnes": sections.map((sec) => sec.entries.length
           ? `minmax(170px, ${Math.min(4, sec.entries.length)}fr)` : "max-content").join(" "),
       } as CSSProperties}>
-        {sections.map((sec) => (
+        {filtre && membresFiltres.length === 0 ? <p className="sion-membres-vide" role="status">
+          {t("members.noResults", { defaultValue: "Aucun membre trouvé." })}
+        </p> : sections.map((sec) => (
           <section key={sec.group} className="sion-membres-groupe" aria-label={groupLabel(sec.group)}>
             <div className="sion-membres-groupe-titre">
               {groupLabel(sec.group)} — {sec.entries.length}
             </div>
-            <div className="sion-membres-liste">
-            {sec.entries.map((e) => {
+            <ListeMembres elements={sec.entries} render={(e) => {
               const vocal = connected ? voiceMembers.get(e.userId) : undefined;
               const salons = vocal ? [...vocal.salons.values()].join(", ") : "";
               const speaking = sec.group === "voice" && voiceConnected && !!connectedVoiceChannel &&
@@ -204,8 +227,7 @@ export function MemberPanel() {
                 )}
               </div>
               );
-            })}
-            </div>
+            }} />
           </section>
         ))}
       </div>

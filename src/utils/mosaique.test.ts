@@ -39,7 +39,7 @@ describe("mosaïque des images de tous les clients Matrix", () => {
     expect(tailles([image(1), image(2, { senderId: "@alice:autre.org" }), image(3)])).toEqual([1, 1, 1]);
   });
   it.each([
-    { text: "Une légende" }, { formattedBody: "<b>Une légende</b>" }, { edited: true },
+    { edited: true },
     { replyTo: { eventId: "$origine" } }, { senderId: undefined }, { eventId: undefined }, { ts: undefined }, { ts: NaN },
     { attachments: [{ id: "$2", name: "film.mp4", mimeType: "video/mp4", size: 20, url: "https://media.invalid/2" }] },
   ])("laisse une image ou un autre média avec contexte à part : %j", (extra) => {
@@ -48,6 +48,10 @@ describe("mosaïque des images de tous les clients Matrix", () => {
   it("ne traverse ni un texte ni le repère des non-lus", () => {
     expect(tailles([image(1), image(2, { text: "Interruption", attachments: undefined }), image(3)])).toEqual([1, 1, 1]);
     expect(tailles([image(1), image(2), image(3), image(4)], 2)).toEqual([2, 2]);
+  });
+  it("une légende commence un nouveau groupe et reste associée aux images suivantes", () => {
+    expect(tailles([image(1), image(2, { text: "Une légende" }), image(3), image(4, { text: "Un autre album" })])).toEqual([1, 2, 1]);
+    expect(tailles([image(1, { text: "Une légende", formattedBody: "<b>Une légende</b>" }), image(2), image(3)])).toEqual([3]);
   });
   it("sépare les envois espacés, inversés ou sur deux jours", () => {
     expect(tailles([image(1), image(2, { ts: debut + 62_000 })])).toEqual([1, 1]);

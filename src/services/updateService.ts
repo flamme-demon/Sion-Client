@@ -1,5 +1,5 @@
 /** GitHub release selection. Installation is handled by the native updater. */
-export const GITHUB_REPO = "flamme-demon/Sion-Client";
+const GITHUB_REPO = "flamme-demon/Sion-Client";
 const CHECK_INTERVAL = 60 * 60 * 1000;
 
 export interface ReleaseAsset { name: string; browser_download_url: string }

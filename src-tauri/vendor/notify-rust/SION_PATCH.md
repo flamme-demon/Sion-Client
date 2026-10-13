@@ -1,8 +1,8 @@
-# Patch Sion — notify-rust 4.18.0
+# Patch Sion — notify-rust 4.18.2
 
 ## Problème
 
-`notify-rust` 4.18.0 compile avec la feature `z` (zbus + async-io), mais le
+`notify-rust` 4.18.2 compile avec la feature `z` (zbus + async-io), mais le
 graphe active `zbus/tokio` (via `ashpd/tokio` et `rfd/tokio`). Dans cette
 configuration, `zbus::block_on` construit ou réutilise un runtime Tokio et
 appelle `Runtime::block_on`.
@@ -20,7 +20,7 @@ désormais `block_on_detached`, qui exécute `block_on` sur un thread std
 `std::thread::scope` — sans runtime Tokio actif sur ce thread.
 
 Aucune autre modification : le reste de la crate est identique à
-`notify-rust` 4.18.0 (crates.io), à l'exception de `Cargo.lock` retiré.
+`notify-rust` 4.18.2 (crates.io), à l'exception de `Cargo.lock` retiré.
 
 ## Retrait
 

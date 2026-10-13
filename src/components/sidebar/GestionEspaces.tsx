@@ -75,6 +75,7 @@ function FenetreEspaces({ vue, espaceId }: { vue: "ajouter" | "gerer"; espaceId:
   const [nomSalon, setNomSalon] = useState("");
   const [vocal, setVocal] = useState(false);
   const [commun, setCommun] = useState(true);
+  const [chiffre, setChiffre] = useState(false);
   const [ajoutSalon, setAjoutSalon] = useState("");
   const [occupe, setOccupe] = useState(false);
   const [erreur, setErreur] = useState("");
@@ -128,7 +129,7 @@ function FenetreEspaces({ vue, espaceId }: { vue: "ajouter" | "gerer"; espaceId:
   const creer = () => action(async () => {
     const id = cree.current ?? await espaces.creerEspace(nom, sujet, publique);
     cree.current = id;
-    // Après création, conserver l'ID même si une migration échoue : aucune deuxième équipe créée par accident.
+    // Keep the created ID if linking fails so a retry does not create a second space.
     const repris = reprendre ? candidats.filter((c) => selection.includes(c.id)) : [];
     const invites = new Set<string>();
     for (const c of repris) {
@@ -248,10 +249,12 @@ function FenetreEspaces({ vue, espaceId }: { vue: "ajouter" | "gerer"; espaceId:
             </div>;
           })}</div>{enfants.length === 0 && <p>{t("spaces.noRooms")}</p>}
         </section>
-          {gestion && <><section><h3>{t("spaces.newRoom")}</h3><form onSubmit={(e) => { e.preventDefault(); void action(async () => { await espaces.creerSalonDansEspace(espaceId, nomSalon, vocal, commun); setNomSalon(""); await actualiser(); }); }}>
+          {gestion && <><section><h3>{t("spaces.newRoom")}</h3><form onSubmit={(e) => { e.preventDefault(); void action(async () => { await espaces.creerSalonDansEspace(espaceId, nomSalon, vocal, commun, chiffre); setNomSalon(""); await actualiser(); }); }}>
             <label>{t("spaces.roomName")}<input required value={nomSalon} onChange={(e) => setNomSalon(e.target.value)} /></label>
             <label className="sion-espaces-check"><CaseEspace cochee={vocal} onChange={setVocal} />{t("spaces.voice")}</label>
             <label className="sion-espaces-check"><CaseEspace cochee={commun} onChange={setCommun} />{t("spaces.commonRoom")}</label>
+            <label className="sion-espaces-check"><CaseEspace cochee={chiffre} onChange={setChiffre} />{t("spaces.encryptedRoom")}</label>
+            {chiffre && <p>{t("spaces.encryptedRoomHelp")}</p>}
             <div className="sion-espaces-actions"><button type="submit" className="sion-espaces-primaire"><PlusIcon />{t("spaces.newRoom")}</button></div></form></section>
             <section><h3>{t("spaces.existingRoom")}</h3><form onSubmit={(e) => { e.preventDefault(); void action(async () => { const regle = await espaces.lireEtat(ajoutSalon, "m.room.join_rules"); await espaces.lierSalon(espaceId, ajoutSalon, regle?.join_rule === "public"); setAjoutSalon(""); await actualiser(); }); }}>
               <label>{t("spaces.existingRoom")}<select required value={ajoutSalon} onChange={(e) => setAjoutSalon(e.target.value)}><option value="">{t("spaces.chooseRoom")}</option>{candidats.filter((c) => !(espace?.spaceChildren ?? []).includes(c.id)).map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</select></label>

@@ -1,27 +1,13 @@
-//! Voix native — moteur LiveKit Rust, unique moteur vocal.
+//! Native voice uses the Rust LiveKit engine in crate::voice_engine.
+//! The webview handles UI; voice does not use webview WebRTC.
 //!
-//! La `Room` LiveKit vit dans [`crate::voice_engine`] (feature `native-voice`,
-//! crate `livekit`) et la webview ne fait plus que l'UI : plus aucun
-//! `livekit-client` ni WebRTC côté webview.
+//! VoiceConnectionState models session state. RmsSpeakingDetector applies
+//! RMS thresholds 0.0018/0.0008 with hysteresis. NativeParticipant matches
+//! the frontend ParticipantInfo contract. Data topics carry AFK, soundboard,
+//! memeboard and cursor updates. validate_e2ee_key accepts MatrixRTC AES keys.
 //!
-//! - [`VoiceConnectionState`] : machine d'états de la session native.
-//! - [`RmsSpeakingDetector`] : portage fidèle de `speakingDetector.ts`
-//!   (seuils RMS 0.0018/0.0008 + hystérésis).
-//! - [`NativeParticipant`] : miroir de `ParticipantInfo` (front) + mapping
-//!   des qualités de connexion.
-//! - Codecs des payloads data-channel (`sion-afk`, `sion-soundboard`,
-//!   `sion-cursor`, `sion-cursor-click`, `sion-transcribe-arm`).
-//! - [`validate_e2ee_key`] : les clés MatrixRTC brutes font 32 octets —
-//!   garde-fou avant le pont E2EE natif.
-//!
-//! Les commandes Tauri ci-dessous pilotent le moteur et relaient
-//! participants/statut au front. Sans la feature, `connect` renvoie une erreur
-//! explicite (aucun moteur de secours).
-
-// Étape 1 : fondations. Les API publiques ci-dessous (détecteur RMS,
-// participants, codecs) seront consommées par le moteur LiveKit à l'étape 2 ;
-// en attendant, ce allow évite de noyer les warnings pré-existants.
-#![allow(dead_code)]
+//! Tauri commands control the engine and relay participant/status events.
+//! Without native-voice, connect returns an explicit error.
 
 use serde::{Deserialize, Serialize};
 use std::sync::{Mutex, OnceLock};
@@ -29,13 +15,10 @@ use tauri::Emitter;
 
 use crate::TauriRuntime;
 
-// ---------------------------------------------------------------------------
-// États
-// ---------------------------------------------------------------------------
+// Session state.
 
-/// État de la session vocale native. Miroir de `LiveKitConnectionState` côté
-/// front (`useLiveKitStore.ts`), avec un état `Connecting` en plus pour
-/// couvrir la phase `Room::connect` (plusieurs secondes à froid).
+/// Native session state matching the frontend, with Connecting
+/// covering Room::connect initialization.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum VoiceConnectionState {
@@ -45,31 +28,23 @@ pub enum VoiceConnectionState {
     Reconnecting,
 }
 
-/// Snapshot envoyé au front sur l'événement `voice-native-status`.
+/// Snapshot sent through voice-native-status.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VoiceNativeStatus {
     pub state: VoiceConnectionState,
     pub room_name: Option<String>,
     pub muted: bool,
     pub deafened: bool,
-    /// Vérité terrain moteur (le store front peut mentir après une désync :
-    /// `muted=true` + micro encore publié). Le deafen s'en sert pour forcer
-    /// la coupure au lieu de faire confiance au store.
+    /// Actual engine microphone state, used for deafen safeguards
+    /// when frontend mute state is out of sync.
     pub mic_published: bool,
-    /// Vérité terrain moteur : une piste de partage d'écran est-elle publiée ?
-    ///
-    /// Le store front repart à zéro à chaque rechargement de webview, alors que
-    /// le moteur Rust, lui, continue de partager. Sans cette information le
-    /// front se croyait à l'arrêt et ne rouvrait pas l'overlay curseurs : les
-    /// viewers pouvaient pointer, plus rien ne s'affichait sur l'écran partagé
-    /// jusqu'à ce que le partage soit relancé à la main (constaté le 16/09).
+    /// Whether the engine has a published screen share. Restore this state after
+    /// webview reload so cursor overlays reopen for a share that is still running.
     pub screenshare_published: bool,
-    /// Vérité terrain moteur : le partage local publie-t-il aussi le son ?
-    /// L'avertissement « partage sans son » était calculé au démarrage du
-    /// partage et perdu à tout rechargement de webview.
+    /// Whether the local share publishes audio; restore the no-audio indicator after reload.
     pub screenshare_audio_published: bool,
     pub camera_published: bool,
-    /// Identité LiveKit locale (`@user:serveur:deviceID`), si connue.
+    /// Local LiveKit identity (@user:server:deviceID), when known.
     pub identity: Option<String>,
 }
 
@@ -108,8 +83,8 @@ fn snapshot(inner: &VoiceNativeInner) -> VoiceNativeStatus {
     }
 }
 
-/// Le holder contient-il un moteur (indépendamment de toute session) ?
-/// `false` sans le feature natif : pas de moteur possible.
+/// Whether the holder contains an engine, even without a session.
+/// Always false when native-voice is disabled.
 fn holder_has_engine() -> bool {
     #[cfg(feature = "native-voice")]
     {
@@ -121,7 +96,7 @@ fn holder_has_engine() -> bool {
     }
 }
 
-/// Le holder contient-il un moteur CONNECTÉ (session SFU établie) ?
+/// Whether the holder contains a connected SFU engine.
 fn holder_is_connected() -> bool {
     #[cfg(feature = "native-voice")]
     {
@@ -136,14 +111,9 @@ fn holder_is_connected() -> bool {
     }
 }
 
-/// Attente bornée du moteur : `with_engine` SORT le moteur du holder
-/// pendant chaque opération, donc une commande concurrente (typiquement le
-/// mute implicite tiré en même temps que le deafen par le front) peut
-/// observer un holder vide et abandonner en silence — micro resté live
-/// pendant toute la sourdine (bug F9 du 08/09). Au lieu de sauter, on
-/// attend le retour du moteur (20 × 50 ms = 1 s max, en pratique 1-2
-/// tours). `false` = vraiment aucun moteur (hors appel) : l'appelant
-/// conserve alors le désir côté manager, honoré au prochain join.
+/// Wait at most one second for an engine temporarily borrowed by with_engine.
+/// Concurrent mute/deafen commands must not silently skip a live microphone.
+/// False means no engine is available; preserve intent in the manager for the next join.
 fn wait_for_engine(ready: impl Fn() -> bool) -> bool {
     if ready() {
         return true;
@@ -157,8 +127,7 @@ fn wait_for_engine(ready: impl Fn() -> bool) -> bool {
     false
 }
 
-/// Vérité terrain : le moteur tient-il une publication micro ? `false`
-/// sans moteur (et sans le feature natif : pas de moteur possible).
+/// Whether the engine has a microphone publication; false without an engine or native-voice.
 fn holder_mic_published() -> bool {
     #[cfg(feature = "native-voice")]
     {
@@ -173,7 +142,7 @@ fn holder_mic_published() -> bool {
     }
 }
 
-/// Vérité terrain : le moteur tient-il une publication de partage d'écran ?
+/// Whether the engine has a screen-share publication.
 fn holder_screenshare_published() -> bool {
     #[cfg(feature = "native-voice")]
     {
@@ -188,13 +157,16 @@ fn holder_screenshare_published() -> bool {
     }
 }
 
-/// Vérité terrain : le partage local publie-t-il aussi le son du système ?
+/// Whether the local share also publishes system audio.
 fn holder_screenshare_audio_published() -> bool {
     #[cfg(feature = "native-voice")]
     {
         engine_holder()
             .lock()
-            .map(|g| g.as_ref().is_some_and(|e| e.is_screenshare_audio_published()))
+            .map(|g| {
+                g.as_ref()
+                    .is_some_and(|e| e.is_screenshare_audio_published())
+            })
             .unwrap_or(false)
     }
     #[cfg(not(feature = "native-voice"))]
@@ -205,37 +177,42 @@ fn holder_screenshare_audio_published() -> bool {
 
 fn holder_camera_published() -> bool {
     #[cfg(feature = "native-voice")]
-    { engine_holder().lock().map(|g| g.as_ref().is_some_and(|e| e.camera_state().published)).unwrap_or(false) }
+    {
+        engine_holder()
+            .lock()
+            .map(|g| g.as_ref().is_some_and(|e| e.camera_state().published))
+            .unwrap_or(false)
+    }
     #[cfg(not(feature = "native-voice"))]
-    { false }
+    {
+        false
+    }
 }
 
 #[cfg(feature = "native-voice")]
 pub(crate) fn camera_failed(token: u64) {
     let guard = engine_holder().lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(engine) = guard.as_ref() { engine.stop_failed_camera(token); }
+    if let Some(engine) = guard.as_ref() {
+        engine.stop_failed_camera(token);
+    }
 }
 
 fn emit_status(app: &tauri::AppHandle<TauriRuntime>, status: &VoiceNativeStatus) {
     let _ = app.emit("voice-native-status", status);
 }
 
-// ---------------------------------------------------------------------------
-// Détecteur de parole (RMS) — portage de speakingDetector.ts
-// ---------------------------------------------------------------------------
+// RMS speech detection, matching the frontend thresholds.
 
-/// Seuil de déclenchement. Voir `speakingDetector.ts` : les voix avec AGC
-/// compressent à ~0.005-0.01, sans AGC à ~0.002-0.005, chuchotements ~0.001.
+/// Speech onset threshold: typical RMS is 0.005-0.01 with AGC,
+/// 0.002-0.005 without AGC, and around 0.001 for whispers.
 pub const RMS_START: f32 = 0.0018;
-/// Seuil de retour au silence (hystérésis : bruit ambiant ~0.0005 ne latch pas).
+/// Silence threshold; hysteresis prevents ambient noise around 0.0005 from latching.
 pub const RMS_SILENCE: f32 = 0.0008;
-/// Tics consécutifs requis avant bascule (comme côté JS).
+/// Consecutive ticks required before a state transition.
 pub const STATE_FLIP_TICKS: u32 = 1;
 
-/// Détecteur de parole sur frames PCM `f32` (-1.0..1.0).
-///
-/// `push` retourne `Some(nouvel_état)` uniquement lors d'une bascule, `None`
-/// sinon (silence confirmé ou tranche vide = pas de décision).
+/// RMS speech detector. Return Some(new_state) only on transitions;
+/// confirmed state and empty input produce None.
 #[derive(Debug, Default)]
 pub struct RmsSpeakingDetector {
     speaking: bool,
@@ -247,15 +224,12 @@ impl RmsSpeakingDetector {
         Self::default()
     }
 
+    #[cfg(test)]
     pub fn is_speaking(&self) -> bool {
         self.speaking
     }
 
-    pub fn reset(&mut self) {
-        self.speaking = false;
-        self.flip_counter = 0;
-    }
-
+    #[cfg(test)]
     pub fn push(&mut self, samples: &[f32]) -> Option<bool> {
         if samples.is_empty() {
             return None;
@@ -264,9 +238,7 @@ impl RmsSpeakingDetector {
         self.push_rms((sum / samples.len() as f32).sqrt())
     }
 
-    /// Même logique à partir d'un RMS déjà calculé — évite d'allouer une
-    /// tranche `f32` quand les frames arrivent en `i16` (cas du
-    /// `NativeAudioStream` natif).
+    /// Accept precomputed RMS to avoid allocating f32 samples for native i16 frames.
     pub fn push_rms(&mut self, rms: f32) -> Option<bool> {
         let threshold = if self.speaking {
             RMS_SILENCE
@@ -291,7 +263,7 @@ impl RmsSpeakingDetector {
 // Participants
 // ---------------------------------------------------------------------------
 
-/// Qualité de connexion. Miroir du type TS `ConnectionQuality`.
+/// Connection quality matching the TypeScript ConnectionQuality contract.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum NativeConnectionQuality {
@@ -303,8 +275,7 @@ pub enum NativeConnectionQuality {
 }
 
 impl NativeConnectionQuality {
-    /// Mapping depuis les valeurs string de `livekit-client`
-    /// (`ConnectionQualityChanged`) — réutilisé tel quel par le SDK Rust.
+    /// Map LiveKit string values from ConnectionQualityChanged.
     pub fn from_livekit_str(s: &str) -> Self {
         match s.to_ascii_lowercase().as_str() {
             "excellent" => NativeConnectionQuality::Excellent,
@@ -316,8 +287,7 @@ impl NativeConnectionQuality {
     }
 }
 
-/// Miroir de `ParticipantInfo` (`src/types/livekit.ts`) — le front consomme
-/// la même forme quel que soit le moteur (JS ou natif).
+/// Match the frontend ParticipantInfo contract in src/types/livekit.ts.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NativeParticipant {
@@ -331,8 +301,7 @@ pub struct NativeParticipant {
     pub is_screen_sharing: bool,
     #[serde(default)]
     pub is_camera_enabled: bool,
-    /// L'expéditeur publie aussi le son de son partage (`ScreenshareAudio`).
-    /// Affiche le contrôle 🔊/🔇 (coupure locale uniquement).
+    /// The sender also publishes ScreenshareAudio; show a local mute control.
     #[serde(default)]
     pub is_screen_sharing_audio: bool,
     #[serde(default)]
@@ -343,11 +312,9 @@ pub struct NativeParticipant {
     pub connection_quality: NativeConnectionQuality,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub playing_sound_emoji: Option<String>,
-    /// Échéance du badge soundboard, en ms d'horloge monotone (`mono_ms`).
-    /// Le badge n'expire plus « après N ms » mais « à cette date » : plusieurs
-    /// sons qui se chevauchent repoussent l'échéance au lieu de s'entretuer, et
-    /// un réveil en retard revérifie avant d'éteindre. État interne, hors du
-    /// contrat front (`ParticipantInfo`) — d'où le `skip`.
+    /// Soundboard badge expiry in monotonic milliseconds. Overlapping sounds extend
+    /// the deadline; delayed timers check it again before hiding the badge.
+    /// This internal state is excluded from the frontend contract with serde skip.
     #[serde(skip)]
     pub badge_deadline_ms: u64,
 }
@@ -356,8 +323,7 @@ fn default_quality() -> NativeConnectionQuality {
     NativeConnectionQuality::Unknown
 }
 
-/// Horloge monotone (ms) : insensible à un saut d'horloge système, contrairement
-/// au `SystemTime` employé pour les horodatages de curseur.
+/// Monotonic millisecond clock, unaffected by system-clock jumps.
 fn mono_ms() -> u64 {
     static BASE: OnceLock<std::time::Instant> = OnceLock::new();
     BASE.get_or_init(std::time::Instant::now)
@@ -365,15 +331,14 @@ fn mono_ms() -> u64 {
         .as_millis() as u64
 }
 
-/// Durée de repli quand le payload n'en porte pas (ou zéro) : la sonde
-/// d'upload a pu échouer, le son existe quand même et il dure rarement moins.
+/// Fallback duration when the sender could not probe the sound or reports zero.
 const BADGE_DEFAULT_MS: u64 = 3_000;
-/// Garde-fou : la soundboard plafonne à 20 s, une durée aberrante (payload
-/// forgé, artéfact d'encodage) ne doit pas figer un rond pour la session.
+/// Cap badge duration at the soundboard's 20-second limit so malformed
+/// payloads cannot leave a speaking indicator active for the session.
 const BADGE_MAX_MS: u64 = 60_000;
 
-/// Normalise une durée annoncée : 0/absente → repli, au-delà → plafond.
-/// Miroir JS de `resolveBadgeDurationMs` (`soundboardService.ts`).
+/// Normalize missing/zero duration to the fallback and excessive values to the cap.
+/// Match resolveBadgeDurationMs in soundboardService.ts.
 fn sane_badge_ms(raw: u64) -> u64 {
     if raw == 0 {
         BADGE_DEFAULT_MS
@@ -401,23 +366,19 @@ impl NativeParticipant {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Topics + codecs data-channel (interopérabilité JS)
-// ---------------------------------------------------------------------------
+// Data-channel topics and payloads compatible with JS.
 
 /// `broadcastAfk` — reliable.
 pub const TOPIC_AFK: &str = "sion-afk";
 /// `broadcastSound` — reliable.
 pub const TOPIC_SOUNDBOARD: &str = "sion-soundboard";
-/// Memes de la memeboard : même forme de paquet que la soundboard pour le
-/// badge (`emoji`, `duration`), que l'émetteur se renvoie aussi à lui-même.
+/// Memeboard packets use the soundboard badge shape (emoji, duration).
+/// The sender also applies the packet locally.
 pub const TOPIC_MEMEBOARD: &str = "sion-memeboard";
-/// `broadcastCursor` — lossy ; `broadcastCursorHide` — reliable, même topic.
+/// broadcastCursor is lossy; broadcastCursorHide is reliable on the same topic.
 pub const TOPIC_CURSOR: &str = "sion-cursor";
 /// `broadcastCursorClick` — reliable.
 pub const TOPIC_CURSOR_CLICK: &str = "sion-cursor-click";
-/// `setLocalTranscribeArmed` — reliable.
-pub const TOPIC_TRANSCRIBE_ARM: &str = "sion-transcribe-arm";
 
 /// `{ deafened: bool }` — cf. `broadcastAfk`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -425,10 +386,8 @@ pub struct AfkPayload {
     pub deafened: bool,
 }
 
-/// `{ mxc, emoji, duration, gain }` — cf. `broadcastSound`.
-/// `duration` en ms, `gain` multiplicateur (1.0 = niveau d'origine).
-/// `duration` absente (expéditeur qui ne la connaît pas) → repli, jamais 0 :
-/// un badge de 0 ms s'éteindrait avant même d'avoir été peint.
+/// Soundboard payload: mxc, emoji, duration in milliseconds, gain multiplier.
+/// A missing duration uses the fallback; zero would hide the badge before it is painted.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SoundboardPayload {
     pub mxc: String,
@@ -439,8 +398,7 @@ pub struct SoundboardPayload {
     pub gain: f32,
 }
 
-/// Repli contractuel partagé avec `broadcastSound` JS (3000 ms quand
-/// l'expéditeur ne connaît pas la durée).
+/// Match broadcastSound's 3000 ms fallback when duration is unknown.
 fn default_soundboard_duration() -> u64 {
     BADGE_DEFAULT_MS
 }
@@ -449,98 +407,32 @@ fn default_gain() -> f32 {
     1.0
 }
 
-impl SoundboardPayload {
-    pub fn new(mxc: &str, emoji: Option<&str>, duration_ms: Option<u64>, gain: f32) -> Self {
-        Self {
-            mxc: mxc.to_string(),
-            emoji: emoji.unwrap_or("🔊").to_string(),
-            duration: duration_ms.unwrap_or_else(default_soundboard_duration),
-            gain,
-        }
-    }
-}
-
-/// `{ x, y, t }` coords normalisées + identité du partage visé —
-/// cf. `broadcastCursor`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct CursorMovePayload {
-    pub x: f64,
-    pub y: f64,
-    #[serde(rename = "t")]
-    pub target: String,
-}
-
-/// `{ click: true, x, y, t }` — cf. `broadcastCursorClick`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct CursorClickPayload {
-    #[serde(default = "default_true")]
-    pub click: bool,
-    pub x: f64,
-    pub y: f64,
-    #[serde(rename = "t")]
-    pub target: String,
-}
-
-fn default_true() -> bool {
-    true
-}
-
-/// `{ expire: true, t? }` — cf. `broadcastCursorHide`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct CursorHidePayload {
-    #[serde(default = "default_true")]
-    pub expire: bool,
-    #[serde(rename = "t", default, skip_serializing_if = "Option::is_none")]
-    pub target: Option<String>,
-}
-
-/// `{ armed: bool }` — cf. `setLocalTranscribeArmed`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct TranscribeArmPayload {
-    pub armed: bool,
-}
-
-pub fn encode_json<T: Serialize>(payload: &T) -> Result<String, String> {
-    serde_json::to_string(payload).map_err(|e| e.to_string())
-}
-
 pub fn decode_json<T: serde::de::DeserializeOwned>(raw: &str) -> Result<T, String> {
     serde_json::from_str(raw).map_err(|e| e.to_string())
 }
 
-// ---------------------------------------------------------------------------
-// E2EE — garde-fou clés MatrixRTC
-// ---------------------------------------------------------------------------
+// MatrixRTC E2EE key validation.
 
-/// Clés MatrixRTC brutes (`Uint8Array` reçue sur `EncryptionKeyChanged`) :
-/// 16 octets (AES-128-GCM — `generateRandomKey` de matrix-js-sdk, prouvé
-/// par le rejet à tort du 08/09 qui attendait 32). 32 accepté aussi
-/// (AES-256, clés partagées livekit) ; le reste est rejeté avant le provider.
+/// Accept raw MatrixRTC keys of 16 bytes (AES-128-GCM) or 32 bytes (AES-256).
+/// Reject other sizes before handing them to the native provider.
 pub const E2EE_RAW_KEY_LEN_128: usize = 16;
 pub const E2EE_RAW_KEY_LEN_256: usize = 32;
 
-/// Vrai si la clé brute est utilisable par le pont E2EE natif.
+/// Whether the raw key can be used by the native E2EE bridge.
 pub fn validate_e2ee_key(key: &[u8]) -> bool {
     matches!(key.len(), E2EE_RAW_KEY_LEN_128 | E2EE_RAW_KEY_LEN_256)
 }
 
-// ---------------------------------------------------------------------------
-// Moteur voix (le vrai LiveKit arrive à l'étape suivante)
-// ---------------------------------------------------------------------------
+// Voice engine interface.
 
-/// Abstraction du moteur SFU : l'implémentation `LiveKit` (crate `livekit`,
-/// `Room::connect`, `PlatformAudio`) se branchera ici sans changer les
-/// commandes ni le front.
+/// SFU engine abstraction implemented by LiveKit using Room::connect and PlatformAudio.
 pub trait VoiceEngine {
     fn connect(&mut self, url: &str, token: &str, encrypted: bool) -> Result<String, String>;
     fn disconnect(&mut self);
 }
 
-// ---------------------------------------------------------------------------
-// Registre participants + relais d'événements moteur → front
-// (feature `native-voice` : sans elle, les commandes restent en mode état
-// seul et `connect` renvoie une erreur explicite)
-// ---------------------------------------------------------------------------
+// Participant registry and engine-event relay. Without native-voice,
+// commands expose state only and connect returns an explicit error.
 
 #[cfg(feature = "native-voice")]
 use crate::voice_engine::{LiveKitEngine, VoiceEngineEvent};
@@ -567,9 +459,8 @@ fn invalidate_native_events() -> u64 {
 #[cfg(feature = "native-voice")]
 static ENGINE: OnceLock<Mutex<Option<LiveKitEngine>>> = OnceLock::new();
 
-/// ADM temporaire utilisé par les tests des réglages quand aucun salon n'est
-/// rejoint. En appel, le vumètre et la mélodie utilisent directement l'ADM du
-/// moteur afin de ne jamais ouvrir un second microphone.
+/// Temporary ADM for settings tests outside a voice room. During calls,
+/// the meter and melody reuse the engine ADM to avoid opening a second microphone.
 #[cfg(feature = "native-voice")]
 static AUDIO_TEST: OnceLock<Mutex<Option<PlatformAudio>>> = OnceLock::new();
 
@@ -594,10 +485,8 @@ fn audio_test_owners() -> &'static Mutex<std::collections::HashSet<String>> {
     AUDIO_TEST_OWNERS.get_or_init(|| Mutex::new(std::collections::HashSet::new()))
 }
 
-/// Push-to-talk : la capture et la piste restent ouvertes, micro « coupé »
-/// = porte de capture fermée (silence). Sous Android, relancer AudioRecord à
-/// chaque appui, puis attendre que le SFU relaie la piste rouverte, mangeait
-/// le début des phrases (29/09).
+/// Push-to-talk keeps capture and the track open; a closed capture gate emits silence.
+/// Restarting Android AudioRecord and waiting for SFU unmute would clip phrase beginnings.
 static CAPTURE_MAINTENUE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 pub(crate) fn capture_maintenue() -> bool {
@@ -607,7 +496,7 @@ pub(crate) fn capture_maintenue() -> bool {
 #[tauri::command]
 pub fn voice_native_capture_maintenue(active: bool) {
     CAPTURE_MAINTENUE.store(active, std::sync::atomic::Ordering::Relaxed);
-    // Hors push-to-talk, la porte reste ouverte (le mute coupe la piste).
+    // Outside push-to-talk, keep the processing gate open; track mute controls transmission.
     #[cfg(feature = "native-voice")]
     if !active {
         sion_native_audio::set_capture_gate(true);
@@ -667,9 +556,8 @@ fn engine_holder() -> &'static Mutex<Option<LiveKitEngine>> {
     ENGINE.get_or_init(|| Mutex::new(None))
 }
 
-/// Sort le moteur du holder (récupère l'intérieur même si le mutex est
-/// empoisonné par un panic antérieur — une session SFU morte ne doit jamais
-/// bloquer les commandes suivantes).
+/// Take the engine even if a previous panic poisoned the holder mutex.
+/// A failed SFU session must not prevent later commands.
 #[cfg(feature = "native-voice")]
 fn take_engine() -> Option<LiveKitEngine> {
     engine_holder()
@@ -678,15 +566,9 @@ fn take_engine() -> Option<LiveKitEngine> {
         .take()
 }
 
-/// Sort le moteur du holder, en patientant brièvement s'il est emprunté par
-/// une autre commande : les commandes Tauri tournent en concurrence (ex. le
-/// curseur publie à 60 Hz) et un `take` immédiat rendait `None` par collision.
-/// Sans attente, l'appelant déclarait la session morte (`drop_dead_session`
-/// vide la liste des participants) alors que le moteur revenait une
-/// milliseconde plus tard — d'où des participants / partages qui
-/// "disparaissent" mystérieusement au survol, sans jamais revenir pour les
-/// silencieux (pas d'event pour les recréer). Seule une absence durable
-/// (≈100 ms) vaut mort de session.
+/// Briefly wait for an engine borrowed by a concurrent command. Immediate None
+/// can mean a collision, especially with 60 Hz cursor publication, not a dead session.
+/// Only a sustained absence of about 100 ms warrants clearing participant state.
 #[cfg(feature = "native-voice")]
 fn take_engine_wait() -> Option<LiveKitEngine> {
     for attempt in 0..10 {
@@ -704,17 +586,14 @@ fn take_engine_wait() -> Option<LiveKitEngine> {
     None
 }
 
-/// Repose un moteur (éventuellement None) dans le holder.
+/// Return an optional engine to the holder.
 #[cfg(feature = "native-voice")]
 fn store_engine(engine: Option<LiveKitEngine>) {
     *engine_holder().lock().unwrap_or_else(|e| e.into_inner()) = engine;
 }
 
-/// Remet le manager à l'état déconnecté vierge (partagé par le disconnect
-/// explicite et `drop_dead_session`). Le cycle de vie MIROIR du store front
-/// (`disconnectVoice` remet `isMuted`/`isDeafened` à false) est critique :
-/// sans le reset muted/deafened, un leave-while-muted mutait d'office le
-/// join suivant derrière un store "non muté" (bug du 09/09).
+/// Reset the manager on explicit disconnect or dead-session cleanup.
+/// Match frontend mute/deafen resets so leaving muted does not silently mute the next join.
 fn reset_manager_to_disconnected() {
     let mut inner = manager().lock().unwrap_or_else(|e| e.into_inner());
     inner.state = VoiceConnectionState::Disconnected;
@@ -724,10 +603,8 @@ fn reset_manager_to_disconnected() {
     inner.deafened = false;
 }
 
-/// Session locale réinitialisée quand le moteur a durablement disparu
-/// (jamais créé, ou perdu après panique) : pas de fantôme, le front repart
-/// d'un état propre. N'est atteint qu'après `take_engine_wait` — jamais sur
-/// une simple collision entre commandes.
+/// Reset stale session state only after take_engine_wait confirms a durable
+/// engine absence; never clear participants on a transient command collision.
 #[cfg(feature = "native-voice")]
 fn drop_dead_session(app: &tauri::AppHandle<TauriRuntime>) {
     store_engine(None);
@@ -744,12 +621,9 @@ fn drop_dead_session(app: &tauri::AppHandle<TauriRuntime>) {
     );
 }
 
-/// Exécute `op` sur le moteur sorti du holder puis le repose — sans jamais
-/// verrouiller pendant l'appel SDK (une panique LiveKit ne doit plus
-/// empoisonner les commandes suivantes). En cas de panique, le moteur est
-/// REPOSÉ (pas jeté) : la panique est généralement incidente (ex. contexte
-/// Tokio manquant, déjà corrigé) et jeter le moteur tuait l'appel en cours.
-/// L'erreur est retournée (le front garde son état précédent) et loggée fort.
+/// Borrow the engine outside the holder lock, execute op, then return it.
+/// Catch SDK panics, restore the engine and report an error so an incidental
+/// operation failure does not poison the holder or discard an ongoing call.
 #[cfg(feature = "native-voice")]
 fn with_engine<R>(
     app: &tauri::AppHandle<TauriRuntime>,
@@ -767,8 +641,7 @@ fn with_engine<R>(
                         .cloned()
                         .or_else(|| payload.downcast_ref::<&str>().map(|s| s.to_string()))
                         .unwrap_or_else(|| "panique SDK".to_string());
-                    // `slot` garde le moteur (emprunt seulement) : on le
-                    // repose tel quel, la session survit à la panique.
+                    // Keep the borrowed engine in slot and restore it even after an operation panic.
                     log::error!(
                         "[Sion][voix-native] {} : panique SDK isolée (moteur conservé): {}",
                         label,
@@ -788,13 +661,9 @@ fn with_engine<R>(
     res
 }
 
-/// Exécute une opération longue qui n'a besoin que de `&LiveKitEngine` en
-/// gardant le moteur DANS son holder. Le portail de partage Wayland peut
-/// prendre plusieurs secondes : si on utilisait `with_engine`, le moteur
-/// était temporairement remplacé par `None` et un publish curseur concurrent
-/// concluait à tort que la session était morte, vidant toute l'UI alors que
-/// l'audio WebRTC continuait. Ici les commandes concurrentes attendent le
-/// verrou puis retrouvent le même moteur.
+/// Run a long shared operation while keeping the engine in its holder.
+/// Wayland portal delays must not expose None and make concurrent commands
+/// clear a live session; they wait for the lock and then find the same engine.
 #[cfg(feature = "native-voice")]
 fn with_engine_shared<R>(
     app: &tauri::AppHandle<TauriRuntime>,
@@ -830,8 +699,7 @@ fn with_engine_shared<R>(
     result
 }
 
-/// Registre des participants natifs : le front consomme la liste complète
-/// (comme `getParticipants()` côté JS), pas des deltas.
+/// Native participant registry; the frontend consumes complete snapshots rather than deltas.
 #[cfg(feature = "native-voice")]
 static PARTICIPANTS: OnceLock<Mutex<HashMap<String, NativeParticipant>>> = OnceLock::new();
 
@@ -855,21 +723,20 @@ fn upsert_participant<'a>(
     map: &'a mut HashMap<String, NativeParticipant>,
     identity: &str,
 ) -> &'a mut NativeParticipant {
-    // Upsert défensif : un event (mute, parole, qualité) peut précéder le
-    // join en cas de race — le nom réel arrive avec ParticipantJoined.
+    // Upsert because mute, speech or quality events can arrive before join.
+    // ParticipantJoined supplies the real name later.
     map.entry(identity.to_string())
         .or_insert_with(|| NativeParticipant::new(identity, identity))
 }
 
-/// Applique un événement moteur au registre. Retourne `true` si la liste
-/// doit être réémise. Fonction pure (testable sans Tauri).
+/// Apply an engine event; return true when the participant list needs re-emitting.
+/// Pure logic, testable without Tauri.
 #[cfg(feature = "native-voice")]
 fn apply_engine_event(map: &mut HashMap<String, NativeParticipant>, ev: &VoiceEngineEvent) -> bool {
     match ev {
         VoiceEngineEvent::ParticipantJoined { identity, name } => {
             let p = upsert_participant(map, identity);
-            // LiveKit renvoie parfois un nom vide : ne jamais écraser (ni
-            // l'identité par défaut de l'upsert, ni un vrai nom déjà connu).
+            // Never replace a known or fallback name with an empty LiveKit name.
             if !name.is_empty() {
                 p.name = name.clone();
             }
@@ -901,7 +768,7 @@ fn apply_engine_event(map: &mut HashMap<String, NativeParticipant>, ev: &VoiceEn
                 NativeConnectionQuality::from_livekit_str(quality);
             true
         }
-        // Badge soundboard + statuts room gérés par l'appelant (AppHandle).
+        // The caller handles soundboard badges and room status using AppHandle.
         VoiceEngineEvent::DataReceived { .. }
         | VoiceEngineEvent::RoomDisconnected { .. }
         | VoiceEngineEvent::RoomReconnecting
@@ -910,9 +777,8 @@ fn apply_engine_event(map: &mut HashMap<String, NativeParticipant>, ev: &VoiceEn
     }
 }
 
-/// Décode un payload `sion-afk` (base64) et pose l'état sourdine sur
-/// l'expéditeur — miroir de `remoteDeafenState` + `update()` côté JS.
-/// Retourne `true` si la liste doit être réémise. Fonction pure.
+/// Decode base64 sion-afk and update the sender's deafen state.
+/// Return true when the list needs re-emitting; pure logic matching JS.
 #[cfg(feature = "native-voice")]
 fn apply_afk_state(
     map: &mut HashMap<String, NativeParticipant>,
@@ -930,8 +796,7 @@ fn apply_afk_state(
         return false;
     };
     let participant = upsert_participant(map, sender);
-    // Le battement revient toutes les ~15 s : seul un changement de
-    // sourdine mérite le journal.
+    // AFK heartbeats arrive about every 15 seconds; log only deafen changes.
     if participant.is_deafened != data.deafened {
         log::info!(
             "[Sion][voix-native] AFK rx {} deafened={}",
@@ -940,8 +805,7 @@ fn apply_afk_state(
         );
     }
     participant.is_deafened = data.deafened;
-    // On réémet systématiquement : l'expéditeur a pu rejoindre entre-temps
-    // et le front a besoin d'un refresh complet.
+    // Always emit a full refresh because the sender may have joined since the previous packet.
     true
 }
 
@@ -953,42 +817,25 @@ struct NativeCursorPayload {
     click: Option<bool>,
     expire: Option<bool>,
     t: Option<String>,
-    /// Pseudo Matrix résolu par l'émetteur. Les anciens clients ne
-    /// l'envoient pas ; dans ce cas on replie sur le registre puis localpart.
+    /// Matrix display name resolved by the sender. Older clients omit it;
+    /// fall back to the registry and then the Matrix localpart.
     n: Option<String>,
 }
 
 #[cfg(all(feature = "native-voice", not(target_os = "android")))]
-/// Surface propre à cette machine — le lecteur vidéo (`sion:lecteur`) —, et
-/// non le partage d'un participant.
-///
-/// Son identifiant est le même partout : un curseur publié vers lui
-/// s'affichait sur le lecteur de TOUS les autres. Sous Windows, où la fenêtre
-/// vidéo capte la souris, survoler sa propre vidéo faisait apparaître son
-/// pointeur, nommé, chez chacun (24/09). Rien n'est donc publié vers une
-/// telle cible, et rien de ce qui la vise n'est affiché.
+/// Whether the target is the local sion:lecteur video surface. Its identifier
+/// is shared across machines, so publishing cursor packets to it would display
+/// a private player's cursor on everyone else's player. Ignore such targets.
 fn cible_locale(cible: &str) -> bool {
     cible.starts_with("sion:")
 }
 
-/// Publie NOTRE position de curseur, depuis le Rust, sans passer par le front.
-///
-/// La surface vidéo native recouvre la WebView2 : c'est elle qui reçoit la
-/// souris, et elle relayait la position au front pour que celui-ci la diffuse
-/// comme il le faisait depuis le canvas. Ce détour coûte deux allers-retours
-/// IPC par position — Rust vers événement, puis `invoke` vers Rust — et la
-/// cadence plafonnait à 6 positions par seconde, avec un curseur nettement
-/// mou (18/09). Le chemin direct n'en coûte aucun.
-///
-/// Alimente aussi le calque local : le data-channel ne renvoie pas nos propres
-/// paquets, donc sans cela on voit le curseur de tous les autres sauf le sien.
-#[cfg(all(feature = "native-voice", not(target_os = "android")))]
-pub fn publier_curseur_local(
-    app: &tauri::AppHandle<TauriRuntime>,
-    cible: &str,
-    x: f32,
-    y: f32,
-) {
+/// Publish local cursor position directly from the native Windows video surface.
+/// It covers WebView2 and receives mouse events; bypassing two Tauri IPC trips
+/// keeps cursor updates responsive. Also echo locally because LiveKit
+/// does not return our own data-channel packets.
+#[cfg(all(feature = "native-voice", target_os = "windows"))]
+pub fn publier_curseur_local(app: &tauri::AppHandle<TauriRuntime>, cible: &str, x: f32, y: f32) {
     if cible_locale(cible) {
         return;
     }
@@ -1019,7 +866,7 @@ pub fn publier_curseur_local(
     let _ = with_engine_shared(app, "curseur natif", |e| {
         e.publish_data(TOPIC_CURSOR, octets.clone(), false)
     });
-    // Notre propre flèche, que personne ne nous renverra.
+    // Draw our own cursor locally; the data channel does not echo it back.
     let nom_affiche = cursor_display_name(charge["n"].as_str(), None, &identity);
     crate::native_video_surface::on_viewer_cursor_packet(
         cible,
@@ -1032,19 +879,10 @@ pub fn publier_curseur_local(
     );
 }
 
-/// Publie un CLIC de notre curseur, depuis le Rust.
-///
-/// Les positions étaient publiées mais pas les clics : l'onde qui les signale
-/// chez le partageur avait disparu sous Windows (18/09). Le calque DOM s'en
-/// chargeait via l'événement `click` du canvas, que notre fenêtre native
-/// recouvre désormais.
-#[cfg(all(feature = "native-voice", not(target_os = "android")))]
-pub fn publier_clic_local(
-    app: &tauri::AppHandle<TauriRuntime>,
-    cible: &str,
-    x: f32,
-    y: f32,
-) {
+/// Publish native cursor clicks directly. The Windows surface covers the DOM
+/// canvas, so its click handler cannot supply the sharer's click ripple.
+#[cfg(all(feature = "native-voice", target_os = "windows"))]
+pub fn publier_clic_local(app: &tauri::AppHandle<TauriRuntime>, cible: &str, x: f32, y: f32) {
     if cible_locale(cible) {
         return;
     }
@@ -1112,11 +950,8 @@ fn cursor_display_name(
         .collect()
 }
 
-/// Miroir viewer de `forward_cursor_to_overlay` : pousse vers la surface
-/// vidéo intégrée les curseurs des AUTRES viewers pointant un partage que
-/// cette fenêtre affiche. Le calque DOM étant occlu par la peinture GTK,
-/// c'est le seul endroit où les voir. Retourne early tant que la surface
-/// n'est pas disponible (fallback JPEG actif → le DOM s'en occupe).
+/// Forward other viewers' cursors to the embedded native video surface.
+/// Native painting covers the DOM overlay; the JPEG fallback still lets the DOM draw them.
 #[cfg(all(feature = "native-voice", not(target_os = "android")))]
 fn forward_cursor_to_viewer_surface(topic: Option<&str>, payload_b64: &str, sender: Option<&str>) {
     use base64::Engine as _;
@@ -1129,11 +964,8 @@ fn forward_cursor_to_viewer_surface(topic: Option<&str>, payload_b64: &str, send
         .unwrap_or_else(|e| e.into_inner())
         .identity
         .clone();
-    // Notre propre curseur n'est plus écarté ici. Il l'était parce que le
-    // calque DOM le dessinait ; ce calque est masqué par la surface native, et
-    // l'écarter revenait à ne jamais le montrer. Il n'arrive de toute façon
-    // pas par le data-channel — LiveKit ne renvoie pas ses propres paquets —
-    // mais par l'écho local posé dans `voice_native_publish_data`.
+    // Include our own cursor via the local echo in voice_native_publish_data.
+    // The native surface covers the DOM layer, and LiveKit does not echo our packets.
     let _ = &self_identity;
     let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(payload_b64) else {
         return;
@@ -1144,15 +976,12 @@ fn forward_cursor_to_viewer_surface(topic: Option<&str>, payload_b64: &str, send
     let Some(target_identity) = payload.t.as_deref() else {
         return;
     };
-    // Un client antérieur au 24/09 publie encore vers `sion:lecteur` : ce
-    // n'est le partage de personne, c'est notre propre lecteur.
+    // Ignore older clients targeting sion:lecteur: it is a private player, not a shared stream.
     if cible_locale(target_identity) {
         return;
     }
-    // Cible inconnue de nos surfaces affichées : jeter silencieusement (à
-    // 60 Hz et plusieurs partages, c'est le cas le plus fréquent). Un
-    // ensemble VIDE (aucun rectangle publié : transition React) garde le
-    // paquet — la surface se publie quelques millisecondes plus tard.
+    // Silently drop targets not displayed here. If no bounds exist during React
+    // mounting, keep the packet for the surface that will appear shortly.
     if !target.is_empty() && !target.contains(target_identity) {
         return;
     }
@@ -1185,10 +1014,8 @@ fn forward_cursor_to_viewer_surface(topic: Option<&str>, payload_b64: &str, send
     }
 }
 
-/// Chemin court data-channel → overlay natif. Il évite le détour
-/// Rust→Tauri→JS→Tauri→Rust qui ajoutait plusieurs frames de retard au
-/// curseur vu par le sharer. L'événement générique reste émis pour que les
-/// autres viewers dessinent les curseurs dans leur propre interface.
+/// Forward data-channel cursors directly to the native sharer overlay.
+/// Keep the generic frontend event for other viewers' own interfaces.
 #[cfg(all(feature = "native-voice", not(target_os = "android")))]
 fn forward_cursor_to_overlay(topic: Option<&str>, payload_b64: &str, sender: &str) {
     if !crate::cursor_overlay::cursor_overlay_is_open()
@@ -1208,15 +1035,12 @@ fn forward_cursor_to_overlay(topic: Option<&str>, payload_b64: &str, sender: &st
         .unwrap_or_else(|e| e.into_inner())
         .identity
         .clone();
-    // Masquage SANS cible = « je ne pointe plus AUCUN partage » (blur,
-    // minimisation, fermeture de l'app) : il doit effacer notre overlay
-    // aussi, sinon un alt-tab ou un redémarrage laissait un curseur fantôme
-    // jusqu'au TTL. Une position sans cible reste ignorée — ambiguë avec
-    // plusieurs partages concurrents.
+    // Hide without a target means stop pointing at every share, so clear the overlay.
+    // Position updates without a target remain ambiguous and are ignored.
     let untargeted_expire =
         topic == Some(TOPIC_CURSOR) && payload.expire == Some(true) && payload.t.is_none();
     if payload.t.as_deref() != self_identity.as_deref() && !untargeted_expire {
-        // Throttle : 3 premières occurrences seulement (sinon 60 logs/s).
+        // Log only the first three occurrences; otherwise this could emit 60 logs per second.
         static MISMATCH_LOGS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         if MISMATCH_LOGS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) < 3 {
             log::info!(
@@ -1232,9 +1056,7 @@ fn forward_cursor_to_overlay(topic: Option<&str>, payload_b64: &str, sender: &st
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_millis() as u64)
         .unwrap_or(0);
-    // Diagnostic (13/09) : un log unique quand une position passe le filtre de
-    // cible et part vers l'overlay — sans lui, « rien à l'écran » ne distingue
-    // pas « paquets filtrés » de « paquets non peints ».
+    // Log the first accepted cursor update to distinguish target filtering from painting failures.
     static FORWARD_LOGGED: std::sync::atomic::AtomicBool =
         std::sync::atomic::AtomicBool::new(false);
     if !FORWARD_LOGGED.swap(true, std::sync::atomic::Ordering::Relaxed) {
@@ -1249,11 +1071,8 @@ fn forward_cursor_to_overlay(topic: Option<&str>, payload_b64: &str, sender: &st
     }
     if topic == Some(TOPIC_CURSOR_CLICK) && payload.click == Some(true) {
         crate::cursor_overlay::cursor_overlay_push_click(
-            format!("{sender}:{now}"),
-            // La couleur du pointeur est dérivée de l'identité LiveKit.
-            // Garder exactement cette même clé pour l'onde du clic : le
-            // pseudo d'affichage peut être différent (ex. "Picsou") et
-            // produisait alors une autre couleur.
+            // Derive both pointer and click-ripple colors from the same LiveKit identity.
+            // A different display name would otherwise yield a different color.
             sender.to_string(),
             payload.x.unwrap_or(0.0),
             payload.y.unwrap_or(0.0),
@@ -1275,23 +1094,17 @@ fn forward_cursor_to_overlay(topic: Option<&str>, payload_b64: &str, sender: &st
                 name,
                 x,
                 y,
-                // TTL court (5 s) : un curseur qui n'a plus bougé — ou dont
-                // le viewer a changé de fenêtre sans envoyer de `leave` —
-                // s'efface tout seul au sweep (l'overlay programme un réveil
-                // `WaitUntil` sur l'expiration). Un flux vivant ré-arme le
-                // TTL à chaque position (~60 Hz). Avant, 60 s laissaient une
-                // flèche fantôme figée sur l'écran du partageur après un
-                // alt-tab.
+                // Expire idle cursors after five seconds. Live traffic refreshes the deadline;
+                // WaitUntil schedules cleanup when a viewer switches windows without sending leave.
                 now + 5_000,
             );
         }
     }
 }
 
-/// Décode un payload `sion-soundboard` (base64) et pose le badge sur
-/// l'expéditeur. Pousse l'échéance à `now + durée` (sans jamais la
-/// raccourcir : un son plus long encore en cours du même expéditeur garde son
-/// rond). Retourne la durée retenue (ms), normalisée. Fonction pure.
+/// Decode base64 sion-soundboard and set the sender badge. Extend its deadline
+/// to now plus normalized duration without shortening a longer sound still playing.
+/// Return the chosen duration in milliseconds; pure logic.
 #[cfg(feature = "native-voice")]
 fn apply_soundboard_badge(
     map: &mut HashMap<String, NativeParticipant>,
@@ -1311,11 +1124,8 @@ fn apply_soundboard_badge(
     Some(duration)
 }
 
-/// Repousse l'échéance du badge d'un expéditeur à `now + durée` — jamais
-/// raccourcie — et rallume le badge quand le front fournit l'emoji (cas du
-/// récepteur : le badge posé à l'arrivée du paquet a pu expirer avant que le
-/// son ne démarre vraiment chez lui). Retourne `true` si l'échéance a bougé.
-/// Fonction pure.
+/// Extend badge expiry without shortening it. An emoji can restore a badge
+/// that expired before receiver playback began. Return whether the deadline changed.
 #[cfg(feature = "native-voice")]
 fn extend_badge_deadline(
     map: &mut HashMap<String, NativeParticipant>,
@@ -1328,8 +1138,7 @@ fn extend_badge_deadline(
     let Some(p) = map.get_mut(sender) else {
         return false;
     };
-    // Badge éteint et pas d'emoji pour le rallumer : rien à faire (le son
-    // n'est pas joué localement — soundboard coupée, participant sourd…).
+    // An inactive badge without an emoji cannot be restored; nothing to do.
     if emoji.is_none() && p.playing_sound_emoji.is_none() {
         return false;
     }
@@ -1342,14 +1151,8 @@ fn extend_badge_deadline(
     moved
 }
 
-/// Thread d'expiration du badge d'un expéditeur.
-///
-/// Il ne dort plus « la durée du son » avant d'effacer : il vise l'échéance
-/// enregistrée, et revérifie à chaque réveil. Conséquences voulues —
-/// un ancien son ne peut plus éteindre le rond d'un son plus récent encore en
-/// cours (son minuteur dort sur une échéance périmée, il la relit), et deux
-/// sons qui se chevauchent gardent le rond jusqu'à la fin du dernier. Un seul
-/// thread vit par badge ; il sort dès qu'il n'y a plus rien à éteindre.
+/// One expiry thread per sender badge. Recheck the current deadline on each wake
+/// so an older timer cannot hide a newer or overlapping sound. Exit when no badge remains.
 #[cfg(feature = "native-voice")]
 fn spawn_badge_expiry(app: &tauri::AppHandle<TauriRuntime>, sender: &str) {
     let app2 = app.clone();
@@ -1357,7 +1160,7 @@ fn spawn_badge_expiry(app: &tauri::AppHandle<TauriRuntime>, sender: &str) {
     std::thread::Builder::new()
         .name("sion-voice-badge".into())
         .spawn(move || loop {
-            // `None` = plus de badge à éteindre ; `Some(0)` = échéance atteinte.
+            // None means no badge remains; Some(0) means the deadline has elapsed.
             let remaining = {
                 let map = participants_map().lock().unwrap_or_else(|e| e.into_inner());
                 match map.get(&sender2) {
@@ -1372,8 +1175,7 @@ fn spawn_badge_expiry(app: &tauri::AppHandle<TauriRuntime>, sender: &str) {
                 std::thread::sleep(std::time::Duration::from_millis(remaining));
                 continue;
             }
-            // Re-vérification sous verrou : entre la lecture ci-dessus et ici,
-            // un son suivant a pu repousser l'échéance (ou rallumer le badge).
+            // Recheck under the lock; another sound may have extended or restored the badge.
             let cleared = {
                 let mut map = participants_map().lock().unwrap_or_else(|e| e.into_inner());
                 match map.get_mut(&sender2) {
@@ -1395,9 +1197,8 @@ fn spawn_badge_expiry(app: &tauri::AppHandle<TauriRuntime>, sender: &str) {
         .ok();
 }
 
-/// Pose le badge et arme son expiration. Partagé par la réception distante et
-/// l'envoi local (le data-channel ne revient pas vers l'expéditeur : sans ça,
-/// on ne voit jamais son propre badge quand on déclenche un son).
+/// Set a badge and arm expiry for remote reception and local sending.
+/// LiveKit does not echo packets, so the sender must apply its own badge.
 #[cfg(feature = "native-voice")]
 fn show_soundboard_badge(app: &tauri::AppHandle<TauriRuntime>, sender: &str, payload_b64: &str) {
     let armed = {
@@ -1409,9 +1210,8 @@ fn show_soundboard_badge(app: &tauri::AppHandle<TauriRuntime>, sender: &str, pay
         spawn_badge_expiry(app, sender);
     }
 }
-/// Pompe d'événements moteur → front sur thread dédié (pas besoin du runtime
-/// Tokio ici : `blocking_recv`). Se termine quand le moteur est droppé
-/// (canal fermé) — pas de fuite entre deux sessions.
+/// Relay engine events on a dedicated blocking_recv thread.
+/// Dropping the engine closes the channel and ends the thread between sessions.
 #[cfg(feature = "native-voice")]
 fn spawn_forward_task(
     app: tauri::AppHandle<TauriRuntime>,
@@ -1438,8 +1238,7 @@ fn spawn_forward_task(
                 if *current != generation {
                     break;
                 }
-                // Un event vérolé ne doit jamais tuer la pompe (mort
-                // silencieuse = plus aucun état live : AFK, parole, liste).
+                // Catch malformed-event panics so the live-state relay continues processing later events.
                 let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     match &ev {
                         VoiceEngineEvent::DataReceived {
@@ -1469,11 +1268,8 @@ fn spawn_forward_task(
                             if let Some(sender) = sender {
                                 forward_cursor_to_overlay(topic.as_deref(), payload_b64, sender);
                             }
-                            // Miroir viewer : les curseurs des autres viewers
-                            // pointant un partage que NOUS affichons doivent
-                            // être peints par la surface intégrée (le calque
-                            // DOM est occlu par la peinture GTK). Le filtre
-                            // `t == partage affiché` est fait en Rust.
+                            // Paint other viewers' cursors in our displayed native surface; it covers the DOM overlay.
+                            // Rust filters packets by the displayed share target.
                             #[cfg(all(feature = "native-voice", not(target_os = "android")))]
                             if matches!(
                                 topic.as_deref(),
@@ -1485,8 +1281,7 @@ fn spawn_forward_task(
                                     sender.as_deref(),
                                 );
                             }
-                            // Relais générique pour les futurs dispatchers front
-                            // (AFK, curseurs, transcribe-arm).
+                            // Relay generic data events to frontend dispatchers.
                             let _ = app.emit("voice-native-data", &ev);
                         }
                         VoiceEngineEvent::RoomDisconnected { reason, reprendre } => {
@@ -1495,8 +1290,7 @@ fn spawn_forward_task(
                                 reason,
                                 if *reprendre { " — à reprendre" } else { "" }
                             );
-                            // Avant l'état « déconnecté » : l'interface décide
-                            // en le recevant s'il faut rejoindre le salon.
+                            // Emit the reason before disconnected state so the UI can decide whether to rejoin.
                             let _ = app.emit(
                                 "voice-native-session-perdue",
                                 &serde_json::json!({ "raison": reason, "reprendre": reprendre }),
@@ -1520,9 +1314,7 @@ fn spawn_forward_task(
                             emit_status(&app, &status);
                         }
                         other => {
-                            // Raison d'un départ, AVANT la liste qui l'annonce :
-                            // l'interface choisit son son (départ ou connexion
-                            // perdue) quand le pair disparaît de la liste.
+                            // Emit departure reason before the updated list so the UI chooses the correct sound.
                             if let VoiceEngineEvent::ParticipantLeft { identity, perdu } = other {
                                 let _ = app.emit(
                                     "voice-native-participant-left",
@@ -1537,9 +1329,7 @@ fn spawn_forward_task(
                             if changed {
                                 emit_participants(&app);
                             }
-                            // `isSpeaking` est déjà dans la liste de
-                            // participants (apply_engine_event) : plus
-                            // d'événement dédié sans consommateur.
+                            // apply_engine_event already updates participant isSpeaking; no extra event is needed.
                             if matches!(other, VoiceEngineEvent::E2eeStateChanged { .. }) {
                                 let _ = app.emit("voice-native-e2ee-state", other);
                             }
@@ -1554,11 +1344,8 @@ fn spawn_forward_task(
         .ok();
 }
 
-/// Ouvre la session SFU native + publie le micro. Le récepteur d'événements
-/// est branché AVANT `connect` pour ne rater aucun event précoce.
-/// Remplace (en le fermant proprement) un éventuel moteur précédent : en cas
-/// de double-join quasi-simultané, on ne laisse ni session SFU fantôme ni
-/// micro fantôme derrière.
+/// Subscribe to events before connecting and publishing the microphone.
+/// Cleanly close any previous engine so competing joins leave no orphan SFU session or capture.
 #[cfg(feature = "native-voice")]
 fn connect_engine(
     app: &tauri::AppHandle<TauriRuntime>,
@@ -1586,9 +1373,8 @@ fn connect_engine(
         engine.disconnect();
         return Err(e);
     }
-    // Mute désiré AVANT le join (F8 hors appel…) : le manager le sait déjà,
-    // le moteur frais non — on l'applique (sinon store "muté" + micro live).
-    // Pas de `deafened` équivalent : aucun intent ne survit au join.
+    // Apply pre-join microphone mute intent to the new engine.
+    // Deafen intent does not survive join.
     let want_muted = manager().lock().unwrap_or_else(|e| e.into_inner()).muted;
     if want_muted {
         if let Err(e) = engine.set_microphone_enabled(false) {
@@ -1599,14 +1385,13 @@ fn connect_engine(
         "[Sion][voix-native] join complet en {}ms (connect+micro)",
         t_join.elapsed().as_millis()
     );
-    // Rond vert local : télémétrie de la capture WebRTC, sans deuxième micro.
-    // Un échec du thread d'affichage ne doit pas faire échouer l'appel.
+    // Use WebRTC capture telemetry for the local indicator; never open a second microphone.
+    // Meter-thread failure must not fail the call.
     if let Err(e) = engine.start_local_meter(identity.clone()) {
         log::warn!("[Sion][voix-native] meter micro local indisponible: {}", e);
     }
     {
-        // Un précédent moteur encore présent (double-join) est fermé hors
-        // verrou — une panique ici ne doit pas empoisonner le holder.
+        // Close a previous engine outside the holder lock so a panic cannot poison it.
         let previous = take_engine();
         if let Some(mut previous) = previous {
             log::warn!("[Sion][voix-native] moteur précédent encore présent — fermeture");
@@ -1616,9 +1401,8 @@ fn connect_engine(
         }
         store_engine(Some(engine));
     }
-    // Annonce initiale aux pairs déjà présents (`deafened: false` — le
-    // connect remet toujours à zéro), miroir du `broadcastAfk` au join JS.
-    // Best-effort : un data-channel pas encore prêt ne fait pas échouer le join.
+    // Best-effort initial AFK broadcast to existing peers; join resets deafened to false.
+    // A data channel not yet ready must not make connection fail.
     if let Err(e) = with_engine(app, "afk initial natif", |e| {
         let payload =
             serde_json::to_vec(&AfkPayload { deafened: false }).map_err(|e| e.to_string())?;
@@ -1633,13 +1417,8 @@ fn connect_engine(
 // Commandes Tauri
 // ---------------------------------------------------------------------------
 
-/// Décision de garde à l'ouverture d'une session native. Fonction pure :
-/// - `Join` : aucune session, on peut connecter ;
-/// - `Reuse` : déjà en ligne sur le MÊME salon (course auto-join / clic
-///   manuel) — on réutilise la session au lieu d'en ouvrir une seconde
-///   (qui laisserait un fantôme SFU + un micro fantôme) ;
-/// - `Conflict(room)` : en ligne sur un AUTRE salon — l'appelant doit
-///   quitter d'abord (le `joinVoiceChannel` frontalier le fait).
+/// Pure join guard: Join when offline, Reuse for an existing session in the same room,
+/// or Conflict(room) for another room that the caller must leave first.
 #[derive(Debug, PartialEq, Eq)]
 pub enum ConnectGuard {
     Join,
@@ -1657,7 +1436,7 @@ pub fn connect_guard(
         _ => match current_room {
             Some(current) if current == requested_room => ConnectGuard::Reuse,
             Some(current) => ConnectGuard::Conflict(current.to_string()),
-            // État incohérent (ni connecté ni salle) : on rejoint.
+            // Inconsistent disconnected/room state permits a fresh join.
             None => ConnectGuard::Join,
         },
     }
@@ -1692,16 +1471,20 @@ pub fn voice_native_audio_devices() -> Result<NativeAudioDevices, String> {
 }
 
 #[tauri::command]
-pub fn voice_native_switch_audio_device(
+pub async fn voice_native_switch_audio_device(
     app: tauri::AppHandle<TauriRuntime>,
     kind: String,
     device_id: String,
 ) -> Result<(), String> {
     #[cfg(feature = "native-voice")]
     {
-        with_engine(&app, "périphérique audio", |e| {
-            e.switch_audio_device(&kind, &device_id)
+        tauri::async_runtime::spawn_blocking(move || {
+            with_engine_shared(&app, "périphérique audio", |e| {
+                e.switch_audio_device(&kind, &device_id)
+            })
         })
+        .await
+        .map_err(|e| format!("changement de périphérique audio : {e}"))?
     }
     #[cfg(not(feature = "native-voice"))]
     {
@@ -1751,8 +1534,8 @@ pub struct NativeAudioLevel {
     rms: f32,
 }
 
-/// Démarre la capture de diagnostic hors appel. Pendant un appel, l'APM est
-/// déjà alimenté et cette commande ne touche pas à son cycle de vie.
+/// Start diagnostic capture outside calls. During calls, reuse APM input
+/// without changing the engine capture lifecycle.
 #[tauri::command]
 pub fn voice_native_start_microphone_test(
     app: tauri::AppHandle<TauriRuntime>,
@@ -1863,8 +1646,8 @@ pub fn voice_native_audio_level() -> NativeAudioLevel {
     }
 }
 
-/// Joue trois notes dans le véritable rendu WebRTC. Hors appel, un ADM
-/// temporaire est créé ; en appel, la sortie déjà choisie reste en place.
+/// Play three notes through real WebRTC output. Use a temporary ADM outside calls
+/// and preserve the selected engine output during calls.
 #[tauri::command]
 pub fn voice_native_test_speaker(output_device: String) -> Result<(), String> {
     #[cfg(not(feature = "native-voice"))]
@@ -1910,8 +1693,7 @@ pub fn voice_native_test_speaker(output_device: String) -> Result<(), String> {
                 samples.push((phase.sin() * fade * 9_000.0) as i16);
             }
         }
-        // En appel mais seul, le rendu WebRTC ne tourne pas (`rendu_actif`) :
-        // la mélodie sort par la sortie locale.
+        // When alone in a call, WebRTC rendering is inactive; use local output for the melody.
         if !hors_appel && !sion_native_audio::rendu_actif() {
             crate::cue_playback::jouer_clip_local(samples, 1.0);
             return Ok(());
@@ -1999,7 +1781,7 @@ pub struct NativeProcessingDebug {
     pub mix: f32,
 }
 
-/// Périphérique audio vu par l'ADM natif.
+/// Audio device exposed by native ADM.
 #[derive(Debug, Clone, Serialize)]
 pub struct NativeAudioDevice {
     pub id: String,
@@ -2007,8 +1789,8 @@ pub struct NativeAudioDevice {
     pub index: usize,
 }
 
-/// Diagnostic instantané de la voix native (DevTools, futurs réglages) :
-/// état, flags, périphériques ADM, pistes branchées au RMS, participants.
+/// Instant native-voice diagnostics: session state, flags, ADM devices,
+/// legacy RMS track count and participants.
 #[derive(Debug, Clone, Serialize)]
 pub struct VoiceNativeDebug {
     pub state: VoiceConnectionState,
@@ -2075,8 +1857,7 @@ pub fn voice_native_debug() -> VoiceNativeDebug {
     dbg
 }
 
-/// Connexion au salon : l'ADM (attente d'énumération) et le SFU prennent
-/// plusieurs secondes. Exécuté hors du main thread pour ne pas geler l'UI.
+/// Run ADM enumeration and SFU connection off the main thread because they can take seconds.
 #[tauri::command]
 pub async fn voice_native_connect(
     app: tauri::AppHandle<TauriRuntime>,
@@ -2115,8 +1896,7 @@ fn connect_impl(
     token: String,
     room_name: String,
     #[allow(unused_variables)] display_name: String,
-    // Salon Matrix chiffré : E2EE GCM adossé aux clés MatrixRTC (fournies
-    // ensuite via `voice_native_set_e2ee_key`). `false` = salon clair.
+    // Enable GCM E2EE for encrypted Matrix rooms; MatrixRTC keys are supplied afterward.
     _encrypted: bool,
     input_device: Option<String>,
     output_device: Option<String>,
@@ -2136,7 +1916,7 @@ fn connect_impl(
         let mut inner = manager().lock().map_err(|e| e.to_string())?;
         match connect_guard(inner.state, inner.room_name.as_deref(), &room_name) {
             ConnectGuard::Reuse => {
-                // Même salon déjà en ligne : idempotent, pas de 2e moteur.
+                // Reuse an online session in the same room; do not create a second engine.
                 return Ok(snapshot(&inner));
             }
             ConnectGuard::Conflict(active) => {
@@ -2168,9 +1948,8 @@ fn connect_impl(
 
     #[cfg(feature = "native-voice")]
     {
-        // Le test des réglages partage l'ADM global de LiveKit. Il doit être
-        // fermé avant de créer la vraie piste afin que le join possède seul
-        // le cycle de vie de capture et de rendu.
+        // Close settings capture before creating the real track. Both share LiveKit's
+        // global ADM, so the joined engine must own capture and rendering lifecycle.
         stop_audio_test_force();
     }
     #[cfg(feature = "native-voice")]
@@ -2190,9 +1969,8 @@ fn connect_impl(
                 "[Sion][voix-native] session SFU ouverte identite={}",
                 identity
             );
-            // Le local n'arrive jamais via ParticipantConnected : on
-            // l'injecte explicitement (nom d'affichage Matrix fourni par le
-            // front) pour qu'il apparaisse aussitôt dans la liste.
+            // Insert the local participant explicitly with the Matrix display name;
+            // ParticipantConnected never announces ourselves.
             {
                 let name = if display_name.trim().is_empty() {
                     identity.clone()
@@ -2206,8 +1984,7 @@ fn connect_impl(
             let mut inner = manager().lock().unwrap_or_else(|e| e.into_inner());
             inner.state = VoiceConnectionState::Connected;
             inner.identity = Some(identity);
-            // Pas de sourdine rassis : aucun intent ne survit au join
-            // (contrairement au mute, synchronisé dans `connect_engine`).
+            // Reset deafen intent on join; microphone mute is synchronized by connect_engine.
             inner.deafened = false;
             let status = snapshot(&inner);
             emit_status(&app, &status);
@@ -2231,7 +2008,7 @@ pub fn voice_native_disconnect(app: tauri::AppHandle<TauriRuntime>) -> VoiceNati
     {
         webrtc_sys::sion_audio::ffi::clear_soundboard_audio();
         invalidate_native_events();
-        // Moteur sorti du holder avant l'appel (pas de verrou pendant close).
+        // Take the engine out of the holder before close; do not hold the lock during SDK calls.
         let previous = take_engine();
         if let Some(mut engine) = previous {
             let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -2251,8 +2028,8 @@ pub fn voice_native_disconnect(app: tauri::AppHandle<TauriRuntime>) -> VoiceNati
     status
 }
 
-/// Appli tuée (Android) : ferme la session vocale sans fenêtre ni
-/// événement — départ propre envoyé au SFU avant que le processus ne meure.
+/// On Android app termination, close voice without windows or events
+/// so the SFU receives a clean departure before process exit.
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
 pub(crate) fn couper_voix_native() {
     #[cfg(feature = "native-voice")]
@@ -2272,16 +2049,13 @@ pub(crate) fn couper_voix_native() {
     reset_manager_to_disconnected();
 }
 
-/// Vrai quand l'utilisateur est en sourdine.
+/// Whether the user is deafened.
 pub(crate) fn en_sourdine() -> bool {
     manager().lock().unwrap_or_else(|e| e.into_inner()).deafened
 }
 
-/// Joue un clip reçu d'un pair — son de soundboard ou bande-son d'un meme —
-/// avec les mêmes règles que `voice_native_play_soundboard` : jeté en
-/// sourdine, mixé dans le rendu WebRTC en appel, donc vu par l'annulation
-/// d'écho. Hors appel, où rien ne peut arriver d'un pair, c'est un aperçu
-/// local : il sort par la sortie propre des retours d'action.
+/// Play peer soundboard or meme audio: discard while deafened and mix into WebRTC
+/// rendering during calls so AEC sees it. Outside calls, use local preview output.
 pub(crate) fn jouer_clip_de_pair(
     app: &tauri::AppHandle<TauriRuntime>,
     samples: Vec<i16>,
@@ -2292,11 +2066,8 @@ pub(crate) fn jouer_clip_de_pair(
     }
     #[cfg(feature = "native-voice")]
     {
-        // La file des clips n'a pas besoin du moteur : on ne le sort pas de
-        // son emplacement. Sorti, même un instant, une commande concurrente
-        // — un envoi de curseur — concluait à une session morte et vidait
-        // l'interface en plein appel. On attend seulement qu'il soit revenu
-        // s'il est emprunté : ce fil n'est pas celui de l'interface.
+        // Clip queuing needs no engine checkout. Briefly removing it would make concurrent
+        // cursor commands mistake the session for dead. Wait for an existing borrow off the UI thread.
         if wait_for_engine(holder_is_connected) && sion_native_audio::rendu_actif() {
             if !webrtc_sys::sion_audio::ffi::queue_soundboard_audio(&samples, gain) {
                 log::warn!("[Sion][voix-native] clip de pair refusé");
@@ -2308,17 +2079,14 @@ pub(crate) fn jouer_clip_de_pair(
     crate::cue_playback::jouer_clip_local(samples, gain);
 }
 
-/// Joue un clip soundboard mono 48 kHz dans le rendu WebRTC natif. Le mixage
-/// se fait avant l'analyse reverse de l'APM : la sortie sélectionnée et l'AEC
-/// voient donc exactement le même signal. Les octets traversent Tauri une
-/// seule fois par clip, jamais à chaque frame audio.
+/// Mix mono 48 kHz soundboard clips before WebRTC APM reverse analysis
+/// so selected output and AEC see the same signal. Transfer bytes through Tauri once per clip.
 #[tauri::command]
 pub fn voice_native_play_soundboard(
     app: tauri::AppHandle<TauriRuntime>,
     pcm_b64: String,
     gain: f32,
-    // `local_feedback` : retour d'action de l'utilisateur lui-même (micro,
-    // sourdine), par opposition à un son de soundboard reçu d'un pair.
+    // local_feedback identifies the user's own action sound rather than peer audio.
     local_feedback: Option<bool>,
 ) -> Result<(), String> {
     #[cfg(not(feature = "native-voice"))]
@@ -2336,12 +2104,8 @@ pub fn voice_native_play_soundboard(
         if pcm_b64.len() > MAX_B64_LEN {
             return Err("clip soundboard trop long".into());
         }
-        // La sourdine jette les sons des pairs — c'est tout son objet. Elle ne
-        // doit pas jeter le retour d'action de l'utilisateur lui-même : le son
-        // qui confirme la mise en sourdine est joué à l'instant précis où elle
-        // s'applique. Renvoyé sur le chemin DOM, il arrivait deux à trois
-        // secondes plus tard, quand l'ADM natif tient le périphérique — donc
-        // jamais à temps, et coupé par le clic suivant (18/09).
+        // Deafen discards peer sounds but keeps local action feedback, including the sound
+        // confirming deafen itself. DOM audio can be delayed while ADM owns the device.
         let feedback_local = local_feedback.unwrap_or(false);
         let sourdine = manager().lock().unwrap_or_else(|e| e.into_inner()).deafened;
         if sourdine && !feedback_local {
@@ -2357,25 +2121,20 @@ pub fn voice_native_play_soundboard(
             .chunks_exact(2)
             .map(|pair| i16::from_le_bytes([pair[0], pair[1]]))
             .collect();
-        // En sourdine, le rendu WebRTC ne sort plus rien : plus aucune piste
-        // n'est abonnée, donc le traitement de rendu — où ce clip est mixé —
-        // n'est plus invoqué. Le retour d'action emprunte alors sa propre
-        // sortie. Le micro étant coupé par la sourdine, se passer de la
-        // référence d'annulation d'écho ne coûte rien ici.
+        // Deafen stops subscribed audio and therefore WebRTC rendering. Play local
+        // feedback through separate output; with the microphone muted, no AEC reference is needed.
         if sourdine {
             crate::cue_playback::jouer_clip_local(samples, gain);
             return Ok(());
         }
-        // Même raison que `jouer_clip_de_pair` : la file des clips se passe du
-        // moteur, et le sortir de son emplacement faisait croire à une
-        // session morte à toute commande concurrente.
+        // Queue clips without checking out the engine; concurrent commands must not see
+        // a temporary absence as a dead session.
         let _ = &app;
         if !wait_for_engine(holder_has_engine) {
             return Err("pas de moteur natif".into());
         }
-        // Seul dans l'appel, le rendu WebRTC ne tourne pas (voir
-        // `rendu_actif`) : même repli qu'en sourdine. Personne à qui renvoyer
-        // un écho, la référence d'annulation ne manque à rien.
+        // When alone, WebRTC rendering is inactive. Use local output as while deafened;
+        // there is no remote peer to receive an echo.
         if !sion_native_audio::rendu_actif() {
             crate::cue_playback::jouer_clip_local(samples, gain);
             return Ok(());
@@ -2393,15 +2152,10 @@ pub fn voice_native_set_muted(
     app: tauri::AppHandle<TauriRuntime>,
     muted: bool,
 ) -> VoiceNativeStatus {
-    // Ne pas mentir au front : si le moteur refuse, on garde l'état précédent.
+    // Preserve frontend state if the engine rejects the operation.
     let mut applied = true;
-    // Moteur présent même sans session (entre deux joins) : on fait
-    // passer l'opération quand même — `set_microphone_enabled(false)`
-    // enregistre le désir, honoré au prochain publish. Sans ça, un mute
-    // hors appel est perdu en silence (store "muté" + micro live).
-    // Attente bornée (cf. `wait_for_engine`) : le deafen concurrent sort
-    // le moteur du holder pendant son opération, un test instantané
-    // verrait "pas de moteur" et sauterait le mute.
+    // Apply mute even between sessions so the engine records intent for the next publish.
+    // Wait for concurrent engine borrows; an instantaneous absence must not skip mute.
     #[cfg(feature = "native-voice")]
     let has_engine = wait_for_engine(holder_has_engine);
     #[cfg(not(feature = "native-voice"))]
@@ -2425,8 +2179,7 @@ pub fn voice_native_set_muted(
         inner.muted = muted;
     }
     let status = snapshot(&inner);
-    // Une ligne par appel : c'est elle qui a permis de prouver qu'un
-    // deafen-mute n'atteignait jamais le moteur (aucune trace ici).
+    // Log every invocation to confirm deafen-triggered mute actually reaches the engine.
     log::info!(
         "[Sion][voix-native] mute demandé={} moteur={} appliqué={} mic_published={}",
         muted,
@@ -2443,26 +2196,17 @@ pub fn voice_native_set_deafened(
     app: tauri::AppHandle<TauriRuntime>,
     deafened: bool,
 ) -> VoiceNativeStatus {
-    // Ne pas mentir au front : si le moteur refuse, on garde l'état précédent.
+    // Preserve frontend state if the engine rejects the operation.
     let mut applied = true;
-    // Même course que le mute (cf. `wait_for_engine`) : un deafen qui
-    // sauterait pendant un checkout concurrent laisserait le playout
-    // ouvert derrière un casque "sourdine" — le pendant auditif du bug F9.
+    // Wait for concurrent borrows before deafen; skipping it would leave audio playing
+    // while the frontend reports the headset deafened.
     #[cfg(feature = "native-voice")]
     let _connected = wait_for_engine(holder_is_connected);
     #[cfg(not(feature = "native-voice"))]
     let _connected = false;
-    // La sourdine GÈLE la file des clips de soundboard sans la vider : le
-    // rendu où ils sont mixés n'est plus appelé, leur curseur s'arrête. Un
-    // son reçu juste avant la sourdine ressortait donc à sa levée — la fin
-    // d'une musique de Noël jouée la veille, entendue le lendemain dans un
-    // salon où tout le monde était muet (23/09).
-    //
-    // On la vide aux deux bascules. À la levée, AVANT que le rendu reparte :
-    // c'est là qu'un clip glissé pendant la bascule d'entrée serait resté
-    // coincé. Les sons de confirmation ne sont pas touchés : ils sont joués
-    // après la bascule, par la sortie propre à la sourdine ou une fois le
-    // rendu revenu.
+    // Clear soundboard clips on both deafen transitions. Rendering pauses while deafened,
+    // so queued clips would otherwise resume much later. Clear before rendering restarts
+    // to catch clips queued during the transition. Action feedback is played afterward.
     #[cfg(feature = "native-voice")]
     if !deafened {
         webrtc_sys::sion_audio::ffi::clear_soundboard_audio();
@@ -2472,8 +2216,7 @@ pub fn voice_native_set_deafened(
         if _connected {
             if let Err(e) = with_engine(&app, "deafen natif", |e| {
                 e.set_deafened(deafened).map(|_| ())?;
-                // Propager aux pairs (interop JS `broadcastAfk`) : sinon les
-                // autres clients ne voient jamais notre sourdine.
+                // Broadcast AFK state so peers observe our deafen status.
                 let payload =
                     serde_json::to_vec(&AfkPayload { deafened }).map_err(|e| e.to_string())?;
                 e.publish_data(TOPIC_AFK, payload, true)?;
@@ -2488,8 +2231,7 @@ pub fn voice_native_set_deafened(
     let mut inner = manager().lock().unwrap_or_else(|e| e.into_inner());
     if applied {
         inner.deafened = deafened;
-        // Après le drapeau : `voice_native_play_soundboard` le lit avant de
-        // mettre en file, aucun son de pair ne peut donc plus y entrer.
+        // Set the flag before clearing; peer clip queuing checks it and can no longer add sounds.
         #[cfg(feature = "native-voice")]
         if deafened {
             webrtc_sys::sion_audio::ffi::clear_soundboard_audio();
@@ -2500,15 +2242,9 @@ pub fn voice_native_set_deafened(
     status
 }
 
-/// Importe une clé E2EE MatrixRTC dans le provider natif (pont E2EE,
-/// salons chiffrés). Le front (`MatrixKeyProvider`) transfère chaque clé
-/// reçue — pairs ET la nôtre (MatrixRTC la réémet pour chiffrer nos
-/// frames) — sous `{ identity: "@user:serveur:device", key_index, key_b64 }`.
-/// Retourne `true` si la clé est acceptée. `false` sans moteur (hors appel :
-/// la clé est inutile) ou b64 invalide — PAS d'effet de bord session
-/// (contrairement à `with_engine`, pas de `drop_dead_session` : une clé
-/// orpheline n'est pas une session morte). Le front re-flushe toutes les
-/// clés connues après chaque connect, donc aucune perte durable.
+/// Import raw peer and local MatrixRTC keys via identity, key_index and key_b64.
+/// Return false without an engine or for invalid base64; an orphan key must not reset
+/// a session. The frontend reflushed key history after connection prevents lasting loss.
 #[tauri::command]
 pub fn voice_native_set_e2ee_key(
     _app: tauri::AppHandle<TauriRuntime>,
@@ -2540,10 +2276,8 @@ pub fn voice_native_set_e2ee_key(
     }
 }
 
-/// Importe une clé E2EE dans le moteur en cours (voir
-/// `voice_native_set_e2ee_key`). Aussi appelée directement par le pont du
-/// moteur Matrix Rust, qui tient les clés lui-même : elles ne passent plus
-/// par la webview. Bloquante (attend un moteur prêté ailleurs).
+/// Import into the current engine, also called directly by the Rust Matrix bridge
+/// without webview transfer. Wait if another command has borrowed the engine.
 pub(crate) fn importer_cle_e2ee(identity: &str, key_index: i32, bytes: Vec<u8>) -> bool {
     #[cfg(feature = "native-voice")]
     {
@@ -2556,9 +2290,8 @@ pub(crate) fn importer_cle_e2ee(identity: &str, key_index: i32, bytes: Vec<u8>) 
             );
             return false;
         }
-        // `take_engine_wait` absorbe les checkouts concurrents (deafen…),
-        // comme `with_engine` — mais on repose le moteur nous-mêmes SANS
-        // `drop_dead_session` si absent (voir doc ci-dessus).
+        // Wait for concurrent borrows, then restore the engine ourselves.
+        // An absent engine here does not trigger drop_dead_session.
         if let Some(engine) = take_engine_wait() {
             let ok = engine.set_e2ee_key(identity, key_index, bytes);
             store_engine(Some(engine));
@@ -2577,9 +2310,7 @@ pub(crate) fn importer_cle_e2ee(identity: &str, key_index: i32, bytes: Vec<u8>) 
     }
 }
 
-/// Coupe / rétablit le SON du partage d'écran d'un expéditeur (miroir du
-/// toggle 🔊 JS : `setScreenShareAudioMuted`). Retourne `true` si une piste
-/// `ScreenshareAudio` existe (false = pas de son partagé).
+/// Toggle a sender's screen-share audio. Return true if ScreenshareAudio exists.
 #[tauri::command]
 pub fn voice_native_set_screenshare_audio_muted(
     app: tauri::AppHandle<TauriRuntime>,
@@ -2603,8 +2334,7 @@ pub fn voice_native_set_screenshare_audio_muted(
     }
 }
 
-/// Masque / réaffiche la VIDÉO du partage d'un expéditeur (le SFU cesse de
-/// l'envoyer ; voir `set_screenshare_video_visible`).
+/// Hide or restore a sender's share video; see set_screenshare_video_visible.
 #[tauri::command]
 pub fn voice_native_set_screenshare_video_visible(
     app: tauri::AppHandle<TauriRuntime>,
@@ -2613,7 +2343,9 @@ pub fn voice_native_set_screenshare_video_visible(
 ) -> Result<bool, String> {
     #[cfg(feature = "native-voice")]
     {
-        return with_engine(&app, "vidéo du partage natif", |e| e.set_screenshare_video_visible(&sender, visible));
+        return with_engine(&app, "vidéo du partage natif", |e| {
+            e.set_screenshare_video_visible(&sender, visible)
+        });
     }
     #[allow(unreachable_code)]
     {
@@ -2622,12 +2354,9 @@ pub fn voice_native_set_screenshare_video_visible(
     }
 }
 
-/// Règle localement le volume d'écoute d'une personne (son micro, tous ses
-/// appareils) : 0 la coupe, 1 est normal, 2 le double. Gardé hors du moteur
-/// et réappliqué aux pistes suivantes, appel suivant compris.
-///
-/// Sans `with_engine_shared` : faute de moteur (hors appel, connexion en
-/// cours), celui-ci déclare la session morte et la réinitialise.
+/// Set per-user local microphone volume across devices: 0 mute, 1 normal, 2 double.
+/// Persist outside engines for later tracks and calls. Avoid with_engine_shared
+/// here because absent engines during connection must not reset session state.
 #[tauri::command]
 pub fn voice_native_set_participant_volume(
     utilisateur: String,
@@ -2656,16 +2385,17 @@ pub fn voice_native_set_participant_volume(
     }
 }
 
-/// Latence jusqu'au serveur vocal, en millisecondes ; `None` hors appel ou
-/// tant que WebRTC n'a rien mesuré. Même prudence que ci-dessus : jamais
-/// `with_engine_shared`.
+/// Voice-server latency in milliseconds, or None before measurement/outside calls.
+/// Avoid with_engine_shared so polling cannot reset an absent or connecting engine.
 #[tauri::command]
 pub async fn voice_native_latence() -> Result<Option<u32>, String> {
     #[cfg(feature = "native-voice")]
     {
         let piste = {
             let guard = engine_holder().lock().unwrap_or_else(|e| e.into_inner());
-            guard.as_ref().and_then(|engine| engine.piste_pour_latence())
+            guard
+                .as_ref()
+                .and_then(|engine| engine.piste_pour_latence())
         };
         return Ok(match piste {
             Some(p) => p.latence_ms().await,
@@ -2676,8 +2406,7 @@ pub async fn voice_native_latence() -> Result<Option<u32>, String> {
     Ok(None)
 }
 
-/// Règle localement le gain du son d'un partage reçu. WebRTC accepte un gain
-/// par source distante ; la valeur est mémorisée pour les republications.
+/// Set local screen-share gain and remember it for republished remote sources.
 #[tauri::command]
 pub fn voice_native_set_screenshare_audio_volume(
     app: tauri::AppHandle<TauriRuntime>,
@@ -2708,10 +2437,8 @@ pub struct NativeShareAudioState {
     pub volume: f32,
 }
 
-/// Émis à chaque changement du son d'un partage (mute **ou** volume) :
-/// la vue et le PIP natif sont deux fenêtres sur le même état moteur —
-/// sans cet événement, un mute fait dans le PIP laissait la vue « actif »
-/// (constaté le 2026-09-12).
+/// Notify on share mute or volume changes so the main view and native PIP
+/// reflect the same engine state.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NativeShareAudioEvent {
@@ -2720,8 +2447,7 @@ pub struct NativeShareAudioEvent {
     pub volume: f32,
 }
 
-/// Publie l'état du son d'un partage vers le front (silencieux si le moteur
-/// n'est pas là : l'appelant est déjà dans un chemin qui a réussi ou pas).
+/// Emit share-audio state; stay silent when no engine exists.
 fn emit_share_audio_state(app: &tauri::AppHandle<TauriRuntime>, sender: &str) {
     #[cfg(feature = "native-voice")]
     {
@@ -2745,10 +2471,8 @@ fn emit_share_audio_state(app: &tauri::AppHandle<TauriRuntime>, sender: &str) {
     }
 }
 
-/// État local du son d'un partage (mute + volume). Le front s'en sert pour se
-/// recaler au chargement : le moteur garde ses réglages par partageur à
-/// travers un reload de la webview, pas la mémoire JS — sans ce recalage,
-/// l'UI affichait « non muté / à fond » pour une piste restée coupée.
+/// Local share mute and volume state restored after webview reload.
+/// The engine retains these choices even when frontend memory is recreated.
 #[tauri::command]
 pub fn voice_native_get_screenshare_audio_state(
     app: tauri::AppHandle<TauriRuntime>,
@@ -2774,8 +2498,7 @@ pub struct NativeScreenShareResult {
     audio_published: bool,
 }
 
-/// Port du transport local binaire des frames de partage reçues. Les pixels
-/// volumineux évitent ainsi l'IPC Tauri JSON/base64.
+/// Local binary transport port for received video frames, avoiding JSON/base64 IPC overhead.
 #[tauri::command]
 pub fn voice_native_video_port() -> u16 {
     #[cfg(feature = "native-voice")]
@@ -2786,17 +2509,10 @@ pub fn voice_native_video_port() -> u16 {
     0
 }
 
-/// Capacités codecs de la machine : encodage/décodage matériel (VA-API) et
-/// logiciel, par codec. Sert au choix automatique du codec de partage entre
-/// clients (`sion-media-caps`) — **le matériel d'abord** : un codec n'est
-/// « viable » que si tout le monde le décode, et on le préfère si tout le
-/// monde le décode en matériel.
-///
-/// La sonde s'appuie sur les backends réellement compilés et sondés par
-/// webrtc-sys (NVENC/VAAPI/VideoToolbox), au lieu de déduire un encodeur
-/// utilisable de la seule présence de `vainfo`. AV1 n'est annoncé que par le
-/// chemin effectivement exposé par libwebrtc ; cela évite de choisir AV1 sur
-/// une machine dont VAAPI sait le décoder mais pas l'encoder.
+/// Probe actual compiled and available webrtc-sys codec backends
+/// (NVENC/VAAPI/VideoToolbox) for sion-media-caps negotiation. Prefer hardware
+/// when every participant can decode it. Advertise AV1 only through the codec path
+/// libwebrtc actually exposes, rather than inferring encoding support from vainfo.
 #[tauri::command]
 pub fn voice_media_caps() -> serde_json::Value {
     use std::collections::BTreeMap;
@@ -2830,12 +2546,9 @@ pub fn voice_media_caps() -> serde_json::Value {
     serde_json::json!({ "v": 1, "enc": enc, "dec": dec })
 }
 
-/// Démarre / arrête le partage de NOTRE écran en mode natif (miroir de
-/// `toggleScreenShare` JS). `source_id` = écran/fenêtre choisi (None =
-/// premier écran). `with_audio` = case "partager le son" (None = true) :
-/// sans le son, aucune piste `ScreenshareAudio` n'est publiée et les
-/// viewers voient "sans son". Résolution et cadence viennent du même menu
-/// que le chemin JS ; le résultat confirme la publication audio réelle.
+/// Toggle local screen sharing. source_id selects a screen/window (None uses the first).
+/// with_audio defaults to true; without it, no ScreenshareAudio is published.
+/// Menu choices set resolution and frame rate; the result confirms actual audio publication.
 #[tauri::command]
 pub async fn voice_native_set_screensharing(
     app: tauri::AppHandle<TauriRuntime>,
@@ -2848,11 +2561,9 @@ pub async fn voice_native_set_screensharing(
 ) -> Result<NativeScreenShareResult, String> {
     #[cfg(feature = "native-voice")]
     {
-        // Le démarrage attend la première image du portail (jusqu'à 30 s) :
-        // hors du main thread, sinon l'UI gèle tout ce temps.
+        // Start sharing off the main thread because portal initialization may take seconds.
         let app_task = app.clone();
-        // Cloné pour le thread bloquant : `video_codec` reste lisible par le
-        // bloc de repli sans feature.
+        // Clone video_codec for the blocking thread and retain it for the no-feature fallback.
         let codec = video_codec.clone().unwrap_or_else(|| "h264".to_string());
         return tauri::async_runtime::spawn_blocking(move || {
             if enabled {
@@ -2892,64 +2603,129 @@ pub async fn voice_native_set_screensharing(
 }
 
 #[tauri::command]
-pub fn voice_native_camera_available() -> bool { cfg!(feature = "native-voice") }
-
-#[tauri::command]
-pub async fn voice_native_camera_devices(app: tauri::AppHandle<TauriRuntime>, ffmpeg_path: Option<String>) -> Result<serde_json::Value, String> {
-    #[cfg(feature = "native-voice")]
-    { return tauri::async_runtime::spawn_blocking(move || {
-        #[cfg(not(target_os = "android"))]
-        let ffmpeg = crate::resolve_ffmpeg(ffmpeg_path.as_deref(), crate::managed_ffmpeg_path(&app).as_ref().and_then(|p| p.to_str()));
-        #[cfg(target_os = "android")]
-        let ffmpeg = String::new();
-        let _ = (&app, &ffmpeg_path);
-        serde_json::to_value(crate::camera_capture::devices(&ffmpeg)?).map_err(|e| e.to_string())
-    }).await.map_err(|e| e.to_string())?; }
-    #[allow(unreachable_code)]
-    { let _ = (app, ffmpeg_path); Err("Caméra native indisponible.".into()) }
+pub fn voice_native_camera_available() -> bool {
+    cfg!(feature = "native-voice")
 }
 
 #[tauri::command]
-pub async fn voice_native_camera_preview(app: tauri::AppHandle<TauriRuntime>, device_id: String, ffmpeg_path: Option<String>) -> Result<serde_json::Value, String> {
+pub async fn voice_native_camera_devices(
+    app: tauri::AppHandle<TauriRuntime>,
+    ffmpeg_path: Option<String>,
+) -> Result<serde_json::Value, String> {
     #[cfg(feature = "native-voice")]
-    { return tauri::async_runtime::spawn_blocking(move || {
-        #[cfg(not(target_os = "android"))]
-        let ffmpeg = crate::resolve_ffmpeg(ffmpeg_path.as_deref(), crate::managed_ffmpeg_path(&app).as_ref().and_then(|p| p.to_str()));
-        #[cfg(target_os = "android")]
-        let ffmpeg = String::new();
-        let _ = &ffmpeg_path;
-        let device = crate::camera_capture::devices(&ffmpeg)?.into_iter().find(|d| d.id == device_id).ok_or("Cette caméra n'est plus disponible.")?;
-        with_engine_shared(&app, "aperçu caméra", |e| serde_json::to_value(e.preview_camera(device, &ffmpeg)?).map_err(|e| e.to_string()))
-    }).await.map_err(|e| e.to_string())?; }
-    #[allow(unreachable_code)]
-    { let _ = (app, device_id, ffmpeg_path); Err("Caméra native indisponible.".into()) }
-}
-
-#[tauri::command]
-pub async fn voice_native_camera_set_enabled(app: tauri::AppHandle<TauriRuntime>, enabled: bool) -> Result<serde_json::Value, String> {
-    #[cfg(feature = "native-voice")]
-    { return tauri::async_runtime::spawn_blocking(move || {
-        with_engine_shared(&app, "caméra", |e| {
-            if enabled { e.publish_camera()?; } else { e.stop_camera()?; }
-            serde_json::to_value(e.camera_state()).map_err(|e| e.to_string())
+    {
+        return tauri::async_runtime::spawn_blocking(move || {
+            #[cfg(not(target_os = "android"))]
+            let ffmpeg = crate::resolve_ffmpeg(
+                ffmpeg_path.as_deref(),
+                crate::managed_ffmpeg_path(&app)
+                    .as_ref()
+                    .and_then(|p| p.to_str()),
+            );
+            #[cfg(target_os = "android")]
+            let ffmpeg = String::new();
+            let _ = (&app, &ffmpeg_path);
+            serde_json::to_value(crate::camera_capture::devices(&ffmpeg)?)
+                .map_err(|e| e.to_string())
         })
-    }).await.map_err(|e| e.to_string())?; }
+        .await
+        .map_err(|e| e.to_string())?;
+    }
     #[allow(unreachable_code)]
-    { let _ = (app, enabled); Err("Caméra native indisponible.".into()) }
+    {
+        let _ = (app, ffmpeg_path);
+        Err("Caméra native indisponible.".into())
+    }
+}
+
+#[tauri::command]
+pub async fn voice_native_camera_preview(
+    app: tauri::AppHandle<TauriRuntime>,
+    device_id: String,
+    ffmpeg_path: Option<String>,
+) -> Result<serde_json::Value, String> {
+    #[cfg(feature = "native-voice")]
+    {
+        return tauri::async_runtime::spawn_blocking(move || {
+            #[cfg(not(target_os = "android"))]
+            let ffmpeg = crate::resolve_ffmpeg(
+                ffmpeg_path.as_deref(),
+                crate::managed_ffmpeg_path(&app)
+                    .as_ref()
+                    .and_then(|p| p.to_str()),
+            );
+            #[cfg(target_os = "android")]
+            let ffmpeg = String::new();
+            let _ = &ffmpeg_path;
+            let device = crate::camera_capture::devices(&ffmpeg)?
+                .into_iter()
+                .find(|d| d.id == device_id)
+                .ok_or("Cette caméra n'est plus disponible.")?;
+            with_engine_shared(&app, "aperçu caméra", |e| {
+                serde_json::to_value(e.preview_camera(device, &ffmpeg)?).map_err(|e| e.to_string())
+            })
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+    }
+    #[allow(unreachable_code)]
+    {
+        let _ = (app, device_id, ffmpeg_path);
+        Err("Caméra native indisponible.".into())
+    }
+}
+
+#[tauri::command]
+pub async fn voice_native_camera_set_enabled(
+    app: tauri::AppHandle<TauriRuntime>,
+    enabled: bool,
+) -> Result<serde_json::Value, String> {
+    #[cfg(feature = "native-voice")]
+    {
+        return tauri::async_runtime::spawn_blocking(move || {
+            with_engine_shared(&app, "caméra", |e| {
+                if enabled {
+                    e.publish_camera()?;
+                } else {
+                    e.stop_camera()?;
+                }
+                serde_json::to_value(e.camera_state()).map_err(|e| e.to_string())
+            })
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+    }
+    #[allow(unreachable_code)]
+    {
+        let _ = (app, enabled);
+        Err("Caméra native indisponible.".into())
+    }
 }
 
 #[tauri::command]
 pub fn voice_native_camera_state() -> serde_json::Value {
     #[cfg(feature = "native-voice")]
-    { return engine_holder().lock().ok().and_then(|g| g.as_ref().map(|e| serde_json::to_value(e.camera_state()).unwrap_or_default())).unwrap_or_else(|| serde_json::to_value(crate::voice_engine::CameraState::default()).unwrap_or_default()); }
+    {
+        return engine_holder()
+            .lock()
+            .ok()
+            .and_then(|g| {
+                g.as_ref()
+                    .map(|e| serde_json::to_value(e.camera_state()).unwrap_or_default())
+            })
+            .unwrap_or_else(|| {
+                serde_json::to_value(crate::voice_engine::CameraState::default())
+                    .unwrap_or_default()
+            });
+    }
     #[allow(unreachable_code)]
-    { serde_json::json!({ "previewing": false, "published": false, "ready": false, "deviceId": null, "error": null }) }
+    {
+        serde_json::json!({ "previewing": false, "published": false, "ready": false, "deviceId": null, "error": null })
+    }
 }
 
-/// Envoie un paquet data-channel sur la session native (soundboard, AFK,
-/// curseurs…). Payload base64 (binaire arbitraire). Miroir de `publishData`
-/// JS — `reliable: false` pour le curseur (60 Hz, la perte se répare toute
-/// seule), `true` partout ailleurs.
+/// Publish arbitrary base64 data on the native session. Use lossy delivery
+/// for 60 Hz cursors and reliable delivery for other live-state messages.
 #[tauri::command]
 pub fn voice_native_publish_data(
     app: tauri::AppHandle<TauriRuntime>,
@@ -2964,24 +2740,14 @@ pub fn voice_native_publish_data(
             .decode(&payload_b64)
             .map_err(|e| format!("payload base64: {}", e))?;
         let reliable = reliable.unwrap_or(true);
-        // `with_engine_shared` : pas de sortie/repose du moteur à chaque
-        // paquet (le curseur publie à 60 Hz, on évite ce surcoût inutile).
+        // Keep the engine in its holder with with_engine_shared to avoid checkout overhead
+        // and transient absence on every 60 Hz cursor packet.
         let res = with_engine_shared(&app, "publish data natif", |e| {
             e.publish_data(&topic, payload, reliable)
         });
-        // Badge local (miroir du `setPlayingSound` sur soi-même côté JS) :
-        // le data-channel ne revient pas vers l'expéditeur, sans ça on ne
-        // voit jamais son propre badge quand on déclenche un son.
-        // Écho local du curseur, même raison que le badge soundboard : le
-        // data-channel ne revient pas vers l'expéditeur.
-        //
-        // Tant que le calque DOM peignait par-dessus la vidéo, notre propre
-        // flèche colorée était dessinée côté JS et cet écho aurait fait un
-        // doublon. La surface native recouvre désormais ce calque : sans écho,
-        // on voit le curseur de tous les autres viewers mais jamais le sien
-        // (18/09). `forward_cursor_to_viewer_surface` s'arrête d'elle-même si
-        // aucune surface native n'est affichée, donc le repli JPEG reste servi
-        // par le DOM comme avant.
+        // Echo our own badge and cursor locally because LiveKit does not return sender packets.
+        // The native video surface covers the DOM cursor layer. The forwarding helper
+        // does nothing without a native surface, leaving the JPEG fallback to the DOM.
         #[cfg(not(target_os = "android"))]
         if res.is_ok() && (topic == TOPIC_CURSOR || topic == TOPIC_CURSOR_CLICK) {
             let identity = manager()
@@ -2993,8 +2759,7 @@ pub fn voice_native_publish_data(
                 forward_cursor_to_viewer_surface(Some(&topic), &payload_b64, Some(&identity));
             }
         }
-        // Son propre badge, que les pairs voient déjà : le paquet ne revient
-        // pas à celui qui l'envoie.
+        // Apply our badge locally; only peers receive the transmitted packet.
         if res.is_ok() && (topic == TOPIC_SOUNDBOARD || topic == TOPIC_MEMEBOARD) {
             let identity = manager()
                 .lock()
@@ -3014,16 +2779,9 @@ pub fn voice_native_publish_data(
     }
 }
 
-/// Repousse l'échéance du badge soundboard d'un expéditeur sur la durée
-/// **réellement mesurée** au démarrage de la lecture locale.
-///
-/// Le badge est posé par le Rust à l'arrivée du paquet, donc avant que le
-/// récepteur n'ait téléchargé, décodé et mis en file le clip : sans ce
-/// réarmement, le rond s'éteint de toute cette latence de démarrage. Le front
-/// appelle donc cette commande juste après avoir lancé la lecture, avec la
-/// durée qu'il a mesurée (et l'emoji, pour rallumer un badge déjà expiré).
-/// L'échéance n'est jamais raccourcie : un son long encore en cours du même
-/// expéditeur doit rester visible.
+/// Extend badge expiry using the duration measured when local playback starts.
+/// Downloading and decoding may delay playback after packet receipt. The emoji
+/// can restore an expired badge; never shorten another sound's later deadline.
 #[tauri::command]
 pub fn voice_native_extend_soundboard_badge(
     app: tauri::AppHandle<TauriRuntime>,
@@ -3042,9 +2800,7 @@ pub fn voice_native_extend_soundboard_badge(
         };
         if moved {
             emit_participants(&app);
-            // Le thread d'expiration d'origine a pu sortir pendant que le badge
-            // était éteint : on en réarme un (il se termine seul s'il n'y a
-            // plus rien à éteindre).
+            // Rearm expiry if the original thread already exited; it stops when no badge remains.
             spawn_badge_expiry(&app, &sender);
         }
         return Ok(());
@@ -3056,15 +2812,14 @@ pub fn voice_native_extend_soundboard_badge(
     }
 }
 
-/// Remet l'état global à zéro. Réservé aux tests.
+/// Reset global state for tests only.
 #[cfg(test)]
 pub fn test_reset() {
     let mut inner = manager().lock().unwrap_or_else(|e| e.into_inner());
     *inner = VoiceNativeInner::default();
 }
 
-/// Sérialise les tests touchant au `manager()` global : `cargo test`
-/// exécute en parallèle et ces tests se marcheraient dessus sinon (flake).
+/// Serialize tests that use the global manager to prevent parallel-test interference.
 #[cfg(test)]
 static TEST_MANAGER_SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -3089,13 +2844,13 @@ mod tests {
     #[test]
     fn connect_guard_drives_join_reuse_conflict() {
         use VoiceConnectionState::*;
-        // Libre dans tous les cas → Join.
+        // No active session permits Join.
         assert_eq!(connect_guard(Disconnected, None, "!a"), ConnectGuard::Join);
         assert_eq!(
             connect_guard(Disconnected, Some("!a"), "!b"),
             ConnectGuard::Join
         );
-        // Même salon déjà en ligne (course auto-join / clic) → Reuse.
+        // An online session in the same room yields Reuse.
         for state in [Connecting, Connected, Reconnecting] {
             assert_eq!(
                 connect_guard(state, Some("!a"), "!a"),
@@ -3104,12 +2859,12 @@ mod tests {
                 state
             );
         }
-        // Autre salon → Conflict nommant le salon actif.
+        // A different room yields Conflict naming the active room.
         assert_eq!(
             connect_guard(Connected, Some("!a"), "!b"),
             ConnectGuard::Conflict("!a".to_string())
         );
-        // État incohérent (pas Disconnected mais pas de salle) → Join.
+        // An inconsistent state without a room permits Join.
         assert_eq!(connect_guard(Connecting, None, "!a"), ConnectGuard::Join);
     }
 
@@ -3120,7 +2875,7 @@ mod tests {
             .unwrap_or_else(|e| e.into_inner());
         test_reset();
         assert!(manager().lock().unwrap().state == VoiceConnectionState::Disconnected);
-        // Validation pure (sans AppHandle) : on rejoue la logique via l'état.
+        // Replay pure state validation without AppHandle.
         assert!("".trim().is_empty());
         assert!("  ".trim().is_empty());
     }
@@ -3135,8 +2890,7 @@ mod tests {
         assert_eq!(inner.state, VoiceConnectionState::Disconnected);
         assert!(inner.room_name.is_none());
         assert!(!inner.muted && !inner.deafened);
-        // mic_published : pas de moteur dans les tests → toujours false,
-        // jamais de panique sur le holder.
+        // Tests have no engine, so mic_published is false and the empty holder must not panic.
         assert!(!holder_mic_published());
         let status = snapshot(&inner);
         assert!(!status.mic_published);
@@ -3153,12 +2907,11 @@ mod tests {
             inner.state = VoiceConnectionState::Connected;
             inner.room_name = Some("sion".into());
             inner.identity = Some("@a:b:c".into());
-            // Leave-while-muted : le cas du 09/09 (muté en chiffré, join en
-            // clair avec un store "non muté").
+            // Leaving while muted must not silently mute the next join behind an unmuted UI.
             inner.muted = true;
             inner.deafened = true;
         }
-        // Le vrai helper (partagé par disconnect + drop_dead_session).
+        // Exercise the helper shared by disconnect and drop_dead_session.
         reset_manager_to_disconnected();
         let inner = manager().lock().unwrap();
         assert_eq!(inner.state, VoiceConnectionState::Disconnected);
@@ -3172,9 +2925,8 @@ mod tests {
         let _serial = TEST_MANAGER_SERIAL
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        // Holder vide (aucun test ne stocke de moteur réel) : ~100 ms de
-        // retries puis None, sans panique — le cas "toggle sans session".
-        // Surtout : pas de reset sauvage ici, juste None (l'appelant décide).
+        // An empty holder returns None after bounded retries without panicking
+        // or resetting state; the caller decides how to handle absence.
         let t0 = std::time::Instant::now();
         assert!(take_engine_wait().is_none());
         assert!(t0.elapsed().as_millis() >= 50);
@@ -3183,10 +2935,8 @@ mod tests {
     #[test]
     #[cfg(feature = "native-voice")]
     fn wait_for_engine_survives_concurrent_checkout() {
-        // Bug F9 du 08/09 : `with_engine` sort le moteur du holder pendant
-        // son opération — une commande concurrente voyait "pas de moteur"
-        // et abandonnait (micro live + sourdine). On simule le checkout
-        // (moteur rendu après 100 ms) : l'attente doit aboutir, pas sauter.
+        // Simulate a concurrent engine checkout restored after 100 ms.
+        // A deafen-triggered mute must wait rather than leave the microphone live.
         let _serial = TEST_MANAGER_SERIAL
             .lock()
             .unwrap_or_else(|e| e.into_inner());
@@ -3199,7 +2949,7 @@ mod tests {
             }
         });
         assert!(wait_for_engine(holder_has_engine));
-        // Nettoyage : holder vide pour les autres tests.
+        // Leave the holder empty for subsequent tests.
         let _ = take_engine();
         assert!(!holder_has_engine());
     }
@@ -3231,10 +2981,10 @@ mod tests {
     #[test]
     fn rms_hysteresis_band_holds_state() {
         let mut d = RmsSpeakingDetector::new();
-        // 0.001 est entre SILENCE (0.0008) et START (0.0018) : ne déclenche pas.
+        // 0.001 lies between SILENCE and START and does not trigger speech onset.
         assert_eq!(d.push(&[0.001; 512]), None);
         assert!(!d.is_speaking());
-        // Une fois en parole, 0.001 > SILENCE : reste en parole.
+        // Once speaking, 0.001 remains above SILENCE and keeps speech active.
         assert_eq!(d.push(&[0.05; 256]), Some(true));
         assert_eq!(d.push(&[0.001; 512]), None);
         assert!(d.is_speaking());
@@ -3274,55 +3024,26 @@ mod tests {
     fn data_payloads_roundtrip_like_js() {
         // AFK : {"deafened":true}
         let afk = AfkPayload { deafened: true };
-        let raw = encode_json(&afk).unwrap();
+        let raw = serde_json::to_string(&afk).unwrap();
         assert_eq!(raw, r#"{"deafened":true}"#);
         assert_eq!(decode_json::<AfkPayload>(&raw).unwrap(), afk);
 
-        // Soundboard : mêmes clés que broadcastSound.
-        let sb = SoundboardPayload::new("mxc://h/snd", None, None, 1.0);
+        // Soundboard keys match broadcastSound.
+        let sb: SoundboardPayload = decode_json(r#"{"mxc":"mxc://h/snd","emoji":"🔊"}"#).unwrap();
         assert_eq!(sb.emoji, "🔊");
         assert_eq!(sb.duration, 3000);
-        let raw = encode_json(&sb).unwrap();
+        let raw = serde_json::to_string(&sb).unwrap();
         let back: SoundboardPayload = decode_json(&raw).unwrap();
         assert_eq!(back, sb);
-        // Ancien expéditeur sans `gain` → défaut 1.0.
+        // Older senders without gain default to 1.0.
         let legacy: SoundboardPayload =
             decode_json(r#"{"mxc":"mxc://h/s","emoji":"🔊","duration":1500}"#).unwrap();
         assert_eq!(legacy.gain, 1.0);
-
-        // Curseur : clé courte `t`.
-        let mv = CursorMovePayload {
-            x: 0.5,
-            y: 0.25,
-            target: "@a:b:c".into(),
-        };
-        let raw = encode_json(&mv).unwrap();
-        assert_eq!(raw, r#"{"x":0.5,"y":0.25,"t":"@a:b:c"}"#);
-
-        let click = CursorClickPayload {
-            click: true,
-            x: 0.1,
-            y: 0.2,
-            target: "t".into(),
-        };
-        let back: CursorClickPayload = decode_json(&encode_json(&click).unwrap()).unwrap();
-        assert_eq!(back, click);
-
-        let hide = CursorHidePayload {
-            expire: true,
-            target: None,
-        };
-        let back: CursorHidePayload = decode_json(&encode_json(&hide).unwrap()).unwrap();
-        assert_eq!(back, hide);
-
-        // Transcribe : {"armed":true}
-        let arm = TranscribeArmPayload { armed: true };
-        assert_eq!(encode_json(&arm).unwrap(), r#"{"armed":true}"#);
     }
 
     #[test]
     fn e2ee_keys_accept_16_or_32_bytes() {
-        // 16 = MatrixRTC réel (AES-128), 32 = AES-256 ; le reste est rejeté.
+        // Accept 16-byte MatrixRTC AES-128 and 32-byte AES-256 keys; reject other lengths.
         assert!(validate_e2ee_key(&[7u8; 16]));
         assert!(validate_e2ee_key(&[7u8; 32]));
         assert!(!validate_e2ee_key(&[]));
@@ -3336,16 +3057,16 @@ mod tests {
         p.is_speaking = true;
         p.connection_quality = NativeConnectionQuality::Excellent;
         p.playing_sound_emoji = Some("🥁".into());
-        let raw = encode_json(&p).unwrap();
+        let raw = serde_json::to_string(&p).unwrap();
         assert!(raw.contains(r#""identity":"@flamme:example.org:XYZ""#));
         assert!(raw.contains(r#""isSpeaking":true"#));
         assert!(raw.contains(r#""connectionQuality":"excellent""#));
-        // camelCase imposé par le front : serde rename_all.
+        // serde rename_all supplies the frontend's required camelCase keys.
         let back: NativeParticipant = decode_json(&raw).unwrap();
         assert_eq!(back.name, "flamme");
     }
 
-    /// Câblage registre ↔ événements moteur (feature `native-voice`).
+    /// Registry integration with engine events under native-voice.
     #[cfg(feature = "native-voice")]
     mod engine_wiring {
         use super::super::*;
@@ -3375,7 +3096,7 @@ mod tests {
             ));
             assert_eq!(map.len(), 2);
             assert_eq!(map["@a:h"].name, "a");
-            // Re-join : met à jour le nom, pas de doublon.
+            // Rejoin updates the name without duplicating the participant.
             assert!(apply_engine_event(
                 &mut map,
                 &E::ParticipantJoined {
@@ -3393,7 +3114,7 @@ mod tests {
                 }
             ));
             assert_eq!(map.len(), 1);
-            // Leave inconnu : pas de changement, pas d'émission.
+            // An unknown departure changes nothing and emits no list.
             assert!(!apply_engine_event(
                 &mut map,
                 &E::ParticipantLeft {
@@ -3406,7 +3127,7 @@ mod tests {
         #[test]
         fn join_empty_name_keeps_identity() {
             let mut map = empty();
-            // Nom vide LiveKit : on garde l'identité (pastille curseur, etc.).
+            // An empty LiveKit name preserves the identity fallback.
             assert!(apply_engine_event(
                 &mut map,
                 &E::ParticipantJoined {
@@ -3424,7 +3145,7 @@ mod tests {
                 }
             ));
             assert_eq!(map["@a:h"].name, "a");
-            // Re-join vide : ne régresse pas.
+            // Rejoining with an empty name must not replace a known name.
             assert!(apply_engine_event(
                 &mut map,
                 &E::ParticipantJoined {
@@ -3445,8 +3166,7 @@ mod tests {
                     speaking: true
                 }
             ));
-            // Upsert défensif : le participant existe même si le join n'est
-            // pas encore arrivé.
+            // Upsert participants when state arrives before join.
             assert!(map["@a:h"].is_speaking);
             assert!(apply_engine_event(
                 &mut map,
@@ -3493,7 +3213,7 @@ mod tests {
         #[test]
         fn share_audio_presence_drives_speaker_flag() {
             let mut map = empty();
-            // Indépendant du flag vidéo : le son peut arriver sans l'image.
+            // Audio presence is independent of video; audio may arrive first.
             assert!(apply_engine_event(
                 &mut map,
                 &E::ShareAudioPresence {
@@ -3520,7 +3240,10 @@ mod tests {
             assert!(!apply_engine_event(&mut map, &E::RoomReconnected));
             assert!(!apply_engine_event(
                 &mut map,
-                &E::RoomDisconnected { reason: "x".into(), reprendre: false }
+                &E::RoomDisconnected {
+                    reason: "x".into(),
+                    reprendre: false
+                }
             ));
             assert!(map.is_empty());
         }
@@ -3536,8 +3259,7 @@ mod tests {
                 Some(2500)
             );
             assert_eq!(map["@dj:h"].playing_sound_emoji.as_deref(), Some("🥁"));
-            // Échéance = maintenant + durée : c'est elle qui décide de la fin,
-            // plus un `sleep(durée)` aveugle.
+            // The stored absolute deadline governs expiry; a blind duration sleep must not hide a newer sound.
             assert_eq!(map["@dj:h"].badge_deadline_ms, 3_500);
             // Payload corrompu : pas de badge, pas de panique.
             assert_eq!(
@@ -3546,8 +3268,7 @@ mod tests {
             );
         }
 
-        /// Le bug d'origine : un son court déclenché pendant un son long
-        /// éteignait le rond du son long. L'échéance ne recule jamais.
+        /// A shorter overlapping sound must never shorten the longer sound's badge deadline.
         #[test]
         fn soundboard_badge_deadline_never_moves_backwards() {
             use base64::Engine as _;
@@ -3555,24 +3276,24 @@ mod tests {
             let mut map = empty();
             let long = enc(r#"{"mxc":"mxc://h/long","emoji":"🎵","duration":9000,"gain":1}"#);
             let short = enc(r#"{"mxc":"mxc://h/short","emoji":"🔔","duration":2000,"gain":1}"#);
-            // Son long à t=0 → échéance 9 s.
+            // A long sound at t=0 expires at nine seconds.
             assert_eq!(
                 apply_soundboard_badge(&mut map, "@dj:h", &long, 0),
                 Some(9000)
             );
-            // Son court déclenché 1 s plus tard : l'échéance reste celle du long.
+            // A short sound one second later retains the longer deadline.
             assert_eq!(
                 apply_soundboard_badge(&mut map, "@dj:h", &short, 1_000),
                 Some(2000)
             );
             assert_eq!(map["@dj:h"].badge_deadline_ms, 9_000);
-            // Son suivant plus long : l'échéance est repoussée d'autant.
+            // A later longer sound extends expiry.
             assert_eq!(
                 apply_soundboard_badge(&mut map, "@dj:h", &long, 5_000),
                 Some(9000)
             );
             assert_eq!(map["@dj:h"].badge_deadline_ms, 14_000);
-            // Autre expéditeur : aucun mélange d'échéances.
+            // Different senders keep independent deadlines.
             assert_eq!(
                 apply_soundboard_badge(&mut map, "@p:h", &short, 5_000),
                 Some(2000)
@@ -3581,27 +3302,26 @@ mod tests {
             assert_eq!(map["@dj:h"].badge_deadline_ms, 14_000);
         }
 
-        /// Durée absente, nulle ou aberrante : jamais de rond instantané ni
-        /// de rond éternel.
+        /// Missing, zero or excessive duration must not produce instant or unbounded badges.
         #[test]
         fn soundboard_badge_duration_is_sane() {
             use base64::Engine as _;
             let enc = |raw: &str| base64::engine::general_purpose::STANDARD.encode(raw);
             let mut map = empty();
-            // Champ absent (vieux payload) → repli 3 s, payload quand même lu.
+            // An older payload without duration decodes with the three-second fallback.
             let no_duration = enc(r#"{"mxc":"mxc://h/s","emoji":"🔊","gain":1}"#);
             assert_eq!(
                 apply_soundboard_badge(&mut map, "@dj:h", &no_duration, 0),
                 Some(BADGE_DEFAULT_MS)
             );
-            // Durée 0 (sonde d'upload en échec côté client) → repli, pas 0 ms.
+            // A failed duration probe reporting zero uses the fallback.
             let zero = enc(r#"{"mxc":"mxc://h/z","emoji":"🔊","duration":0,"gain":1}"#);
             assert_eq!(
                 apply_soundboard_badge(&mut map, "@dj:h", &zero, 0),
                 Some(BADGE_DEFAULT_MS)
             );
             assert_eq!(map["@dj:h"].badge_deadline_ms, BADGE_DEFAULT_MS);
-            // Durée aberrante → plafond.
+            // Clamp excessive duration.
             let huge = enc(r#"{"mxc":"mxc://h/h","emoji":"🔊","duration":9999999,"gain":1}"#);
             assert_eq!(
                 apply_soundboard_badge(&mut map, "@dj:h", &huge, 0),
@@ -3610,9 +3330,8 @@ mod tests {
             assert_eq!(map["@dj:h"].badge_deadline_ms, BADGE_MAX_MS);
         }
 
-        /// Réarmement côté récepteur : la latence de démarrage locale repousse
-        /// l'échéance, sans jamais la raccourcir ni ressusciter un badge éteint
-        /// quand le son n'est pas joué.
+        /// Receiver startup delay extends expiry without shortening it
+        /// or restoring an inactive badge when no sound is played.
         #[test]
         fn soundboard_badge_extension_respects_playback_start() {
             use base64::Engine as _;
@@ -3623,7 +3342,7 @@ mod tests {
                 apply_soundboard_badge(&mut map, "@dj:h", &payload, 0),
                 Some(4000)
             );
-            // Le son démarre à 482 ms chez le récepteur : échéance repoussée.
+            // Playback starts at 482 ms, extending the receiver deadline.
             assert!(extend_badge_deadline(
                 &mut map,
                 "@dj:h",
@@ -3632,8 +3351,7 @@ mod tests {
                 482
             ));
             assert_eq!(map["@dj:h"].badge_deadline_ms, 4_482);
-            // Une mesure plus courte (fichier réel plus court que l'annoncé) ne
-            // raccourcit pas l'échéance déjà posée.
+            // A shorter measured clip must not shorten the existing deadline.
             assert!(!extend_badge_deadline(
                 &mut map,
                 "@dj:h",
@@ -3642,8 +3360,7 @@ mod tests {
                 500
             ));
             assert_eq!(map["@dj:h"].badge_deadline_ms, 4_482);
-            // Emoji connu mais badge éteint → rallumé (cas du badge expiré
-            // pendant un téléchargement lent).
+            // A supplied emoji restores a badge that expired during a slow download.
             map.get_mut("@dj:h").unwrap().playing_sound_emoji = None;
             assert!(extend_badge_deadline(
                 &mut map,
@@ -3654,12 +3371,12 @@ mod tests {
             ));
             assert_eq!(map["@dj:h"].playing_sound_emoji.as_deref(), Some("🎵"));
             assert_eq!(map["@dj:h"].badge_deadline_ms, 4_600);
-            // Sans emoji et badge éteint : rien à rallumer (son non joué).
+            // No emoji and no active badge means nothing can be restored.
             map.get_mut("@dj:h").unwrap().playing_sound_emoji = None;
             let before = map["@dj:h"].badge_deadline_ms;
             assert!(!extend_badge_deadline(&mut map, "@dj:h", 4000, None, 700));
             assert_eq!(map["@dj:h"].badge_deadline_ms, before);
-            // Expéditeur inconnu : ignoré.
+            // Ignore unknown senders.
             assert!(!extend_badge_deadline(
                 &mut map,
                 "@absent:h",
@@ -3669,15 +3386,14 @@ mod tests {
             ));
         }
 
-        /// La durée normalisée côté Rust doit rester alignée sur le repli JS.
+        /// Rust duration normalization must match the JS fallback.
         #[test]
         fn soundboard_badge_fallback_matches_js_contract() {
             assert_eq!(BADGE_DEFAULT_MS, 3_000);
             assert_eq!(sane_badge_ms(0), 3_000);
             assert_eq!(sane_badge_ms(500), 500);
             assert_eq!(sane_badge_ms(BADGE_MAX_MS + 1), BADGE_MAX_MS);
-            // Payload minimal sans `duration` : sérialisé tel quel par un vieux
-            // client, il doit encore se décoder.
+            // A minimal older-client payload without duration must still decode.
             let minimal: SoundboardPayload =
                 decode_json(r#"{"mxc":"mxc://h/s","emoji":"🔊"}"#).unwrap();
             assert_eq!(minimal.duration, BADGE_DEFAULT_MS);
@@ -3686,13 +3402,11 @@ mod tests {
 
         #[test]
         fn data_topics_match_js_constants() {
-            // Garde-fou d'interopérabilité : ces topics doivent rester
-            // identiques à `livekitService.ts` / `soundboardService.ts`.
+            // Keep topics identical to frontend soundboard and voice data-channel contracts.
             assert_eq!(TOPIC_AFK, "sion-afk");
             assert_eq!(TOPIC_SOUNDBOARD, "sion-soundboard");
             assert_eq!(TOPIC_CURSOR, "sion-cursor");
             assert_eq!(TOPIC_CURSOR_CLICK, "sion-cursor-click");
-            assert_eq!(TOPIC_TRANSCRIBE_ARM, "sion-transcribe-arm");
         }
 
         #[cfg(not(target_os = "android"))]
@@ -3721,14 +3435,14 @@ mod tests {
             use base64::Engine as _;
             let enc = |raw: &str| base64::engine::general_purpose::STANDARD.encode(raw);
             let mut map = empty();
-            // Sourdine distante : flag posé (upsert si join pas encore vu).
+            // Apply remote deafen, upserting if join has not arrived yet.
             assert!(apply_afk_state(
                 &mut map,
                 "@p:h",
                 &enc(r#"{"deafened":true}"#)
             ));
             assert!(map["@p:h"].is_deafened);
-            // Retour : flag retiré.
+            // Clear deafen on return.
             assert!(apply_afk_state(
                 &mut map,
                 "@p:h",
@@ -3757,17 +3471,41 @@ mod tests {
         fn webcam_et_partage_restent_independants_du_micro() {
             let mut map = HashMap::new();
             let id = "@p:h".to_string();
-            apply_engine_event(&mut map, &VoiceEngineEvent::TrackMutedChanged { identity: id.clone(), muted: true });
-            apply_engine_event(&mut map, &VoiceEngineEvent::VideoPresence { sender: id.clone(), sharing: true });
-            apply_engine_event(&mut map, &VoiceEngineEvent::CameraPresence { sender: id.clone(), active: true });
+            apply_engine_event(
+                &mut map,
+                &VoiceEngineEvent::TrackMutedChanged {
+                    identity: id.clone(),
+                    muted: true,
+                },
+            );
+            apply_engine_event(
+                &mut map,
+                &VoiceEngineEvent::VideoPresence {
+                    sender: id.clone(),
+                    sharing: true,
+                },
+            );
+            apply_engine_event(
+                &mut map,
+                &VoiceEngineEvent::CameraPresence {
+                    sender: id.clone(),
+                    active: true,
+                },
+            );
             assert!(map[&id].is_muted && map[&id].is_screen_sharing && map[&id].is_camera_enabled);
-            apply_engine_event(&mut map, &VoiceEngineEvent::CameraPresence { sender: id.clone(), active: false });
+            apply_engine_event(
+                &mut map,
+                &VoiceEngineEvent::CameraPresence {
+                    sender: id.clone(),
+                    active: false,
+                },
+            );
             assert!(map[&id].is_muted && map[&id].is_screen_sharing && !map[&id].is_camera_enabled);
         }
 
         #[test]
         fn afk_payload_serializes_like_js() {
-            // Ce que le natif émet doit être lisible par `broadcastAfk` JS.
+            // Native AFK serialization must remain compatible with JS broadcastAfk.
             let raw = serde_json::to_string(&AfkPayload { deafened: true }).unwrap();
             assert_eq!(raw, r#"{"deafened":true}"#);
         }

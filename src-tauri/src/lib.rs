@@ -4,21 +4,22 @@ use rdev::Key;
 use tauri::Emitter;
 use tauri::Manager;
 
+#[cfg(target_os = "android")]
+mod android_natif;
 #[cfg(not(target_os = "android"))]
 mod cursor_overlay;
 mod encodage_av1;
 mod native_video_surface;
-#[cfg(target_os = "android")]
-mod android_natif;
 #[cfg(not(target_os = "android"))]
 mod pip_window;
 #[cfg(target_os = "linux")]
 mod portal_shortcuts;
-// Repli « page blanche NVIDIA » (renderer DMA-BUF de WebKitGTK) : surveille le
-// web process et relance une fois avec `WEBKIT_DISABLE_DMABUF_RENDERER=1`.
-// Public : `main.rs` y lit le marqueur avant l'init GTK.
+// Monitor WebKit's NVIDIA DMA-BUF failure and restart once with
+// WEBKIT_DISABLE_DMABUF_RENDERER=1. main.rs reads the public marker before GTK init.
 #[cfg(target_os = "linux")]
 pub mod gpu_fallback;
+#[cfg(target_os = "linux")]
+mod linux_microphone;
 #[cfg(not(target_os = "android"))]
 mod summarize;
 #[cfg(not(target_os = "android"))]
@@ -27,43 +28,44 @@ mod system_audio;
 mod transcribe;
 #[cfg(not(target_os = "android"))]
 mod tts;
+#[cfg(not(target_os = "android"))]
+mod video_import_formats;
 #[cfg(target_os = "windows")]
 mod win_shortcuts;
-// Voix native (moteur Rust) : état + détecteur RMS + codecs data-channel.
-// Aucun trafic SFU réel à ce stade.
+// Native voice state, RMS speaking detector and data-channel protocol.
 mod voice_native;
-// Moteur LiveKit natif (POC) : uniquement avec `--features native-voice`.
-#[cfg(all(test, feature = "native-voice"))]
-mod native_audio_tests;
-#[cfg(feature = "native-voice")]
-#[cfg(target_os = "windows")]
-mod virtual_desktop;
+// Native LiveKit engine, enabled by the native-voice feature.
 mod cue_playback;
 #[cfg(not(target_os = "android"))]
 mod incrustation_lecteur;
 #[cfg(not(target_os = "android"))]
-mod meme_pop;
-#[cfg(not(target_os = "android"))]
-mod profil;
-#[cfg(not(target_os = "android"))]
 mod lecteur_audio;
 #[cfg(not(target_os = "android"))]
 mod lecteur_video;
-mod media_server;
-mod media_cache;
-mod mises_a_jour;
 mod matrix_pont;
-// Windows : l'appel ne passe pas après un jeu (priorité, bridage d'arrière-plan).
+mod media_cache;
+mod media_server;
+#[cfg(not(target_os = "android"))]
+mod meme_pop;
+mod mises_a_jour;
+#[cfg(all(test, feature = "native-voice"))]
+mod native_audio_tests;
+#[cfg(not(target_os = "android"))]
+mod profil;
 #[cfg(feature = "native-voice")]
-mod priorite_appel;
-mod notifications_bureau;
-mod native_video_transport;
-#[cfg(feature = "native-voice")]
-mod voice_engine;
+#[cfg(target_os = "windows")]
+mod virtual_desktop;
+// Call priority handling, including Windows background throttling after games.
 #[cfg(feature = "native-voice")]
 mod camera_capture;
 #[cfg(feature = "native-voice")]
 mod camera_effects;
+mod native_video_transport;
+mod notifications_bureau;
+#[cfg(feature = "native-voice")]
+mod priorite_appel;
+#[cfg(feature = "native-voice")]
+mod voice_engine;
 #[cfg(not(target_os = "android"))]
 use serde::Deserialize;
 use serde::Serialize;
@@ -321,7 +323,7 @@ fn prettify_alsa_name(name: &str) -> String {
 
 /// WebRTC's Linux PulseAudio ADM reports successful recording-device changes,
 /// but PipeWire can keep the already-open `recStream` attached to its previous
-/// source. Move that exact stream as the final routing step.
+/// source. Confirm that exact stream's route after the final publication.
 #[cfg(target_os = "linux")]
 pub(crate) fn route_native_microphone(device_label: Option<&str>) -> Result<(), String> {
     let target = if let Some(device_label) = device_label {
@@ -347,31 +349,7 @@ pub(crate) fn route_native_microphone(device_label: Option<&str>) -> Result<(), 
         get_pa_default("source").ok_or("source PulseAudio par défaut introuvable")?
     };
 
-    let indices = find_pa_stream_indices("source-outputs", "sion-client");
-    if indices.is_empty() {
-        return Err("flux microphone WebRTC introuvable dans PulseAudio".into());
-    }
-    for index in indices {
-        log::info!(
-            "[Sion][voix-native] routage source-output {} vers {}",
-            index,
-            target
-        );
-        run_pactl(&["move-source-output", &index.to_string(), &target])?;
-    }
-    Ok(())
-}
-
-#[cfg(not(target_os = "android"))]
-fn run_pactl(args: &[&str]) -> Result<(), String> {
-    let status = std::process::Command::new("pactl")
-        .args(args)
-        .status()
-        .map_err(|e| format!("pactl failed: {}", e))?;
-    if !status.success() {
-        return Err(format!("pactl {:?} exited with {}", args, status));
-    }
-    Ok(())
+    linux_microphone::route(&target)
 }
 
 /// Get the current PulseAudio default source or sink name.
@@ -391,34 +369,7 @@ fn get_pa_default(kind: &str) -> Option<String> {
     }
 }
 
-/// Find PulseAudio stream indices for our app by scanning JSON output.
-#[cfg(not(target_os = "android"))]
-fn find_pa_stream_indices(list_type: &str, binary_name: &str) -> Vec<u32> {
-    let output = std::process::Command::new("pactl")
-        .args(["-f", "json", "list", list_type])
-        .output()
-        .ok();
-    let Some(output) = output else { return vec![] };
-    let json = String::from_utf8_lossy(&output.stdout);
-
-    // Scan for entries where application.process.binary matches
-    let mut indices = Vec::new();
-    let needle = format!("\"application.process.binary\":\"{}\"", binary_name);
-
-    // Each top-level object has "index":N somewhere before the properties
-    for chunk in json.split("\"index\":") {
-        if chunk.contains(&needle) {
-            // Extract the index number right at the start of this chunk
-            let idx_str: String = chunk.chars().take_while(|c| c.is_ascii_digit()).collect();
-            if let Ok(idx) = idx_str.parse::<u32>() {
-                indices.push(idx);
-            }
-        }
-    }
-    indices
-}
-
-/// Liste les périphériques audio PulseAudio (ou CPAL en secours).
+/// List PulseAudio devices, falling back to CPAL when necessary.
 #[cfg(not(target_os = "android"))]
 fn list_audio_devices() -> Vec<AudioDevice> {
     // Use PulseAudio/PipeWire for device enumeration — gives proper names
@@ -552,7 +503,10 @@ fn list_audio_devices_cpal() -> Vec<AudioDevice> {
     let host = cpal::default_host();
 
     for device in host.devices().into_iter().flatten() {
-        let raw_name = device.name().unwrap_or_default();
+        let raw_name = device
+            .description()
+            .map(|d| d.name().to_string())
+            .unwrap_or_default();
         if is_virtual_alsa_device(&raw_name) {
             continue;
         }
@@ -855,10 +809,8 @@ mod security_tests {
         assert!(sanitize_download_filename("ok.txt").is_ok());
     }
 
-    /// Le jeton ne quitte le fichier que si le coffre l'a confirmé. Sans cette
-    /// règle, un build au store de test (`keyring` sans backend) faisait
-    /// disparaître le jeton de `session.json` sans le stocker nulle part : la
-    /// seule copie de secours d'une session partait en fumée.
+    /// Remove the disk token only after verified persistent-vault storage.
+    /// A mock store must never erase the session's only durable token copy.
     #[test]
     fn session_token_leaves_disk_only_when_the_vault_holds_it() {
         let blob =
@@ -868,7 +820,7 @@ mod security_tests {
             Some(r#"{"accessToken":"syt_x"}"#)
         );
 
-        // Coffre confirmé : le jeton sort du fichier, le reste demeure.
+        // Verified vault: remove the token while preserving the rest of the session.
         let vaulted =
             serde_json::from_str::<serde_json::Value>(&session_json_for_disk(blob, true)).unwrap();
         assert!(vaulted.get("sion_auth_credentials").is_none());
@@ -877,16 +829,16 @@ mod security_tests {
             Some("DEV")
         );
 
-        // Coffre absent/non persistant : copie disque intacte, octet pour octet.
+        // Unavailable or nonpersistent vault: preserve the disk copy byte for byte.
         assert_eq!(session_json_for_disk(blob, false), blob);
 
-        // Déjà sans jeton (déconnecté) : rien à retirer, rien à casser.
+        // A logged-out session has no token to remove.
         let logged_out = r#"{"sion_device_id":"DEV"}"#;
         assert!(session_credentials(logged_out).is_none());
         assert_eq!(session_json_for_disk(logged_out, true), logged_out);
         assert_eq!(session_json_for_disk(logged_out, false), logged_out);
 
-        // Blob illisible : jamais tronqué par erreur.
+        // Never truncate an unreadable session blob.
         assert_eq!(session_json_for_disk("pas du json", true), "pas du json");
     }
 
@@ -919,29 +871,26 @@ mod security_tests {
         let _ = std::fs::remove_dir(directory);
     }
 
-    /// Verrou de comportement : tant qu'aucun backend de coffre n'est compilé,
-    /// `keyring` fournit son store de test (rien n'est persisté). La sonde doit
-    /// refuser — sinon le jeton disparaît du seul fichier qui le garde.
+    /// Without a registered native vault, keyring-core uses the mock fallback.
+    /// The verification probe must reject it to preserve the only persistent token.
     #[cfg(not(target_os = "android"))]
     #[test]
     fn vault_store_without_persistence_is_not_trusted() {
         use super::{secure_session_entry, secure_session_set_verified};
         let Ok(entry) = secure_session_entry() else {
-            return; // aucun coffre joignable dans cet environnement
+            return; // No reachable vault in this environment.
         };
-        // Un vrai keystore relit ce qu'il écrit : ne pas écrire dans celui du
-        // développeur pendant les tests.
+        // Avoid writing to the developer's real credential vault during tests.
         if entry
-            .get_credential()
-            .downcast_ref::<keyring::mock::MockCredential>()
+            .as_any()
+            .downcast_ref::<keyring::mock::Cred>()
             .is_none()
         {
             return;
         }
-        // C'est la condition d'origine de `persist_session` — elle était vraie
-        // ici, donc le jeton partait du fichier sans être stocké nulle part.
+        // The original persist_session condition accepted the mock store and lost the token.
         assert!(super::secure_session_set("jeton-de-test").is_ok());
-        // …et c'est celle qui remplace : le store de test ne relit rien.
+        // The verification probe rejects a mock store that cannot persist and reread it.
         assert!(!secure_session_set_verified("jeton-de-test"));
     }
 }
@@ -999,15 +948,14 @@ async fn download_file(url: String, filename: String) -> Result<String, String> 
     Ok(path.to_string_lossy().to_string())
 }
 
-/// Contenu d'une pièce jointe à ouvrir ou enregistrer. Un média du moteur
-/// Matrix Rust (`sion-media://…`, `mxc://…`) n'est pas une adresse web : il
-/// est lu dans son dépôt local, déjà déchiffré — reqwest échouait et la
-/// webview ne sait pas télécharger ce protocole (bouton muet en 2.0 beta 2).
+/// Read attachments from the Rust media store when the URL is sion-media or mxc.
+/// These are decrypted local media references, not ordinary HTTP download URLs.
 async fn octets_a_telecharger(url: String) -> Result<Vec<u8>, String> {
     let source = url.clone();
-    let depot = tauri::async_runtime::spawn_blocking(move || matrix_pont::fichier_media_matrix(&source))
-        .await
-        .map_err(|e| format!("média : {e}"))?;
+    let depot =
+        tauri::async_runtime::spawn_blocking(move || matrix_pont::fichier_media_matrix(&source))
+            .await
+            .map_err(|e| format!("média : {e}"))?;
     if let Some(fichier) = depot {
         return std::fs::read(fichier?).map_err(|e| format!("lecture : {e}"));
     }
@@ -1062,23 +1010,17 @@ fn exit_app(app: tauri::AppHandle<TauriRuntime>) {
     app.exit(0);
 }
 
-// Persist a small session blob (auth credentials + device_id/user_id) OUTSIDE
-// the webview profile. localStorage vit dans le profil WebKit/WebView2 et peut
-// être purgé par une montée de version ou l'action « vider le cache ».
-// app_data_dir (%APPDATA% / ~/.local/share) est un dossier séparé, donc ce
-// fichier survit — la session est restaurée au démarrage sans re-login forcé
-// ni nouveau device.
-/// Jeton d'accès porté par le blob de session, sans rien écrire. Pur.
+// Persist the session outside the WebKit/WebView2 profile. The separate app-data
+// copy survives webview cache purges, restoring the same account and device.
+/// Extract the session access token without writing anything.
 fn session_credentials(json: &str) -> Option<String> {
     let blob: serde_json::Map<String, serde_json::Value> = serde_json::from_str(json).ok()?;
     let credentials = blob.get("sion_auth_credentials")?.as_str()?;
     Some(credentials.to_string())
 }
 
-/// Contenu à écrire sur disque : le jeton ne quitte le fichier que si le coffre
-/// l'a **confirmé** (`vaulted`). Sinon la copie disque reste — c'est le seul
-/// filet de sécurité quand le profil webview est purgé (localStorage perdu).
-/// Pur, testé.
+/// Remove the disk token only when vaulted storage is verified; otherwise
+/// preserve the fallback needed after localStorage or profile loss.
 fn session_json_for_disk(json: &str, vaulted: bool) -> String {
     let Ok(mut blob) = serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(json)
     else {
@@ -1091,12 +1033,12 @@ fn session_json_for_disk(json: &str, vaulted: bool) -> String {
     json.to_string()
 }
 
-/// Blob effectivement écrit sur disque (jeton confié au coffre s'il le garde).
+/// Produce the disk session blob, using the vault only when persistence is confirmed.
 #[cfg(not(target_os = "android"))]
 fn session_json_to_persist(json: &str) -> String {
     match session_credentials(json) {
         Some(credentials) => session_json_for_disk(json, secure_session_set_verified(&credentials)),
-        // Déconnexion : purger le coffre d'un jeton mort.
+        // Remove an obsolete vault token on logout.
         None => {
             secure_session_clear();
             json.to_string()
@@ -1104,15 +1046,14 @@ fn session_json_to_persist(json: &str) -> String {
     }
 }
 
-/// Android : pas de coffre système, le fichier garde tout (comportement historique).
+/// Android keeps the complete session in its private file.
 #[cfg(target_os = "android")]
 fn session_json_to_persist(json: &str) -> String {
     json.to_string()
 }
 
-/// Écrit un fichier sensible sans jamais exposer une version partiellement
-/// écrite : contenu dans un voisin temporaire, flush, puis remplacement
-/// atomique sur le même système de fichiers.
+/// Write sensitive data to a neighboring temporary file, flush it, then
+/// replace atomically on the same filesystem; never expose a partial session.
 fn write_private_file_atomic(path: &std::path::Path, contents: &[u8]) -> Result<(), String> {
     use std::io::Write;
     use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
@@ -1173,9 +1114,8 @@ fn write_private_file_atomic(path: &std::path::Path, contents: &[u8]) -> Result<
         #[cfg(not(target_os = "windows"))]
         std::fs::rename(&temp_path, path).map_err(|e| e.to_string())?;
 
-        // Sur Unix, le fsync du dossier rend aussi le renommage durable après
-        // une coupure brutale. Le mode 0600 est fixé dès create(), donc aucune
-        // fenêtre de temps ne rend le jeton lisible par un autre utilisateur.
+        // On Unix, fsync the directory to make the rename durable. Set mode 0600
+        // at creation so other users never gain a temporary read window.
         #[cfg(unix)]
         std::fs::File::open(parent)
             .and_then(|directory| directory.sync_all())
@@ -1234,7 +1174,18 @@ fn load_session(app: tauri::AppHandle<TauriRuntime>) -> Result<String, String> {
 
 #[cfg(not(target_os = "android"))]
 fn secure_session_entry() -> Result<keyring::Entry, String> {
-    keyring::Entry::new("com.sion.client", "session").map_err(|e| e.to_string())
+    use keyring::api::CredentialStoreApi;
+    // keyring 4 delegates backend selection to keyring-core. Preserve the
+    // dormant vault migration: a fresh mock never retains a token between
+    // calls, while a deliberately configured persistent store can be used.
+    if let Some(store) = keyring::get_default_store() {
+        return store
+            .build("com.sion.client", "session", None)
+            .map_err(|e| e.to_string());
+    }
+    keyring::mock::Store::new()
+        .and_then(|store| store.build("com.sion.client", "session", None))
+        .map_err(|e| e.to_string())
 }
 
 #[cfg(not(target_os = "android"))]
@@ -1244,15 +1195,14 @@ fn secure_session_set(credentials: &str) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
-/// Écrit le jeton dans le coffre **puis le relit**.
-///
-/// Indispensable : un build sans feature de keystore compile le store de test
-/// de `keyring`, qui garde le secret dans l'objet `Entry` et rien d'autre. Sans
-/// cette vérification, `set_password` réussit, le jeton est retiré de
-/// `session.json`… et il n'existe plus nulle part au redémarrage suivant (profil
-/// webview purgé = déconnexion forcée). Un coffre réel relit ce qu'il a écrit.
+/// Write the token to the vault and verify it by reading it back. A mock
+/// store can report a successful write without durable storage, so accepting
+/// that result would lose the session token after a webview profile purge.
 #[cfg(not(target_os = "android"))]
 fn secure_session_set_verified(credentials: &str) -> bool {
+    if secure_session_entry().is_ok_and(|entry| entry.as_any().is::<keyring::mock::Cred>()) {
+        return false;
+    }
     if secure_session_set(credentials).is_err() {
         return false;
     }
@@ -1273,9 +1223,8 @@ fn secure_session_clear() {
     }
 }
 
-/// Locale du système (« fr-FR », « en-US »…). Sous WRY/WebKitGTK,
-/// `navigator.language` peut rester sur en-US selon le profil ; on lit la
-/// vraie locale OS côté Rust pour la détection automatique de langue.
+/// Read the actual OS locale; navigator.language can stay en-US in a
+/// WebKit profile regardless of the system language.
 #[tauri::command]
 fn system_locale() -> String {
     sys_locale::get_locale().unwrap_or_else(|| "fr".to_string())
@@ -1310,9 +1259,8 @@ async fn pick_audio_file() -> Option<String> {
         .map(|h| h.path().to_string_lossy().to_string())
 }
 
-/// Native file picker for a panel background image. Returns the absolute
-/// path, or None if cancelled. Les octets sont ensuite lus par
-/// `read_dropped_file` (IPC binaire, pas de base64).
+/// Pick a panel background and return its absolute path, or None on cancel.
+/// Read the bytes afterward through binary read_dropped_file IPC.
 #[cfg(not(target_os = "android"))]
 #[tauri::command]
 async fn pick_image_file() -> Option<String> {
@@ -1320,8 +1268,7 @@ async fn pick_image_file() -> Option<String> {
         .set_title("Sélectionner une image")
         .add_filter(
             "Images",
-            // Vidéos acceptées aussi : elles sont transcodées à l'import par
-            // `prepare_background_video`, jamais utilisées telles quelles.
+            // Accept videos too; prepare_background_video normalizes them before use.
             &[
                 "png", "jpg", "jpeg", "webp", "gif", "bmp", "avif", "mp4", "webm", "mkv", "mov",
             ],
@@ -1347,10 +1294,8 @@ fn read_file_b64(path: String) -> Result<String, String> {
     Ok(base64::engine::general_purpose::STANDARD.encode(&bytes))
 }
 
-/// Lit un fichier déposé depuis le gestionnaire de fichiers et renvoie ses
-/// octets bruts (IPC binaire, pas de base64). Tauri fournit des **chemins**
-/// pour le drag & drop natif ; WebKitGTK ne laisse pas passer les fichiers
-/// déposés au DOM, donc le front reconstruit un `File` à partir d'ici.
+/// Read native dropped-file paths through binary IPC. WebKitGTK does not
+/// expose these drops as DOM files, so the frontend reconstructs a File.
 #[cfg(not(target_os = "android"))]
 #[tauri::command]
 fn read_dropped_file(path: String) -> Result<tauri::ipc::Response, String> {
@@ -1366,18 +1311,43 @@ fn read_dropped_file(path: String) -> Result<tauri::ipc::Response, String> {
     Ok(tauri::ipc::Response::new(bytes))
 }
 
-/// Image du presse-papiers lue côté natif : WebKitGTK n'expose pas les
-/// images dans `ClipboardEvent.clipboardData.items` (contrairement à
-/// Chromium/CEF). On renvoie les **octets d'origine** (PNG/JPEG/WebP/GIF)
-/// via l'IPC binaire, sans décodage ni ré-encodage : taille réelle et
-/// latence minimale. Un vecteur vide = pas d'image dans le presse-papiers.
+/// Read clipboard image bytes natively because WebKitGTK omits images
+/// from clipboardData.items. Preserve the original PNG/JPEG/WebP/GIF bytes
+/// without decoding or re-encoding; an empty buffer means no image.
 #[cfg(not(target_os = "android"))]
 #[tauri::command]
 async fn read_clipboard_image() -> Result<tauri::ipc::Response, String> {
-    // La lecture du presse-papiers est bloquante : hors du thread UI.
+    // Run blocking clipboard access outside the UI thread.
     tauri::async_runtime::spawn_blocking(read_clipboard_image_blocking)
         .await
         .map_err(|e| e.to_string())?
+}
+
+/// Read copied file paths from Linux URIs or Windows CF_HDROP. Their bytes
+/// subsequently pass through read_dropped_file and its size limit.
+#[cfg(not(target_os = "android"))]
+#[tauri::command]
+async fn read_clipboard_files() -> Result<Vec<String>, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let mut clipboard = arboard::Clipboard::new().map_err(|e| e.to_string())?;
+        match clipboard.get().file_list() {
+            Ok(paths) => Ok(paths
+                .into_iter()
+                .map(|p| {
+                    let mut path = p.to_string_lossy().into_owned();
+                    // arboard retains CR from CRLF URI lists; preserve a real filename ending in CR.
+                    if cfg!(target_os = "linux") && path.ends_with('\r') && !p.exists() {
+                        path.pop();
+                    }
+                    path
+                })
+                .collect()),
+            Err(arboard::Error::ContentNotAvailable) => Ok(Vec::new()),
+            Err(e) => Err(e.to_string()),
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[cfg(all(not(target_os = "android"), target_os = "linux"))]
@@ -1415,8 +1385,7 @@ fn read_clipboard_image_blocking() -> Result<tauri::ipc::Response, String> {
     read_clipboard_image_via_arboard()
 }
 
-/// Repli : conversion RGBA → PNG (sans redimensionnement) quand le
-/// presse-papiers n'expose pas d'image déjà encodée.
+/// Convert RGBA to PNG without resizing when no encoded clipboard image is available.
 #[cfg(not(target_os = "android"))]
 fn read_clipboard_image_via_arboard() -> Result<tauri::ipc::Response, String> {
     let mut clipboard = arboard::Clipboard::new().map_err(|e| e.to_string())?;
@@ -1439,10 +1408,8 @@ fn read_clipboard_image_via_arboard() -> Result<tauri::ipc::Response, String> {
     Ok(tauri::ipc::Response::new(png))
 }
 
-/// « Copier l'image » d'une image du fil. Le menu de WebKit ne copiait que
-/// l'adresse `sion-media://` (inutile ailleurs que dans Sion) : on copie ici
-/// l'image elle-même — en PNG, que toutes les applications acceptent, et
-/// dans son format d'origine (GIF, WebP animés).
+/// Copy the chat image itself instead of its app-specific sion-media URL.
+/// Offer PNG for compatibility and the original format for animated GIF/WebP.
 #[cfg(not(target_os = "android"))]
 #[tauri::command]
 async fn copier_image(url: String) -> Result<(), String> {
@@ -1452,8 +1419,7 @@ async fn copier_image(url: String) -> Result<(), String> {
         .map_err(|e| e.to_string())?
 }
 
-/// Presse-papiers gardé en vie : sous X11, arboard ne sert son contenu que
-/// tant que son objet existe.
+/// Keep the clipboard owner alive: X11 serves arboard content only while it exists.
 #[cfg(not(target_os = "android"))]
 static PRESSE_PAPIERS: Mutex<Option<arboard::Clipboard>> = Mutex::new(None);
 
@@ -1577,27 +1543,14 @@ pub(crate) fn bin_runs(bin: &str, version_flag: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Retire les fichiers temporaires de médias de plus de 24 heures : vidéos
-/// chiffrées déposées pour ffmpeg (`sion_in_`), vidéos préparées pour l'envoi
-/// (`sion_send_`) et anciennes conversions pour la webview (`sion_out_`,
-/// `sion_mux_`).
-///
-/// Appelée par ceux qui en produisent. Elle ne l'était plus que par les
-/// conversions pour la webview, que plus rien n'utilisait : ces fichiers
-/// s'accumulaient sans fin jusqu'au 24/09.
+/// Delete media intermediates older than 24 hours: sion_in_, sion_send_
+/// and legacy sion_out_/sion_mux_ files. Every producer invokes this cleanup.
 fn cleanup_old_transcodes() {
     media_cache::global().prune(media_cache::MAX_AGE, media_cache::MAX_BYTES);
 }
 
-/// Dossier temporaire dédié aux médias. Isolé du `temp_dir` général pour que la
-/// portée du protocole `asset` (qui laisse la webview lire ces fichiers) puisse
-/// être restreinte à ce seul répertoire.
-/// Chemin du ffmpeg livré dans le paquet, s'il s'y trouve.
-///
-/// Tauri dépose les ressources à côté de l'exécutable sous Windows, et dans
-/// `usr/lib/<app>/resources` dans une AppImage. On sonde les deux plutôt que
-/// de dépendre d'un `AppHandle`, cette fonction étant appelée depuis des
-/// chemins qui n'en ont pas.
+/// Resolve bundled ffmpeg without an AppHandle. Probe beside the Windows
+/// executable and the AppImage resource directory under usr/lib.
 fn ffmpeg_livre() -> Option<String> {
     let nom = if cfg!(target_os = "windows") {
         "ffmpeg.exe"
@@ -1608,7 +1561,7 @@ fn ffmpeg_livre() -> Option<String> {
     let dossier = exe.parent()?;
     for candidat in [
         dossier.join("resources").join(nom),
-        // AppImage : l'exécutable vit dans usr/bin, les ressources à côté.
+        // In an AppImage the executable is under usr/bin and resources are nearby.
         dossier.join("../lib/sion-client/resources").join(nom),
         dossier.join("../resources").join(nom),
     ] {
@@ -1625,12 +1578,13 @@ pub(crate) fn sion_media_dir() -> std::path::PathBuf {
     dir
 }
 
-/// Médias déposés dans `sion_media_dir` : des fichiers DÉCHIFFRÉS (salons
-/// chiffrés compris), lisibles par tout programme de la session. Rien ne les
-/// effaçait : 83 fichiers, 145 Mo accumulés en deux jours sur un PC (29/09).
-/// Au démarrage : ceux de plus de `age_max` partent, puis les plus anciens
-/// jusqu'à tenir dans `taille_max`. Rend (fichiers effacés, octets libérés).
-pub(crate) fn purger_medias_temporaires(age_max: std::time::Duration, taille_max: u64) -> (usize, u64) {
+/// Purge decrypted media by age, then oldest-first until under the size cap.
+/// These files are readable by programs in the same session, including media
+/// from encrypted rooms. Return removed file and byte counts.
+pub(crate) fn purger_medias_temporaires(
+    age_max: std::time::Duration,
+    taille_max: u64,
+) -> (usize, u64) {
     if taille_max == 0 {
         media_cache::global().clear()
     } else {
@@ -1638,15 +1592,15 @@ pub(crate) fn purger_medias_temporaires(age_max: std::time::Duration, taille_max
     }
 }
 
-/// QR code en SVG : `texte` (connexion d'un téléphone) ou `octets_base64`
-/// (QR de vérification Matrix, données binaires). Dessiné ici, sans service
-/// extérieur.
+/// Generate an SVG QR locally from login text or binary Matrix verification data.
 #[tauri::command]
 fn qr_svg(texte: Option<String>, octets_base64: Option<String>) -> Result<String, String> {
     use base64::Engine as _;
     let octets = match (texte, octets_base64) {
         (Some(t), _) => t.into_bytes(),
-        (None, Some(b)) => base64::engine::general_purpose::STANDARD.decode(b).map_err(|e| e.to_string())?,
+        (None, Some(b)) => base64::engine::general_purpose::STANDARD
+            .decode(b)
+            .map_err(|e| e.to_string())?,
         (None, None) => return Err("rien à coder".into()),
     };
     let code = qrcode::QrCode::new(octets).map_err(|e| e.to_string())?;
@@ -1659,7 +1613,7 @@ fn qr_svg(texte: Option<String>, octets_base64: Option<String>) -> Result<String
         .build())
 }
 
-/// Déconnexion : plus aucun média déchiffré ne reste sur le disque.
+/// Remove all decrypted disk media on logout.
 #[tauri::command]
 fn vider_medias_temporaires() -> usize {
     purger_medias_temporaires(std::time::Duration::ZERO, 0).0
@@ -1672,26 +1626,24 @@ fn media_cache_retenir(url: String) -> Option<u64> {
 
 #[tauri::command]
 fn media_cache_liberer(id: Option<u64>) {
-    if let Some(id) = id { media_cache::release(id); }
-    else { media_cache::release_all(); }
+    if let Some(id) = id {
+        media_cache::release(id);
+    } else {
+        media_cache::release_all();
+    }
 }
 
-/// Cache média seulement : ne touche ni à la session, ni aux clés Matrix.
+/// Purge only media caches; preserve the session and Matrix keys.
 #[tauri::command]
 async fn purger_caches_medias() -> Result<usize, String> {
     matrix_pont::vider_cache_medias().await?;
     tauri::async_runtime::spawn_blocking(|| media_cache::global().clear().0)
-        .await.map_err(|e| e.to_string())
+        .await
+        .map_err(|e| e.to_string())
 }
 
-/// Écrit le corps binaire de la requête dans un fichier temporaire et renvoie
-/// son chemin.
-///
-/// Remplace l'aller-retour base64 hérité de l'époque CEF (ab3316d, 08/06), où
-/// les octets d'une vidéo traversaient l'IPC encodés en texte : une vidéo de
-/// 200 Mo devenait une chaîne de ~270 Mo côté processus web, plus les copies
-/// intermédiaires. Ici la webview envoie un `ArrayBuffer` brut, Tauri le remet
-/// tel quel, et rien n'est ré-encodé.
+/// Stage raw binary request bytes in a temporary file and return its path.
+/// Avoid the legacy base64 round trip and its large intermediate webview strings.
 #[tauri::command]
 fn stage_media(request: tauri::ipc::Request<'_>) -> Result<String, String> {
     let bytes = match request.body() {
@@ -1702,7 +1654,11 @@ fn stage_media(request: tauri::ipc::Request<'_>) -> Result<String, String> {
         .headers()
         .get("x-sion-ext")
         .and_then(|v| v.to_str().ok())
-        .map(|v| v.chars().filter(|c| c.is_ascii_alphanumeric()).collect::<String>())
+        .map(|v| {
+            v.chars()
+                .filter(|c| c.is_ascii_alphanumeric())
+                .collect::<String>()
+        })
         .filter(|v| !v.is_empty() && v.len() <= 8)
         .unwrap_or_else(|| "bin".to_string());
     cleanup_old_transcodes();
@@ -1719,22 +1675,9 @@ fn stage_media(request: tauri::ipc::Request<'_>) -> Result<String, String> {
     Ok(path.to_string_lossy().into_owned())
 }
 
-/// Rend le contenu d'un fichier du dossier média en binaire brut.
-///
-/// Le protocole `asset` avait été essayé pour éviter toute copie : la balise
-/// vidéo aurait lu le fichier directement depuis le disque. Mesuré le 17/09,
-/// ça ne marche pas sous WebKitGTK — `asset://localhost/...` reste illisible
-/// pour le lecteur, sans la moindre erreur côté Rust (ni refus de portée, ni
-/// fichier introuvable), parce que le média passe par le `webkitwebsrc` de
-/// GStreamer et non par le gestionnaire de schéma de la webview.
-///
-/// On renvoie donc les octets, mais en binaire (`ipc::Response`), pas en
-/// base64 : c'est une copie, contre les trois de l'encodage texte, et c'est
-/// exactement ce que le chemin de lecture normal fait déjà pour toute vidéo.
-///
-/// Le chemin est canonicalisé et doit rester sous `sion_media_dir()` : une
-/// commande qui rend n'importe quel fichier du disque à la webview serait une
-/// primitive de lecture arbitraire.
+/// Read raw bytes only from canonical paths inside sion_media_dir.
+/// WebKitGTK's GStreamer media path cannot consume the asset scheme reliably;
+/// binary ipc::Response avoids base64 copies without permitting arbitrary file reads.
 #[tauri::command]
 fn read_media(path: String) -> Result<tauri::ipc::Response, String> {
     let dir = sion_media_dir()
@@ -1750,16 +1693,14 @@ fn read_media(path: String) -> Result<tauri::ipc::Response, String> {
     Ok(tauri::ipc::Response::new(bytes))
 }
 
-/// Port du serveur média local. `0` = indisponible, l'appelant retombe alors
-/// sur une URL `blob:`.
+/// Return the local media-server port; zero selects the blob URL fallback.
 #[tauri::command]
 fn media_server_port() -> u16 {
     media_server::port()
 }
 
-/// Le fichier produit est-il du Matroska/WebM ? Signature EBML `1A 45 DF A3`,
-/// par opposition au `ftyp` d'un MP4. Le repli VP9 écrit du WebM dans un
-/// fichier nommé `.mp4` : c'est la signature qui fait foi, pas l'extension.
+/// Detect Matroska/WebM through the EBML signature, not the filename extension.
+/// The VP9 fallback can write WebM into a path originally ending in .mp4.
 fn ffmpeg_a_produit_du_webm(path: &std::path::Path) -> bool {
     use std::io::Read;
     let Ok(mut f) = std::fs::File::open(path) else {
@@ -1769,67 +1710,14 @@ fn ffmpeg_a_produit_du_webm(path: &std::path::Path) -> bool {
     f.read_exact(&mut tete).is_ok() && tete == [0x1A, 0x45, 0xDF, 0xA3]
 }
 
-/// L'AV1 est-il lisible nativement par le moteur web ?
-///
-/// WebKitGTK ne décode rien lui-même : il construit sa liste de formats à
-/// partir du registre GStreamer. Pour l'AV1 il lui faut `dav1ddec`, fourni par
-/// `gst-plugin-dav1d` — `av1dec` de libaom, de rang inférieur, ne suffit pas.
-/// Mesuré le 17/09 : sans le greffon, un WebM AV1 comme le même flux remis en
-/// MP4 donnent tous deux `MEDIA_ERR_SRC_NOT_SUPPORTED` et le démultiplexeur
-/// peut même partir en assertion qui tue le processus web. Greffon installé,
-/// les trois variantes se lisent intégralement.
-///
-/// On cherche donc le fichier du greffon plutôt que d'interroger le moteur :
-/// `canPlayType()` répond « oui » dès qu'un décodeur quelconque est enregistré,
-/// y compris quand la lecture cale ensuite — il a menti dans les deux sens au
-/// cours des essais.
-#[cfg(target_os = "linux")]
-fn dav1d_plugin_present() -> bool {
-    let mut dirs: Vec<std::path::PathBuf> = Vec::new();
-    if let Some(paths) = std::env::var_os("GST_PLUGIN_PATH") {
-        dirs.extend(std::env::split_paths(&paths));
-    }
-    if let Some(paths) = std::env::var_os("GST_PLUGIN_SYSTEM_PATH") {
-        dirs.extend(std::env::split_paths(&paths));
-    }
-    for fixe in [
-        "/usr/lib/gstreamer-1.0",
-        "/usr/lib64/gstreamer-1.0",
-        "/usr/lib/x86_64-linux-gnu/gstreamer-1.0",
-        "/usr/local/lib/gstreamer-1.0",
-    ] {
-        dirs.push(std::path::PathBuf::from(fixe));
-    }
-    dirs.iter().any(|dir| dir.join("libgstdav1d.so").exists())
-}
-
-/// Vrai quand la lecture native de l'AV1 est sûre. Faux ailleurs : l'appelant
-/// convertit alors, comme avant.
-#[tauri::command]
-fn av1_playable_natively() -> bool {
-    #[cfg(target_os = "linux")]
-    {
-        let present = dav1d_plugin_present();
-        log::info!(
-            "[Sion][vidéo] AV1 natif : {}",
-            if present { "oui (dav1ddec présent)" } else { "non (gst-plugin-dav1d absent)" }
-        );
-        present
-    }
-    // WebView2 et WKWebView embarquent leur propre décodeur AV1.
-    #[cfg(not(target_os = "linux"))]
-    {
-        true
-    }
-}
-
-/// Dimensions et durée lues dans la sortie de `ffmpeg -i`.
-///
-/// `ffprobe` serait plus propre, mais le téléchargement intégré n'installe que
-/// `ffmpeg` : dépendre de `ffprobe` ferait échouer la préparation exactement
-/// chez les utilisateurs pour qui le bouton d'installation a été écrit.
+/// Read dimensions and duration from ffmpeg -i. The managed download
+/// contains ffmpeg only, so requiring a separate ffprobe would break that setup.
 pub(crate) fn probe_video(ffmpeg_bin: &str, path: &std::path::Path) -> Option<(u32, u32, f64)> {
-    let out = hidden_command(ffmpeg_bin).arg("-i").arg(path).output().ok()?;
+    let out = hidden_command(ffmpeg_bin)
+        .arg("-i")
+        .arg(path)
+        .output()
+        .ok()?;
     let text = String::from_utf8_lossy(&out.stderr);
     let mut dims = None;
     let mut duration = None;
@@ -1839,16 +1727,18 @@ pub(crate) fn probe_video(ffmpeg_bin: &str, path: &std::path::Path) -> Option<(u
                 let stamp = rest.split(',').next().unwrap_or("");
                 let mut parts = stamp.split(':');
                 if let (Some(h), Some(m), Some(sec)) = (parts.next(), parts.next(), parts.next()) {
-                    if let (Ok(h), Ok(m), Ok(sec)) =
-                        (h.trim().parse::<f64>(), m.parse::<f64>(), sec.parse::<f64>())
-                    {
+                    if let (Ok(h), Ok(m), Ok(sec)) = (
+                        h.trim().parse::<f64>(),
+                        m.parse::<f64>(),
+                        sec.parse::<f64>(),
+                    ) {
                         duration = Some(h * 3600.0 + m * 60.0 + sec);
                     }
                 }
             }
         }
         if dims.is_none() && line.contains("Stream #") && line.contains("Video:") {
-            // « …, 1920x1080 [SAR 1:1 DAR 16:9], … » — le premier jeton WxH.
+            // Find the first WxH token, such as 1920x1080 before SAR/DAR metadata.
             for token in line.split(|c: char| c == ' ' || c == ',') {
                 let token = token.trim();
                 let Some((w, h)) = token.split_once('x') else {
@@ -1878,17 +1768,9 @@ struct PreparedVideo {
     transcoded: bool,
 }
 
-/// Normalise une vidéo AVANT téléversement : WebM VP9 + Opus, plus ses
-/// dimensions et sa durée.
-///
-/// Auparavant le fichier partait tel quel et CHAQUE destinataire le convertissait
-/// chez lui — cinq destinataires, cinq encodages `libvpx-vp9` de plusieurs
-/// minutes, et rien du tout pour qui n'avait pas ffmpeg. L'expéditeur paie une
-/// fois ; l'import par URL le faisait déjà (`recodeWebm`), le glisser-déposer
-/// non.
-///
-/// `already_compatible` évite le ré-encodage quand la source est déjà du WebM
-/// VP8/VP9 : l'appelant l'a sondée sans décoder (`detectWebmVideoCodec`).
+/// Prepare upload video dimensions and duration, preserving input already
+/// accepted by the caller. Choose the output container and MIME type from
+/// the encoder that actually succeeds.
 #[tauri::command]
 async fn prepare_video_for_send(
     app: tauri::AppHandle<TauriRuntime>,
@@ -1932,49 +1814,108 @@ async fn prepare_video_for_send(
     let _output_reader = media_cache::retain_path(&output);
     let input_arg = input.to_string_lossy().into_owned();
     let output_arg = output.to_string_lossy().into_owned();
-    // AV1, CRF 32, preset 6. Mesuré le 17/09 sur une vidéo de 23,5 s en
-    // 1080x1920 : 12 s d'encodage pour 71 % du poids du même contenu en H.264.
-    // Le preset 8 encode deux fois plus vite mais rend un fichier plus gros, le
-    // preset 4 est deux fois plus lent ET plus gros ici — 6 est le point
-    // d'équilibre. Conteneur MP4 et audio AAC : la combinaison la plus
-    // largement lisible, de Chromium à WebKit en passant par les mobiles.
-    //
-    // `libsvtav1` d'abord, `libaom-av1` ensuite (beaucoup plus lent mais
-    // toujours présent), puis VP9 en dernier recours si aucun encodeur AV1
-    // n'est compilé dans le ffmpeg de la machine.
-    // `-progress pipe:1` : `run_ffmpeg_encode` lit la progression sur stdout et
-    // l'émet en `video-import-progress`, comme l'import par URL.
+    // Prefer libsvtav1 at CRF 32/preset 6, then libaom-av1, then VP9 if no AV1
+    // encoder is available. AV1 uses MP4/AAC for broad playback support.
+    // run_ffmpeg_encode reads stdout progress and emits video-import-progress.
     let candidats: [Vec<&str>; 3] = [
         vec![
-            "-y", "-i", &input_arg, "-c:v", "libsvtav1", "-crf", "32",
-            "-preset", "6", "-g", "240", "-pix_fmt", "yuv420p",
-            "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart",
-            "-progress", "pipe:1", &output_arg,
+            "-y",
+            "-i",
+            &input_arg,
+            "-c:v",
+            "libsvtav1",
+            "-crf",
+            "32",
+            "-preset",
+            "6",
+            "-g",
+            "240",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "128k",
+            "-movflags",
+            "+faststart",
+            "-progress",
+            "pipe:1",
+            &output_arg,
         ],
         vec![
-            "-y", "-i", &input_arg, "-c:v", "libaom-av1", "-crf", "32",
-            "-b:v", "0", "-cpu-used", "6", "-row-mt", "1", "-pix_fmt", "yuv420p",
-            "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart",
-            "-progress", "pipe:1", &output_arg,
+            "-y",
+            "-i",
+            &input_arg,
+            "-c:v",
+            "libaom-av1",
+            "-crf",
+            "32",
+            "-b:v",
+            "0",
+            "-cpu-used",
+            "6",
+            "-row-mt",
+            "1",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "128k",
+            "-movflags",
+            "+faststart",
+            "-progress",
+            "pipe:1",
+            &output_arg,
         ],
         vec![
-            "-y", "-i", &input_arg, "-c:v", "libvpx-vp9", "-crf", "33",
-            "-b:v", "0", "-deadline", "good", "-cpu-used", "4", "-row-mt", "1",
-            "-c:a", "libopus", "-b:a", "128k", "-f", "webm",
-            "-progress", "pipe:1", &output_arg,
+            "-y",
+            "-i",
+            &input_arg,
+            "-c:v",
+            "libvpx-vp9",
+            "-crf",
+            "33",
+            "-b:v",
+            "0",
+            "-deadline",
+            "good",
+            "-cpu-used",
+            "4",
+            "-row-mt",
+            "1",
+            "-c:a",
+            "libopus",
+            "-b:a",
+            "128k",
+            "-f",
+            "webm",
+            "-progress",
+            "pipe:1",
+            &output_arg,
         ],
     ];
     let mut derniere = String::new();
     let mut encode = false;
-    // La carte graphique d'abord, à un débit selon la résolution : sous
-    // Linux, le ffmpeg livré n'a pas SVT-AV1, et libaom prenait des minutes
-    // (voir `encodage_av1`).
-    let petit_cote = probe_video(&ffmpeg_bin, &input).map(|(l, h, _)| l.min(h)).unwrap_or(1080);
-    let fin_materiel: Vec<String> = ["-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", "-progress", "pipe:1"]
-        .iter()
-        .map(|s| s.to_string())
-        .chain(std::iter::once(output_arg.clone()))
-        .collect();
+    // Prefer hardware encoding with a resolution-based bitrate; the bundled
+    // Linux ffmpeg may lack SVT-AV1, making software libaom much slower.
+    let petit_cote = probe_video(&ffmpeg_bin, &input)
+        .map(|(l, h, _)| l.min(h))
+        .unwrap_or(1080);
+    let fin_materiel: Vec<String> = [
+        "-c:a",
+        "aac",
+        "-b:a",
+        "128k",
+        "-movflags",
+        "+faststart",
+        "-progress",
+        "pipe:1",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .chain(std::iter::once(output_arg.clone()))
+    .collect();
     for t in encodage_av1::tentatives_materielles(
         &ffmpeg_bin,
         &input_arg,
@@ -2017,8 +1958,7 @@ async fn prepare_video_for_send(
     }
     let _ = std::fs::remove_file(&input);
     let (width, height, secs) = probe_video(&ffmpeg_bin, &output).unwrap_or((0, 0, duration_secs));
-    // Le dernier candidat de la liste produit du WebM : le type déclaré suit
-    // ce que ffmpeg a réellement écrit, pas ce qu'on espérait.
+    // The last encoder produces WebM; declare the actual output type.
     let mimetype = if ffmpeg_a_produit_du_webm(&output) {
         "video/webm"
     } else {
@@ -2034,18 +1974,9 @@ async fn prepare_video_for_send(
     })
 }
 
-/// Prépare une vidéo pour servir de FOND de panneau.
-///
-/// Un fond tourne en continu derrière l'interface : le fichier d'origine ne
-/// convient jamais. Les exemples fournis le montrent — 3840x2160 à 77 Mb/s pour
-/// vingt secondes, soit 192 Mo (18/09). Décoder cela en permanence, pendant un
-/// partage d'écran qui encode et décode déjà, annulerait le gain de performance
-/// visé par la 2.0.
-///
-/// On produit donc une boucle sobre : 1280x720 au plus, 24 images par seconde,
-/// **sans piste audio** (un fond ne sonne pas), en H.264 — décodé en matériel
-/// par les deux webviews. `-movflags +faststart` place l'index en tête pour que
-/// la lecture démarre sans lire tout le fichier.
+/// Prepare an inexpensive silent background loop instead of repeatedly
+/// decoding an unrestricted source behind the UI. The output profile below
+/// bounds resolution, duration and frame rate and avoids an audio track.
 #[tauri::command]
 async fn prepare_background_video(
     app: tauri::AppHandle<TauriRuntime>,
@@ -2063,11 +1994,8 @@ async fn prepare_background_video(
     if !entree.exists() {
         return Err(format!("fichier introuvable: {path}"));
     }
-    // Version du PROFIL dans la clé de cache.
-    //
-    // Elle était absente : re-choisir le même fichier après avoir corrigé le
-    // profil rendait l'ancien résultat, et la correction paraissait sans effet
-    // (18/09). À incrémenter à chaque changement des réglages ci-dessous.
+    // Version the processing profile in the cache key; increment it whenever
+    // the settings change to prevent stale output from masking the update.
     const PROFIL: u32 = 7;
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     PROFIL.hash(&mut hasher);
@@ -2080,27 +2008,17 @@ async fn prepare_background_video(
         .map(|d| d.as_secs())
         .unwrap_or(0)
         .hash(&mut hasher);
-    // Dossier DURABLE, et non le répertoire temporaire des médias.
-    //
-    // La sortie atterrissait dans `sion_media_dir()`, c'est-à-dire sous `/tmp`
-    // sur Linux : au premier redémarrage, le fichier disparaissait et le fond
-    // configuré ne s'affichait plus, sans le moindre message (18/09). Un fond
-    // est une préférence qui doit survivre à la machine, pas un intermédiaire
-    // de conversion.
+    // Store backgrounds durably outside the temporary media directory, so
+    // a selected background survives reboots and media-cache cleanup.
     let dossier = app
         .path()
         .app_data_dir()
         .map_err(|e| format!("dossier de données inaccessible: {e}"))?
         .join("fonds");
-    std::fs::create_dir_all(&dossier)
-        .map_err(|e| format!("création du dossier des fonds: {e}"))?;
+    std::fs::create_dir_all(&dossier).map_err(|e| format!("création du dossier des fonds: {e}"))?;
     let sortie = dossier.join(format!("sion_fond_{:x}.webp", hasher.finish()));
-    // Cache : on ne fait confiance qu'à un fichier NON VIDE.
-    //
-    // Un transcodage interrompu — l'application tuée en cours de préparation —
-    // laisse un fichier de zéro octet portant un nom parfaitement valide. Il
-    // serait alors pris pour un cache légitime, et le fond resterait vide sans
-    // la moindre explication (constaté le 18/09 dans le dossier des fonds).
+    // Reuse only nonempty cache entries; interrupted encoding can leave a
+    // validly named zero-byte file.
     if sortie.metadata().map(|m| m.len() > 0).unwrap_or(false) {
         return Ok(sortie.to_string_lossy().into_owned());
     }
@@ -2111,49 +2029,17 @@ async fn prepare_background_video(
         .arg(&entree)
         .args([
             "-an",
-            // Durée bornée : une boucle, pas le film.
-            //
-            // Un fond n'est pas une vidéo qu'on regarde, c'est une texture qui
-            // tourne derrière du texte. La durée de la source y passait telle
-            // quelle : un extrait de 52 s a donné 1 549 images. Le moteur de
-            // rendu met en cache les images DÉCODÉES d'une animation — deux
-            // mégaoctets pièce en 960×540 — et le processus de rendu tenait
-            // 881 Mo après 34 h (20/09). Douze secondes suffisent à ce qu'une
-            // boucle ne se remarque pas, et divisent le cache par quatre.
+            // Cap background duration at twelve seconds. Animated-image renderers
+            // cache decoded frames, so long loops multiply memory consumption.
             "-t",
             "12",
-            // 960 de large, 30 images par seconde.
-            //
-            // Les deux axes sont découplés, contrairement à l'intuition. La
-            // LARGEUR décide de la netteté : des traits fins réduits de 1920 à
-            // 512 sont perdus définitivement, aucune cadence ne les rattrape.
-            // La CADENCE décide de la fluidité : à vingt images, un défilement
-            // vertical rapide saccade encore.
-            //
-            // Or ajouter des images ne coûte presque rien ici — mesuré sur une
-            // pluie de caractères, 960 à 20 i/s pèse 15 Mo et à 30 i/s 16 Mo
-            // (18/09). Le WebP encode les différences, et des images plus
-            // rapprochées se ressemblent davantage. Il n'y avait donc pas
-            // d'arbitrage à faire entre netteté et fluidité : on prend les deux.
-            // 720 de large, et non 960.
-            //
-            // La mémoire d'une image décodée croît avec la SURFACE : 960×540
-            // coûte 2,0 Mo, 720×405 en coûte 1,1 — presque moitié moins pour
-            // un quart de largeur en moins. Un fond vit derrière un voile de
-            // la couleur du thème, souvent dans un panneau étroit : la finesse
-            // qu'on y perd ne se voit pas, la mémoire qu'on y gagne se mesure.
+            // Use 720-pixel width to reduce decoded-frame area and memory. Frame rate
+            // controls motion independently of width, so retain smooth animation without
+            // the larger 960x540 per-frame footprint.
             "-vf",
             "scale='min(720,iw)':-2:flags=lanczos,fps=30",
-            // WebP ANIMÉ, et non un conteneur vidéo.
-            //
-            // Un `<video>` s'est révélé inexploitable pour un fond dans cette
-            // version de WebKit : refusé en HTTP local (`code=4`), artefacts
-            // sans images-clés rapprochées, puis décrochage silencieux du
-            // décodeur en pleine lecture — trois échecs différents en trois
-            // tentatives (18/09). Une image animée emprunte le chemin CSS déjà
-            // éprouvé des fonds statiques : ni élément vidéo, ni décodeur média,
-            // ni couche d'empilement dédiée. Elle compresse moins bien, mais
-            // elle s'affiche.
+            // Use animated WebP through the existing image/CSS path. WebKit video
+            // backgrounds showed transport failures, artifacts and decoder stalls.
             "-c:v",
             "libwebp_anim",
             "-lossless",
@@ -2187,15 +2073,8 @@ async fn prepare_background_video(
     Ok(sortie.to_string_lossy().into_owned())
 }
 
-/// Supprime les fonds transcodés qui ne servent plus.
-///
-/// Chaque essai de fond — un autre fichier, ou le même après un changement de
-/// profil — laisse une sortie derrière lui. Le dossier atteignait 39 Mo pour
-/// quatre fichiers dont un seul servait (18/09). L'appelant fournit les
-/// chemins encore référencés par la configuration ; tout le reste est effacé.
-///
-/// Les fichiers vides sont emportés dans la foulée : ce sont des transcodages
-/// interrompus, jamais des fonds valides.
+/// Delete unreferenced transcoded backgrounds and empty interrupted outputs.
+/// The caller supplies every path still used by settings.
 #[tauri::command]
 fn purge_background_files(
     app: tauri::AppHandle<TauriRuntime>,
@@ -2226,12 +2105,12 @@ fn purge_background_files(
     Ok(effaces)
 }
 
-/// Path where the in-app "Installer ffmpeg" button stores the downloaded
-/// binary: `<app-data>/bin/ffmpeg[.exe]`. Survit aux mises à jour de
-/// l'application (app-data est hors du profil webview). None if the app-data
-/// dir can't be resolved.
+/// Managed ffmpeg download path: <app-data>/bin/ffmpeg[.exe]. It survives
+/// application updates and webview-profile purges; None if app-data is unavailable.
 #[cfg(not(target_os = "android"))]
-pub(crate) fn managed_ffmpeg_path(app: &tauri::AppHandle<TauriRuntime>) -> Option<std::path::PathBuf> {
+pub(crate) fn managed_ffmpeg_path(
+    app: &tauri::AppHandle<TauriRuntime>,
+) -> Option<std::path::PathBuf> {
     let dir = app.path().app_data_dir().ok()?;
     let name = if cfg!(target_os = "windows") {
         "ffmpeg.exe"
@@ -2241,13 +2120,8 @@ pub(crate) fn managed_ffmpeg_path(app: &tauri::AppHandle<TauriRuntime>) -> Optio
     Some(dir.join("bin").join(name))
 }
 
-/// Resolve which ffmpeg binary to invoke: a user-configured path wins; then the
-/// app-managed download (`<app-data>/bin/ffmpeg`); otherwise probe common
-/// install locations (so it works without PATH, the usual Windows case);
-/// finally fall back to bare `ffmpeg` (PATH lookup).
-///
-/// Ordre : chemin choisi par l'utilisateur, binaire LIVRÉ avec l'application,
-/// téléchargement géré, voisin de l'exécutable, emplacements usuels, PATH.
+/// Resolve ffmpeg in this order: configured path, bundled binary, managed
+/// download, executable neighbor, common install locations, then PATH lookup.
 pub(crate) fn resolve_ffmpeg(configured: Option<&str>, managed: Option<&str>) -> String {
     if let Some(p) = configured {
         let p = p.trim();
@@ -2255,12 +2129,8 @@ pub(crate) fn resolve_ffmpeg(configured: Option<&str>, managed: Option<&str>) ->
             return p.to_string();
         }
     }
-    // Celui qu'on LIVRE, juste après le choix explicite de l'utilisateur.
-    //
-    // Sion ne peut ni lire une vidéo, ni en extraire l'affiche, ni convertir
-    // un envoi trop lourd sans ffmpeg. Compter sur celui du système laissait
-    // ces fonctions muettes chez qui ne l'a pas, et le téléchargement au
-    // premier usage ne sert à rien hors ligne. Il est donc dans le paquet.
+    // Prefer the bundled ffmpeg after an explicit user override so playback,
+    // posters and compression also work offline without a system installation.
     if let Some(p) = ffmpeg_livre() {
         return p;
     }
@@ -2317,9 +2187,8 @@ pub(crate) fn resolve_ffmpeg(configured: Option<&str>, managed: Option<&str>) ->
 /// runs (`-version`). Returns None if ffmpeg can't be found/run. Used by
 /// Settings → Advanced to show whether the transcode fallback is available.
 #[cfg(not(target_os = "android"))]
-/// Détection ffmpeg. `async` : `bin_runs` lance un sous-processus — en
-/// synchrone la commande s'exécute sur le fil principal et gèle l'UI au
-/// moment précis où le panneau Réglages s'ouvre.
+/// Detect ffmpeg asynchronously; bin_runs spawns a process that would
+/// otherwise block the UI while opening settings.
 #[tauri::command]
 async fn detect_ffmpeg(app: tauri::AppHandle<TauriRuntime>) -> Result<Option<String>, String> {
     let managed = managed_ffmpeg_path(&app).map(|p| p.to_string_lossy().into_owned());
@@ -2353,7 +2222,7 @@ fn asr_model_source(model: &str) -> Option<(&'static str, &'static str)> {
         "parakeet-v3" => Some((
             "parakeet-tdt-0.6b-v3-gguf",
             "parakeet-tdt-0.6b-v3-Q5_K_M.gguf",
-        )), // ~549 MB, 25 langues, très rapide CPU
+        )), // About 549 MB; supports 25 languages and fast CPU inference.
         _ => None,
     }
 }
@@ -2376,8 +2245,8 @@ fn delete_asr_model(app: tauri::AppHandle<TauriRuntime>, model: String) -> Resul
     Ok(())
 }
 
-/// Path of an ASR model under `<app-data>/models/`, if downloaded.
-/// Same convention as the managed ffmpeg: survit aux purges du profil webview.
+/// Return a downloaded ASR model under <app-data>/models, outside the
+/// webview profile and its cache purges.
 #[cfg(not(target_os = "android"))]
 #[tauri::command]
 fn detect_asr_model(app: tauri::AppHandle<TauriRuntime>, model: String) -> Option<String> {
@@ -2510,8 +2379,7 @@ fn resolve_ytdlp(configured: Option<&str>, managed: Option<&str>) -> String {
 /// Report the yt-dlp the app would use (verifying it runs `--version`). None if
 /// not found. Used by Settings → Advanced to show availability.
 #[cfg(not(target_os = "android"))]
-/// Détection yt-dlp — `async` pour la même raison que `detect_ffmpeg`
-/// (sous-processus lancé par `bin_runs`).
+/// Detect yt-dlp asynchronously, like detect_ffmpeg, because bin_runs spawns a process.
 #[tauri::command]
 async fn detect_ytdlp(app: tauri::AppHandle<TauriRuntime>) -> Result<Option<String>, String> {
     let managed = managed_ytdlp_path(&app).map(|p| p.to_string_lossy().into_owned());
@@ -2785,32 +2653,6 @@ async fn import_url_audio(
     Ok(serde_json::json!({ "ext": ext, "data": b64 }).to_string())
 }
 
-/// Normalize a yt-dlp vcodec string to a short label.
-#[cfg(not(target_os = "android"))]
-fn vcodec_label(v: &str) -> &'static str {
-    if v.starts_with("vp9") || v.starts_with("vp09") {
-        "VP9"
-    } else if v.starts_with("avc") || v.starts_with("h264") {
-        "H.264"
-    } else if v.starts_with("av01") || v.starts_with("av1") {
-        "AV1"
-    } else {
-        "?"
-    }
-}
-
-/// Codec preference for native webview playback: VP9 (webm, plays natively) >
-/// H.264 (mp4, needs transcode) > AV1 (uncertain). Lower = preferred.
-#[cfg(not(target_os = "android"))]
-fn vcodec_rank(label: &str) -> u8 {
-    match label {
-        "VP9" => 0,
-        "H.264" => 1,
-        "AV1" => 2,
-        _ => 3,
-    }
-}
-
 /// Parse a yt-dlp `--newline` download line ("[download]  45.2% of ...") → percent.
 #[cfg(not(target_os = "android"))]
 fn parse_download_pct(line: &str) -> Option<f64> {
@@ -2882,7 +2724,7 @@ fn run_ffmpeg_encode(
         }
     }
     let Some(mut child) = child.or_else(reprendre_de_l_annulation) else {
-        // Tué par « Annuler ».
+        // The Cancel action terminated the process.
         let _ = errh.join();
         return Err(IMPORT_ANNULE_MESSAGE.into());
     };
@@ -2894,10 +2736,8 @@ fn run_ffmpeg_encode(
     Ok(())
 }
 
-/// Processus de l'import par lien en cours — yt-dlp, puis chaque ffmpeg :
-/// « Annuler » l'arrête. Fermer la fenêtre ne faisait rien côté Rust : la
-/// conversion continuait des minutes, puis enchaînait sur l'encodeur
-/// suivant (02/10).
+/// Track the active yt-dlp or ffmpeg import process so Cancel stops native
+/// work and prevents subsequent encoding attempts.
 static IMPORT_EN_COURS: std::sync::Mutex<Option<std::process::Child>> = std::sync::Mutex::new(None);
 static IMPORT_ANNULE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 const IMPORT_ANNULE_MESSAGE: &str = "Import annulé";
@@ -2906,13 +2746,15 @@ fn confier_a_l_annulation(enfant: Option<std::process::Child>) {
     *IMPORT_EN_COURS.lock().unwrap_or_else(|e| e.into_inner()) = enfant;
 }
 
-/// Reprend le processus confié ; `None` s'il a été tué par « Annuler ».
+/// Take the tracked process; None if Cancel already terminated it.
 fn reprendre_de_l_annulation() -> Option<std::process::Child> {
-    IMPORT_EN_COURS.lock().unwrap_or_else(|e| e.into_inner()).take()
+    IMPORT_EN_COURS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .take()
 }
 
-/// « Annuler » de la fenêtre d'import : arrête le téléchargement ou la
-/// conversion en cours, et aucune autre tentative ne démarre.
+/// Cancel the active import download or conversion and prevent further attempts.
 #[cfg(not(target_os = "android"))]
 #[tauri::command]
 fn import_url_video_annuler() {
@@ -2920,7 +2762,10 @@ fn import_url_video_annuler() {
     if let Some(mut enfant) = reprendre_de_l_annulation() {
         let _ = enfant.kill();
         let _ = enfant.wait();
-        log::info!("[Sion][vidéo] import annulé : processus {} arrêté", enfant.id());
+        log::info!(
+            "[Sion][vidéo] import annulé : processus {} arrêté",
+            enfant.id()
+        );
     }
 }
 
@@ -2948,6 +2793,7 @@ async fn probe_url_formats(
             "1",
             "--no-warnings",
         ])
+        .args(["-S", video_import_formats::TRI_FORMATS])
         .arg(&url)
         .output()
         .map_err(|e| format!("yt-dlp introuvable: {}", e))?;
@@ -2963,129 +2809,11 @@ async fn probe_url_formats(
     let json: serde_json::Value =
         serde_json::from_str(first_line).map_err(|e| format!("JSON yt-dlp: {}", e))?;
 
-    let duration = json.get("duration").and_then(|v| v.as_f64()).unwrap_or(0.0) as u64;
-    let title = json
-        .get("title")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-    let empty = vec![];
-    let formats = json
-        .get("formats")
-        .and_then(|v| v.as_array())
-        .unwrap_or(&empty);
-
-    // Estimate a format's byte size: prefer reported filesize, else derive it
-    // from the bitrate × duration (many sources — X/Twitter, HLS — omit
-    // filesize). `rate_keys` are the kbps fields to try (tbr/vbr for video,
-    // abr/tbr for audio).
-    let est = |f: &serde_json::Value, rate_keys: &[&str]| -> u64 {
-        if let Some(s) = f.get("filesize").and_then(|v| v.as_u64()) {
-            if s > 0 {
-                return s;
-            }
-        }
-        if let Some(s) = f.get("filesize_approx").and_then(|v| v.as_u64()) {
-            if s > 0 {
-                return s;
-            }
-        }
-        if duration > 0 {
-            for k in rate_keys {
-                if let Some(r) = f.get(*k).and_then(|v| v.as_f64()) {
-                    if r > 0.0 {
-                        return (r * 1000.0 / 8.0 * duration as f64) as u64;
-                    }
-                }
-            }
-        }
-        0
-    };
-
-    // Representative audio size (prefer an opus track, else any audio-only).
-    let mut audio_size = 0u64;
-    for f in formats {
-        let v = f.get("vcodec").and_then(|x| x.as_str()).unwrap_or("none");
-        let a = f.get("acodec").and_then(|x| x.as_str()).unwrap_or("none");
-        if v == "none" && a != "none" {
-            let s = est(f, &["abr", "tbr"]);
-            if (a.starts_with("opus") && s > 0) || audio_size == 0 {
-                audio_size = s;
-            }
-        }
-    }
-
-    // Best video-only format per height, preferring VP9 then H.264.
-    use std::collections::HashMap;
-    let mut best: HashMap<u64, (u8, u64, String)> = HashMap::new(); // height -> (rank, size, ext)
-    for f in formats {
-        let v = f.get("vcodec").and_then(|x| x.as_str()).unwrap_or("none");
-        if v == "none" {
-            continue;
-        }
-        let Some(h) = f.get("height").and_then(|x| x.as_u64()) else {
-            continue;
-        };
-        if h == 0 {
-            continue;
-        }
-        let label = vcodec_label(v);
-        let rank = vcodec_rank(label);
-        let ext = f
-            .get("ext")
-            .and_then(|x| x.as_str())
-            .unwrap_or("mp4")
-            .to_string();
-        // A combined (progressive) format already includes audio in its tbr;
-        // only add the separate audio track for video-only formats.
-        let a = f.get("acodec").and_then(|x| x.as_str()).unwrap_or("none");
-        let mut size = est(f, &["tbr", "vbr"]);
-        if a == "none" {
-            size += audio_size;
-        }
-        match best.get(&h) {
-            Some((r, _, _)) if *r <= rank => {}
-            _ => {
-                best.insert(h, (rank, size, ext));
-            }
-        }
-    }
-
-    let mut options: Vec<serde_json::Value> = best
-        .into_iter()
-        .map(|(h, (rank, vsize, ext))| {
-            let codec = match rank {
-                0 => "VP9",
-                1 => "H.264",
-                2 => "AV1",
-                _ => "?",
-            };
-            serde_json::json!({ "height": h, "codec": codec, "ext": ext, "size": vsize })
-        })
-        .collect();
-    options.sort_by_key(|o| o.get("height").and_then(|v| v.as_u64()).unwrap_or(0));
-
-    // Some sources expose a single format with no height/vcodec metadata at all
-    // (e.g. X/Twitter animated GIFs served as tweet_video mp4). Offer it as an
-    // "original quality" option (height 0) instead of returning nothing.
-    if options.is_empty() {
-        if let Some(f) = formats
-            .iter()
-            .rev()
-            .find(|f| f.get("url").and_then(|v| v.as_str()).is_some())
-        {
-            let ext = f.get("ext").and_then(|x| x.as_str()).unwrap_or("mp4");
-            let size = est(f, &["tbr", "vbr"]);
-            options
-                .push(serde_json::json!({ "height": 0, "codec": "?", "ext": ext, "size": size }));
-        }
-    }
-
-    Ok(serde_json::json!({ "duration": duration, "title": title, "options": options }).to_string())
+    Ok(video_import_formats::resume(&json).to_string())
 }
 
-/// Download a video at a chosen max height (codec auto, preferring VP9 → native
-/// webview playback), optionally a [start,end] section. Returns `{ext, data(b64)}`.
+/// Download a video at a chosen max height (AV1 preferred when available),
+/// optionally a [start,end] section. Returns `{ext, data(b64)}`.
 /// Errors if the result exceeds `max_bytes` (server upload limit).
 #[cfg(not(target_os = "android"))]
 #[tauri::command]
@@ -3145,7 +2873,7 @@ async fn import_url_video(
                 format!("bv*[height<={h}]+ba/b[height<={h}]")
             },
         ])
-        .args(["-S", "vcodec:vp9,res,ext"])
+        .args(["-S", video_import_formats::TRI_FORMATS])
         .arg("-o")
         .arg(&out_tmpl)
         .args(["--ffmpeg-location", &ffmpeg_bin])
@@ -3203,17 +2931,9 @@ async fn import_url_video(
         return Err("yt-dlp n'a produit aucun fichier vidéo".into());
     };
 
-    // ── Phase 2 : réencodage, SEULEMENT si le fichier ne passe pas ──
-    //
-    // Le critère était le codec de la source : on réencodait tout ce qui
-    // n'était pas déjà de l'AV1. Une vidéo de cinq mégaoctets en H.264, qui
-    // tient largement dans la limite du serveur, y perdait de la qualité et
-    // faisait attendre pour rien. Le lecteur décode tous les formats, donc
-    // seule la taille compte désormais — comme à l'envoi d'un fichier local.
-    //
-    // La décision se prend sur le fichier RÉEL, pas sur l'estimation affichée
-    // avant téléchargement : yt-dlp rend souvent autre chose que la taille
-    // annoncée. `recode_webm` ne sert plus qu'à forcer la conversion.
+    // Phase 2: compress only when the actual downloaded file exceeds the
+    // size limit, or conversion was explicitly requested. Native playback handles
+    // the original codecs; yt-dlp's advertised size is only an estimate.
     let taille_reelle = std::fs::metadata(&src).map(|m| m.len()).unwrap_or(0);
     let limite_envoi = max_bytes.unwrap_or(0);
     let trop_gros = limite_envoi > 0 && taille_reelle > limite_envoi;
@@ -3221,7 +2941,11 @@ async fn import_url_video(
         "[Sion][vidéo] import : {} Mo téléchargés, limite {} Mo — réencodage {}",
         taille_reelle / 1_048_576,
         limite_envoi / 1_048_576,
-        if trop_gros || recode_webm == Some(true) { "nécessaire" } else { "inutile" }
+        if trop_gros || recode_webm == Some(true) {
+            "nécessaire"
+        } else {
+            "inutile"
+        }
     );
 
     let (final_path, final_ext) = if trop_gros || recode_webm == Some(true) {
@@ -3229,10 +2953,8 @@ async fn import_url_video(
             "video-import-progress",
             serde_json::json!({ "phase": "convert", "pct": 0.0 }),
         );
-        // Durée et taille réelles du fichier téléchargé : certains sites ne
-        // donnent pas la durée (Instagram, 02/10). Sans elle, le pourcentage
-        // restait à 0 tout le long — Sion semblait planté — et le débit visé
-        // retombait sur le plafond de la résolution, trop haut pour tenir.
+        // Probe actual duration and file size when the source omits duration.
+        // This keeps progress meaningful and derives a bitrate that fits the limit.
         let sonde = probe_video(&ffmpeg_bin, &src);
         let eff = match (start_sec, end_sec) {
             (Some(s), Some(e)) if e > s => e - s,
@@ -3241,8 +2963,7 @@ async fn import_url_video(
                 .or(sonde.map(|(_, _, d)| d).filter(|d| *d > 0.0))
                 .unwrap_or(0.0),
         };
-        // Classe de résolution : le petit côté (un reel en 1080x1920 est du
-        // « 1080p », pas du « 1920p »).
+        // Classify resolution by the shorter side: a 1080x1920 reel is 1080p.
         let h = sonde
             .map(|(l, ht, _)| l.min(ht))
             .filter(|c| *c > 0)
@@ -3292,25 +3013,9 @@ async fn import_url_video(
                 .collect()
         };
 
-        // AV1, dans un conteneur MP4.
-        //
-        // L'AV1 avait déjà été préféré ici, puis retiré : ces fichiers
-        // faisaient partir le démultiplexeur Matroska de WebKitGTK en assertion
-        // avant que l'élément média ne signale quoi que ce soit. La cause a été
-        // trouvée le 17/09 et ce n'était pas l'AV1 : il manquait
-        // `gst-plugin-dav1d`. Sans lui, le moteur déclare l'AV1 non supporté et
-        // sonde quand même le fichier, ce qui déclenche l'assertion. Avec lui,
-        // les mêmes fichiers se lisent intégralement, en WebM comme en MP4.
-        //
-        // Le conteneur passe donc en MP4 avec audio AAC — la combinaison la
-        // plus largement lisible — et le repli final est du H.264 plutôt que du
-        // VP9 : si aucun encodeur AV1 n'est compilé dans le ffmpeg de la
-        // machine, autant produire le format que tout lit.
-        // Une limite à tenir (le cas de l'import, qui ne réencode que les
-        // fichiers trop lourds) : chaque tentative vise directement le débit
-        // qui tient, la carte graphique d'abord. Viser une QUALITÉ faisait
-        // jeter l'encodage entier dès qu'il dépassait, pour en relancer un
-        // autre.
+        // Encode AV1 into MP4/AAC, with H.264 as the final compatibility fallback.
+        // When a size cap applies, target a fitting bitrate immediately, preferring
+        // hardware, instead of discarding repeated quality-based encodes that are too large.
         let fin: Vec<String> = tail
             .iter()
             .map(|s| s.to_string())
@@ -3321,37 +3026,69 @@ async fn import_url_video(
 
         let mut candidates: Vec<Vec<String>> = Vec::new();
         candidates.push(mk(&[
-            // `crf 42` et non 32. Mesuré sur une source H.264 de 20 Mo
-            // (18/09) : à 32, l'AV1 rendait 25 Mo — PLUS GROS que l'original,
-            // donc rejeté par la limite de taille, et l'échelle retombait
-            // silencieusement sur H.264. Réencoder un fichier déjà compressé
-            // demande un réglage plus serré. À 42 : 15 Mo, un quart de moins
-            // que la source, pour le même temps d'encodage.
-            "-y", "-i", src_s.as_str(), "-c:v", "libsvtav1", "-crf", "42",
-            "-preset", "6", "-g", "240", "-pix_fmt", "yuv420p",
+            // CRF 42 reduces already compressed sources more reliably than CRF 32;
+            // the latter can produce AV1 larger than the input and trigger a fallback.
+            "-y",
+            "-i",
+            src_s.as_str(),
+            "-c:v",
+            "libsvtav1",
+            "-crf",
+            "42",
+            "-preset",
+            "6",
+            "-g",
+            "240",
+            "-pix_fmt",
+            "yuv420p",
         ]));
         candidates.push(mk(&[
-            "-y", "-i", src_s.as_str(), "-c:v", "libaom-av1", "-crf", "42",
-            "-b:v", "0", "-cpu-used", "6", "-row-mt", "1", "-pix_fmt", "yuv420p",
+            "-y",
+            "-i",
+            src_s.as_str(),
+            "-c:v",
+            "libaom-av1",
+            "-crf",
+            "42",
+            "-b:v",
+            "0",
+            "-cpu-used",
+            "6",
+            "-row-mt",
+            "1",
+            "-pix_fmt",
+            "yuv420p",
         ]));
         candidates.push(mk(&[
-            "-y", "-i", src_s.as_str(), "-c:v", "libx264", "-crf", "23",
-            "-preset", "veryfast", "-pix_fmt", "yuv420p",
+            "-y",
+            "-i",
+            src_s.as_str(),
+            "-c:v",
+            "libx264",
+            "-crf",
+            "23",
+            "-preset",
+            "veryfast",
+            "-pix_fmt",
+            "yuv420p",
         ]));
-        // Dernier recours quand une limite de taille serveur doit être tenue :
-        // même H.264 mais à débit contraint.
+        // Last size-constrained fallback: H.264 with an explicit bitrate target.
         candidates.push(mk(&[
-            "-y", "-i", src_s.as_str(), "-c:v", "libx264", "-preset", "veryfast",
-            "-b:v", fit.as_str(), "-pix_fmt", "yuv420p",
+            "-y",
+            "-i",
+            src_s.as_str(),
+            "-c:v",
+            "libx264",
+            "-preset",
+            "veryfast",
+            "-b:v",
+            fit.as_str(),
+            "-pix_fmt",
+            "yuv420p",
         ]));
 
         let mut encoded = false;
-        // Encodeur RÉELLEMENT retenu, pour le journal.
-        //
-        // L'échelle tente l'AV1 puis retombe sur H.264, et cette retombée était
-        // muette : l'utilisateur, à qui l'on promet de l'AV1, obtenait du H.264
-        // sans explication, et son fichier repartait pour une seconde
-        // conversion à l'envoi (18/09).
+        // Log the encoder that actually succeeded, including any AV1-to-H.264 fallback.
         let mut encodeur_retenu = "aucun".to_string();
         let tentatives: Vec<encodage_av1::Tentative> = au_debit.unwrap_or_else(|| {
             candidates
@@ -3363,7 +3100,11 @@ async fn import_url_video(
                         .and_then(|i| arguments.get(i + 1))
                         .cloned()
                         .unwrap_or_else(|| "?".to_string());
-                    encodage_av1::Tentative { ffmpeg: ffmpeg_bin.clone(), nom, arguments }
+                    encodage_av1::Tentative {
+                        ffmpeg: ffmpeg_bin.clone(),
+                        nom,
+                        arguments,
+                    }
                 })
                 .collect()
         });
@@ -3379,7 +3120,8 @@ async fn import_url_video(
                     let sz = std::fs::metadata(&out).map(|m| m.len()).unwrap_or(u64::MAX);
                     if limit == 0 || sz <= limit {
                         encoded = true;
-                        encodeur_retenu = format!("{} en {:.0} s", t.nom, debut.elapsed().as_secs_f64());
+                        encodeur_retenu =
+                            format!("{} en {:.0} s", t.nom, debut.elapsed().as_secs_f64());
                         break;
                     }
                     log::warn!(
@@ -3410,10 +3152,8 @@ async fn import_url_video(
             "[Sion][vidéo] import réencodé par {encodeur_retenu} → {} Mo",
             std::fs::metadata(&out).map(|m| m.len()).unwrap_or(0) / 1_048_576
         );
-        // Extension RÉELLE. Elle était fixée à « webm » alors que la sortie est
-        // un `out.mp4` : le fichier arrivait étiqueté `video/webm` sans en être
-        // un, le détecteur de codec Matroska n'y trouvait évidemment rien, et
-        // l'envoi le réencodait une seconde fois (18/09).
+        // Declare the real extension and MIME type to avoid misidentifying MP4
+        // as WebM and re-encoding it again during upload.
         (out, "mp4".to_string())
     } else {
         let ext = src
@@ -3610,10 +3350,8 @@ fn update_shortcuts(app: tauri::AppHandle<TauriRuntime>, payload: UpdateShortcut
     register_plugin_shortcuts(&app, &payload);
 }
 
-// WebSocket server for global shortcut polling. JS sends "poll" every 100ms,
-// Rust responds with the current mute/deafen toggle counts. This avoids Tauri
-// IPC (invoke), dont les événements peuvent être différés quand la fenêtre
-// n'a pas le focus selon le runtime webview.
+// The frontend polls this shortcut WebSocket every 100 ms for toggle counts.
+// It avoids Tauri event delivery delays while the window is unfocused.
 #[cfg(not(target_os = "android"))]
 static WS_PORT: AtomicU16 = AtomicU16::new(0);
 
@@ -3721,17 +3459,9 @@ struct SavedWindowStates {
     main: Option<SavedMainWindowState>,
 }
 
-/// Renforce `tauri-plugin-window-state` sur deux points observés en pratique :
-///
-/// - son restore très précoce peut être ignoré avant que WRY ait associé la
-///   fenêtre à son écran (et le plugin applique une `PhysicalSize`) ;
-/// - il n'écrit normalement sur disque qu'à la sortie. Un crash, Ctrl-C ou le
-///   redémarrage du serveur dev laisse donc un fichier ancien.
-///
-/// On capture l'état disque avant les premiers événements de fenêtre, on
-/// réapplique sa taille une fois WRY prêt, puis on sauvegarde sur le thread UI
-/// après 600 ms sans resize/move. Le passage par le thread UI évite le deadlock
-/// amont du plugin (verrou du cache + getter de fenêtre depuis un worker).
+/// Restore window size once WRY has attached it to a monitor, then debounce
+/// saves for 600 ms after move/resize. Save on the UI thread to avoid the
+/// plugin's cache-lock/window-getter deadlock and preserve state after crashes.
 #[cfg(not(target_os = "android"))]
 fn install_window_state_resilience(app: &tauri::App<TauriRuntime>) {
     use std::sync::atomic::Ordering as AtomicOrdering;
@@ -3756,8 +3486,7 @@ fn install_window_state_resilience(app: &tauri::App<TauriRuntime>) {
     let save_app = app.handle().clone();
     thread::spawn(move || {
         while requests.recv().is_ok() {
-            // Un drag produit beaucoup d'événements : attendre le dernier et
-            // ne faire qu'une écriture disque.
+            // Debounce move events into one disk write.
             while requests.recv_timeout(Duration::from_millis(600)).is_ok() {}
             let app = save_app.clone();
             let _ = save_app.run_on_main_thread(move || {
@@ -3784,8 +3513,7 @@ fn install_window_state_resilience(app: &tauri::App<TauriRuntime>) {
         let result = if saved.maximized {
             window.maximize()
         } else if saved.fullscreen {
-            // Le plugin a déjà restauré le fullscreen. Conserver ici la taille
-            // normale en cache pour le retour au mode fenêtré.
+            // Keep the normal window size cached while the plugin restores fullscreen.
             Ok(())
         } else {
             window.set_size(tauri::PhysicalSize::new(saved.width, saved.height))
@@ -3806,8 +3534,7 @@ fn install_window_state_resilience(app: &tauri::App<TauriRuntime>) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // Voir la dépendance `rustls` : deux fournisseurs avec le moteur Matrix
-    // Rust, celui de l'appli et de LiveKit (ring) fait foi.
+    // Install Ring explicitly: Matrix and LiveKit enable different TLS providers.
     #[cfg(feature = "moteur-matrix-rust")]
     let _ = rustls::crypto::ring::default_provider().install_default();
     #[cfg(target_os = "linux")]
@@ -3827,16 +3554,15 @@ pub fn run() {
     #[cfg(target_os = "linux")]
     let builder = builder.manage(shortcuts_managed);
 
-    #[cfg(not(target_os = "android"))]
     let builder = builder.invoke_handler(tauri::generate_handler![
         mises_a_jour::update_platform,
         mises_a_jour::update_download,
+        #[cfg(not(target_os = "android"))]
         mises_a_jour::update_install,
         matrix_pont::matrix_moteur,
         matrix_pont::commandes::matrix_etat,
         matrix_pont::commandes::matrix_connecter,
         matrix_pont::commandes::matrix_reprendre,
-        matrix_pont::commandes::matrix_connecter_migration,
         matrix_pont::commandes::matrix_deconnecter,
         matrix_pont::commandes::matrix_salons,
         matrix_pont::commandes::matrix_ecart_horloge,
@@ -3950,7 +3676,9 @@ pub fn run() {
         matrix_pont::commandes::matrix_etat_voix,
         matrix_pont::commandes::matrix_republier_voix,
         matrix_pont::commandes::matrix_rejouer_cles_voix,
+        #[cfg(not(target_os = "android"))]
         update_shortcuts,
+        #[cfg(not(target_os = "android"))]
         get_shortcut_ws_port,
         open_url,
         open_file_default,
@@ -3963,81 +3691,146 @@ pub fn run() {
         stage_media,
         read_media,
         media_server_port,
-        av1_playable_natively,
+        #[cfg(not(target_os = "android"))]
         lecteur_video::lecteur_video_ouvrir,
+        #[cfg(not(target_os = "android"))]
         lecteur_video::lecteur_video_precharger,
+        #[cfg(not(target_os = "android"))]
         lecteur_video::lecteur_video_fermer,
+        #[cfg(not(target_os = "android"))]
         lecteur_video::lecteur_video_etat,
+        #[cfg(not(target_os = "android"))]
         lecteur_video::lecteur_video_pause,
+        #[cfg(not(target_os = "android"))]
         lecteur_video::lecteur_video_seek,
+        #[cfg(not(target_os = "android"))]
         lecteur_video::lecteur_video_resolution,
+        #[cfg(not(target_os = "android"))]
         lecteur_video::lecteur_video_zones,
+        #[cfg(not(target_os = "android"))]
         lecteur_video::lecteur_video_affiche,
+        #[cfg(not(target_os = "android"))]
         lecteur_video::lecteur_video_volume,
+        #[cfg(not(target_os = "android"))]
         lecteur_video::lecteur_video_apercu,
         prepare_video_for_send,
         exit_app,
         persist_session,
         load_session,
         system_locale,
+        #[cfg(not(target_os = "android"))]
         pick_ffmpeg_path,
+        #[cfg(not(target_os = "android"))]
         pick_audio_file,
+        #[cfg(not(target_os = "android"))]
         pick_image_file,
+        #[cfg(not(target_os = "android"))]
         read_file_b64,
+        #[cfg(not(target_os = "android"))]
         read_clipboard_image,
+        #[cfg(not(target_os = "android"))]
+        read_clipboard_files,
+        #[cfg(not(target_os = "android"))]
         copier_image,
+        #[cfg(not(target_os = "android"))]
         notifications_bureau::notification_message,
+        #[cfg(not(target_os = "android"))]
         read_dropped_file,
+        #[cfg(not(target_os = "android"))]
         detect_ffmpeg,
+        #[cfg(not(target_os = "android"))]
         detect_ytdlp,
+        #[cfg(not(target_os = "android"))]
         download_ytdlp,
+        #[cfg(not(target_os = "android"))]
         pick_ytdlp_path,
+        #[cfg(not(target_os = "android"))]
         ytdlp_versions,
+        #[cfg(not(target_os = "android"))]
         probe_url_media,
+        #[cfg(not(target_os = "android"))]
         import_url_audio,
+        #[cfg(not(target_os = "android"))]
         probe_url_formats,
+        #[cfg(not(target_os = "android"))]
         import_url_video,
+        #[cfg(not(target_os = "android"))]
         import_url_video_annuler,
+        #[cfg(not(target_os = "android"))]
         save_imported_audio,
+        #[cfg(not(target_os = "android"))]
         meme_pop::memeboard_jouer,
+        #[cfg(not(target_os = "android"))]
         meme_pop::memeboard_arreter,
+        #[cfg(not(target_os = "android"))]
         meme_pop::memeboard_preparer,
+        #[cfg(not(target_os = "android"))]
         meme_pop::memeboard_analyser,
+        #[cfg(not(target_os = "android"))]
         meme_pop::memeboard_image,
+        #[cfg(not(target_os = "android"))]
         profil::profil_choisir_destination,
+        #[cfg(not(target_os = "android"))]
         profil::profil_choisir_source,
+        #[cfg(not(target_os = "android"))]
         profil::profil_ecrire,
+        #[cfg(not(target_os = "android"))]
         profil::profil_lire,
+        #[cfg(not(target_os = "android"))]
         profil::profil_extraire,
+        #[cfg(not(target_os = "android"))]
         profil::profil_nettoyer,
+        #[cfg(not(target_os = "android"))]
         cursor_overlay::cursor_overlay_open,
+        #[cfg(not(target_os = "android"))]
         cursor_overlay::cursor_overlay_close,
+        #[cfg(not(target_os = "android"))]
         native_video_surface::native_video_surface_available,
+        #[cfg(not(target_os = "android"))]
         native_video_surface::native_video_surfaces_set,
-        pip_window::pip_native_open,
+        #[cfg(not(target_os = "android"))]
         pip_window::pip_native_close,
-        pip_window::pip_native_status,
-        pip_window::pip_native_source,
-            pip_window::pip_native_sources,
-            pip_window::pip_native_open_streams,
+        #[cfg(not(target_os = "android"))]
+        pip_window::pip_native_sources,
+        #[cfg(not(target_os = "android"))]
+        pip_window::pip_native_open_streams,
+        #[cfg(not(target_os = "android"))]
         transcribe::transcribe_start,
+        #[cfg(not(target_os = "android"))]
         transcribe::transcribe_start_native,
+        #[cfg(not(target_os = "android"))]
         transcribe::transcribe_stop,
+        #[cfg(not(target_os = "android"))]
         detect_asr_model,
+        #[cfg(not(target_os = "android"))]
         download_asr_model,
+        #[cfg(not(target_os = "android"))]
         delete_asr_model,
+        #[cfg(not(target_os = "android"))]
         summarize::detect_summary_assets,
+        #[cfg(not(target_os = "android"))]
         summarize::download_llama,
+        #[cfg(not(target_os = "android"))]
         summarize::download_summary_model,
+        #[cfg(not(target_os = "android"))]
         summarize::summarize_transcript,
+        #[cfg(not(target_os = "android"))]
         summarize::delete_summary_assets,
+        #[cfg(not(target_os = "android"))]
         summarize::llama_versions,
+        #[cfg(not(target_os = "android"))]
         tts::list_tts_models,
+        #[cfg(not(target_os = "android"))]
         tts::detect_tts_engine,
+        #[cfg(not(target_os = "android"))]
         tts::pick_tts_engine_path,
+        #[cfg(not(target_os = "android"))]
         tts::download_tts_engine,
+        #[cfg(not(target_os = "android"))]
         tts::download_tts_model,
+        #[cfg(not(target_os = "android"))]
         tts::delete_tts_model,
+        #[cfg(not(target_os = "android"))]
         tts::tts_generate,
         voice_native::voice_native_status,
         voice_native::voice_native_available,
@@ -4080,190 +3873,7 @@ pub fn run() {
         #[cfg(feature = "native-voice")]
         camera_effects::voice_native_camera_background_import,
         voice_native::voice_native_capture_maintenue,
-        voice_native::voice_native_set_screenshare_video_visible
-    ]);
-
-    #[cfg(target_os = "android")]
-    let builder = builder.invoke_handler(tauri::generate_handler![
-        mises_a_jour::update_platform,
-        mises_a_jour::update_download,
-        matrix_pont::matrix_moteur,
-        matrix_pont::commandes::matrix_etat,
-        matrix_pont::commandes::matrix_connecter,
-        matrix_pont::commandes::matrix_reprendre,
-        matrix_pont::commandes::matrix_connecter_migration,
-        matrix_pont::commandes::matrix_deconnecter,
-        matrix_pont::commandes::matrix_salons,
-        matrix_pont::commandes::matrix_ecart_horloge,
-        matrix_pont::commandes::matrix_fils,
-        matrix_pont::commandes::matrix_charger_historique,
-        matrix_pont::commandes::matrix_marquer_lu,
-        matrix_pont::commandes::matrix_epingles,
-        matrix_pont::commandes::matrix_message,
-        matrix_pont::commandes::matrix_envoyer_texte,
-        matrix_pont::commandes::matrix_repondre,
-        matrix_pont::commandes::matrix_editer,
-        matrix_pont::commandes::matrix_supprimer,
-        matrix_pont::commandes::matrix_reagir,
-        matrix_pont::commandes::matrix_poker,
-        matrix_pont::commandes::matrix_creer_sondage,
-        matrix_pont::commandes::matrix_voter,
-        matrix_pont::commandes::matrix_clore_sondage,
-        matrix_pont::commandes::matrix_epingler,
-        matrix_pont::commandes::matrix_envoyer_fichier,
-        matrix_pont::commandes::matrix_envoyer_image_url,
-        matrix_pont::commandes::matrix_taille_max_envoi,
-        matrix_pont::commandes::matrix_details_salon,
-        matrix_pont::commandes::matrix_rechercher_utilisateurs,
-        matrix_pont::commandes::matrix_admins_serveur,
-        matrix_pont::commandes::matrix_nom_utilisateur,
-        matrix_pont::commandes::matrix_avatar_utilisateur,
-        matrix_pont::commandes::matrix_appareils,
-        matrix_pont::commandes::matrix_inviter,
-        matrix_pont::commandes::matrix_expulser,
-        matrix_pont::commandes::matrix_bannir,
-        matrix_pont::commandes::matrix_changer_niveau,
-        matrix_pont::commandes::matrix_rejoindre,
-        matrix_pont::commandes::matrix_quitter,
-        matrix_pont::commandes::matrix_renommer_salon,
-        matrix_pont::commandes::matrix_changer_sujet,
-        matrix_pont::commandes::matrix_changer_avatar_salon,
-        matrix_pont::commandes::matrix_changer_regle_acces,
-        matrix_pont::commandes::matrix_creer_salon,
-        matrix_pont::commandes::matrix_creer_espace,
-        matrix_pont::commandes::matrix_rejoindre_espace,
-        matrix_pont::commandes::matrix_rejoindre_avec_via,
-        matrix_pont::commandes::matrix_hierarchie_espace,
-        matrix_pont::commandes::matrix_mp_avec,
-        matrix_pont::commandes::matrix_changer_nom,
-        matrix_pont::commandes::matrix_changer_avatar,
-        matrix_pont::commandes::matrix_changer_mot_de_passe,
-        matrix_pont::commandes::matrix_supprimer_appareil,
-        matrix_pont::commandes::matrix_est_suspendu,
-        matrix_pont::commandes::matrix_ecrire,
-        matrix_pont::commandes::matrix_connecter_jeton,
-        matrix_pont::commandes::matrix_jeton_connexion,
-        matrix_pont::commandes::matrix_verification_emojis,
-        matrix_pont::commandes::matrix_verification_scanner,
-        matrix_pont::commandes::matrix_verification_confirmer_qr,
-        qr_svg,
-        vider_medias_temporaires,
-        media_cache_retenir,
-        media_cache_liberer,
-        purger_caches_medias,
-        matrix_pont::commandes::matrix_enregistrer_pusher,
-        matrix_pont::commandes::matrix_retirer_pusher,
-        matrix_pont::commandes::matrix_lectures,
-        matrix_pont::commandes::matrix_signaler,
-        matrix_pont::commandes::matrix_ignorer,
-        matrix_pont::commandes::matrix_ne_plus_ignorer,
-        matrix_pont::commandes::matrix_ignores,
-        matrix_pont::commandes::matrix_banniere,
-        matrix_pont::commandes::matrix_salons_en_commun,
-        matrix_pont::commandes::matrix_changer_banniere,
-        matrix_pont::commandes::matrix_supprimer_compte,
-        matrix_pont::commandes::matrix_etapes_inscription,
-        matrix_pont::commandes::matrix_inscrire,
-        matrix_pont::commandes::matrix_requete_admin,
-        matrix_pont::commandes::matrix_salon_admin,
-        matrix_pont::commandes::matrix_commande_admin,
-        matrix_pont::commandes::matrix_verification,
-        matrix_pont::commandes::matrix_demarrer_verification,
-        matrix_pont::commandes::matrix_confirmer_emojis,
-        matrix_pont::commandes::matrix_refuser_emojis,
-        matrix_pont::commandes::matrix_annuler_verification,
-        matrix_pont::commandes::matrix_appareil_verifie,
-        matrix_pont::commandes::matrix_messages_indechiffrables,
-        matrix_pont::commandes::matrix_restaurer_par_cle,
-        matrix_pont::commandes::matrix_restaurer_automatiquement,
-        matrix_pont::commandes::matrix_a_besoin_amorcage,
-        matrix_pont::commandes::matrix_amorcer,
-        matrix_pont::commandes::matrix_nouvelle_cle_recuperation,
-        matrix_pont::commandes::matrix_salon_soundboard,
-        matrix_pont::commandes::matrix_creer_ou_synchroniser_soundboard,
-        matrix_pont::commandes::matrix_sons,
-        matrix_pont::commandes::matrix_memes,
-        matrix_pont::commandes::matrix_ajouter_son,
-        matrix_pont::commandes::matrix_modifier_son,
-        matrix_pont::commandes::matrix_modifier_meme,
-        matrix_pont::commandes::matrix_supprimer_du_soundboard,
-        matrix_pont::commandes::matrix_envoyer_meme,
-        matrix_pont::commandes::matrix_envoyer_evenement,
-        matrix_pont::commandes::matrix_envoyer_etat,
-        matrix_pont::commandes::matrix_etats,
-        matrix_pont::commandes::matrix_versions_salon,
-        matrix_pont::commandes::matrix_publier_version,
-        matrix_pont::commandes::matrix_ouvrir_droit_version,
-        matrix_pont::commandes::matrix_rafraichir_nom_appareil,
-        matrix_pont::commandes::matrix_historique_filtre,
-        matrix_pont::commandes::matrix_url_media,
-        matrix_pont::commandes::matrix_definir_pousseur,
-        matrix_pont::commandes::matrix_supprimer_regle_push,
-        matrix_pont::commandes::matrix_definir_regle_push,
-        matrix_pont::commandes::matrix_rejoindre_voix,
-        matrix_pont::commandes::matrix_quitter_voix,
-        matrix_pont::commandes::matrix_etat_voix,
-        matrix_pont::commandes::matrix_republier_voix,
-        matrix_pont::commandes::matrix_rejouer_cles_voix,
-        open_url,
-        open_file_default,
-        download_file,
-        open_local_file,
-        show_in_folder,
-        fetch_link_preview,
-        prepare_background_video,
-        purge_background_files,
-        stage_media,
-        read_media,
-        media_server_port,
-        av1_playable_natively,
-        prepare_video_for_send,
-        exit_app,
-        persist_session,
-        load_session,
-        system_locale,
-        voice_native::voice_native_status,
-        voice_native::voice_native_available,
-        voice_native::voice_native_audio_devices,
-        voice_native::voice_native_switch_audio_device,
-        voice_native::voice_native_set_audio_processing,
-        voice_native::voice_native_start_microphone_test,
-        voice_native::voice_native_stop_audio_test,
-        voice_native::voice_native_audio_level,
-        voice_native::voice_native_test_speaker,
-        voice_native::voice_native_set_audio_quality,
-        voice_native::voice_native_debug,
-        voice_native::voice_native_connect,
-        voice_native::voice_native_disconnect,
-        voice_native::voice_native_play_soundboard,
-        voice_native::voice_native_set_muted,
-        voice_native::voice_native_set_deafened,
-        voice_native::voice_native_set_e2ee_key,
-        voice_native::voice_native_publish_data,
-        voice_native::voice_native_extend_soundboard_badge,
-        voice_native::voice_media_caps,
-        voice_native::voice_native_set_screenshare_audio_muted,
-        voice_native::voice_native_set_screenshare_audio_volume,
-        voice_native::voice_native_set_participant_volume,
-        voice_native::voice_native_latence,
-        voice_native::voice_native_get_screenshare_audio_state,
-        voice_native::voice_native_video_port,
-        voice_native::voice_native_set_screensharing,
-        voice_native::voice_native_camera_available,
-        voice_native::voice_native_camera_devices,
-        voice_native::voice_native_camera_preview,
-        voice_native::voice_native_camera_set_enabled,
-        voice_native::voice_native_camera_state,
-        #[cfg(feature = "native-voice")]
-        camera_effects::voice_native_camera_effects_available,
-        #[cfg(feature = "native-voice")]
-        camera_effects::voice_native_camera_effects_status,
-        #[cfg(feature = "native-voice")]
-        camera_effects::voice_native_camera_effects_set,
-        #[cfg(feature = "native-voice")]
-        camera_effects::voice_native_camera_background_import,
-        voice_native::voice_native_capture_maintenue,
-        voice_native::voice_native_set_screenshare_video_visible
+        voice_native::voice_native_set_screenshare_video_visible,
     ]);
 
     #[cfg(not(target_os = "android"))]
@@ -4281,8 +3891,8 @@ pub fn run() {
     let builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
 
     let builder = matrix_pont::enregistrer_protocole(builder);
-    // Android : images du partage reçu lues par requêtes (le WebView ne peut
-    // pas joindre le WebSocket local), voir `native_video_transport::images_depuis`.
+    // Android polls received share frames because its WebView cannot connect
+    // to the local WebSocket; see native_video_transport::images_depuis.
     #[cfg(target_os = "android")]
     let builder = builder.register_uri_scheme_protocol("sion-video", |_ctx, requete| {
         let vu = requete
@@ -4302,54 +3912,36 @@ pub fn run() {
     let builder = builder
         .plugin(tauri_plugin_notification::init())
         .setup(move |app| {
-            // Logging enabled in debug AND release: the shipped Windows build
-            // (windows_subsystem="windows") has no console, so without an
-            // installed logger Rust `log::*` output is silently dropped and
-            // there's no way to diagnose issues on it. The Webview target
-            // surfaces Rust logs in DevTools (exportable); the default LogDir
-            // target also writes them to a file, dans le dossier de données de
-            // l'application (`AppData\Local\com.sion.client\logs` sous
-            // Windows). Le viser ailleurs a été essayé puis annulé le 17/09 :
-            // écrire des journaux dans le dossier d'INSTALLATION mélange des
-            // fichiers qui changent sans cesse avec un dossier censé ne bouger
-            // qu'aux mises à jour, et un désinstalleur les emporterait.
+            // Enable logging in debug and release. Windows GUI builds have no terminal.
+            // Write logs under app-data rather than the installation directory so they
+            // remain writable and are not mixed with files replaced by the installer.
             app.handle().plugin(
                 tauri_plugin_log::Builder::default()
                     .level(log::LevelFilter::Info)
-                    // Taille du fichier : 40 Ko par défaut, puis l'ancien est
-                    // SUPPRIMÉ. libwebrtc à lui seul écrit plusieurs dizaines
-                    // de lignes par seconde pendant un partage : le journal se
-                    // vidait toutes les vingt secondes. Le 17/09, plusieurs
-                    // diagnostics ont été conduits à l'aveugle — « aucune trace
-                    // de X, donc X n'a pas eu lieu » alors que la trace avait
-                    // simplement été effacée entre deux lectures. Un journal
-                    // qu'on ne peut pas relire ne sert à rien.
+                    // Use a larger log file than the 40 KB default; WebRTC can otherwise
+                    // rotate away relevant diagnostics within seconds during a share.
                     .max_file_size(20 * 1024 * 1024)
                     .rotation_strategy(tauri_plugin_log::RotationStrategy::KeepOne)
-                    // Chaque ligne envoyée à la webview y est un script à
-                    // exécuter : en appel, la voix en écrit plus d'une par
-                    // seconde (04/10). Les builds publiés n'y envoient que
-                    // les avertissements et erreurs ; le fichier garde tout.
+                    // Send only warnings and errors to release webviews to reduce script
+                    // execution overhead; retain the full log in the file.
                     .target(
                         tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Webview)
                             .filter(|meta| cfg!(debug_assertions) || meta.level() <= log::Level::Warn),
                     )
                     .build(),
             )?;
-            // Android : ce que `SionNatif.initialiser` a noté avant que le journal
-            // n'existe (TLS du système, WebRTC).
+            // Report Android TLS/WebRTC initialization details captured before logging started.
             #[cfg(target_os = "android")]
             android_natif::journaliser_initialisation();
-            // Android : le dossier temporaire par défaut de Rust
-            // (`/data/local/tmp`) est interdit aux applis — médias déchiffrés
-            // (lecture par plages), fichiers déposés : le cache de l'appli.
+            // Use Android's private app cache for temporary media; /data/local/tmp
+            // is inaccessible to ordinary applications.
             #[cfg(target_os = "android")]
             if let Ok(cache) = app.path().app_cache_dir() {
                 let _ = std::fs::create_dir_all(&cache);
                 std::env::set_var("TMPDIR", &cache);
             }
-            // Ménage au démarrage, sur un fil à part (plusieurs Go possibles) :
-            // médias déchiffrés anciens, et restes du CEF de la 1.x.
+            // Clean old decrypted media and legacy CEF caches on a worker thread;
+            // they can contain several gigabytes.
             {
                 let cache = app.path().app_cache_dir().ok();
                 std::thread::spawn(move || {
@@ -4360,9 +3952,7 @@ pub fn run() {
                     if n > 0 {
                         log::info!("[Sion] médias temporaires : {n} fichier(s) effacé(s), {} Mo libérés", octets / (1024 * 1024));
                     }
-                    // La 1.x (CEF) gardait ~1,5 à 2,5 Go de cache dans `cef/`
-                    // (Windows : %LOCALAPPDATA%\com.sion.client\cef, Linux :
-                    // ~/.cache/com.sion.client/cef), inutile depuis la 2.0.
+                    // Remove the obsolete 1.x CEF cache, which could retain several gigabytes.
                     #[cfg(not(target_os = "android"))]
                     if let Some(cef) = cache.map(|c| c.join("cef")).filter(|c| c.is_dir()) {
                         match std::fs::remove_dir_all(&cef) {
@@ -4381,26 +3971,18 @@ pub fn run() {
                     }
                 });
             }
-            // Moteur Matrix Rust (SION_MATRIX_MOTEUR=rust + feature) : après le
-            // journal, pour que ses messages y arrivent.
+            // Initialize the Rust Matrix engine after logging so startup diagnostics are captured.
             matrix_pont::initialiser(app.handle());
 
             #[cfg(not(target_os = "android"))]
             install_window_state_resilience(app);
 
-            // ── Réglages WebKit du web process (perf mémoire, 2026-09-12) ──
-            // Mesuré : la release est plate (691 → 694 Mo sur 28 min) mais son
-            // plancher est ~690 Mo, tout côté web process. WebKit y entretient
-            // des caches dont l'app n'a aucun usage : tout son contenu vient du
-            // réseau (Matrix) et de l'IPC natif, jamais du cache disque, et le
-            // page cache garde en mémoire la page précédente à chaque
-            // rechargement (mesuré en dev : +100-200 Mo par reload, jamais
-            // rendus). Modèle de cache « document viewer » = l'équivalent d'un
-            // navigateur sans cache pour une app qui ne navigue pas.
+            // Bound WebKit caching for a single-page app. The page cache can retain
+            // previous webviews after reload; configure it separately from resource caching.
             #[cfg(target_os = "linux")]
             {
                 use tauri::Manager;
-                // Le repli NVIDIA relance l'appli : il lui faut ce handle.
+                // The NVIDIA recovery path needs this handle to relaunch the app.
                 let gpu_handle = app.handle().clone();
                 if let Some(window) = app.get_webview_window("main") {
                     let _ = window.with_webview(move |webview| {
@@ -4409,26 +3991,9 @@ pub fn run() {
                         };
                         let view = webview.inner();
                         if let Some(context) = view.context() {
-                            // `DocumentViewer` était utilisé ici : WebKit le
-                            // documente comme « désactive complètement le
-                            // cache », prévu pour une application affichant un
-                            // seul fichier local sans navigation. C'est ce qui
-                            // cassait TOUTE lecture vidéo — mesuré le 17/09.
-                            // Un média passe par le cache de ressources du
-                            // moteur : sans lui, l'élément lit ses métadonnées,
-                            // joue les deux secondes qu'il a en mémoire, puis
-                            // s'arrête. Sans erreur, sans événement, quel que
-                            // soit le codec, le conteneur ou le transport —
-                            // base64, `asset:`, `blob:` ou HTTP local. Les
-                            // mêmes fichiers se lisent intégralement dans
-                            // MiniBrowser, qui utilise le modèle par défaut.
-                            //
-                            // `DocumentBrowser` garde un cache modeste, ce dont
-                            // le lecteur a besoin, sans revenir au cache disque
-                            // d'un navigateur complet. Le gain mémoire visé à
-                            // l'origine — 100 à 200 Mo par rechargement — venait
-                            // du PAGE cache, réglage distinct, désactivé juste
-                            // en dessous et conservé.
+                            // Keep DocumentBrowser's modest resource cache for media playback.
+                            // DocumentViewer disables it and can stall videos after their first buffered
+                            // seconds. Disable the separate page cache below to avoid retaining reloads.
                             context.set_cache_model(CacheModel::DocumentBrowser);
                         }
                         if let Some(settings) = view.settings() {
@@ -4437,13 +4002,10 @@ pub fn run() {
                         log::info!(
                             "[Sion][webkit] caches bridés (document browser, page cache off)"
                         );
-                        // Page blanche sous pilote NVIDIA : surveille le web
-                        // process (cf. `gpu_fallback`).
+                        // Monitor web-process termination for NVIDIA blank-page recovery.
                         crate::gpu_fallback::watch_web_process(&gpu_handle, &view);
-                        // Surface intégrée native par défaut. Le correctif WRY
-                        // garde la WebView interactive sous Wayland ; un
-                        // opt-out explicite reste disponible pour diagnostiquer
-                        // un pilote/compositeur exotique.
+                        // Enable the native video surface by default; keep an explicit driver/
+                        // compositor diagnostic opt-out while the WRY patch preserves input handling.
                         if std::env::var_os("SION_DISABLE_NATIVE_VIDEO_SURFACE").is_none() {
                             if let Err(err) =
                                 crate::native_video_surface::attach(&gpu_handle, &view)
@@ -4461,28 +4023,9 @@ pub fn run() {
                 }
             }
 
-            // WebView2 est déjà un enfant de cette fenêtre. Les surfaces HWND
-            // sont des enfants frères, placés exactement sur les canvas DOM :
-            // les frames BGRA restent hors de JavaScript et les hit-tests
-            // traversent vers la WebView.
-            // Surface native ACTIVE par défaut sous Windows, comme sous Linux.
-            //
-            // Elle est restée optionnelle le temps d'un écran noir inexpliqué
-            // (alpha 5) : elle recevait bien les frames et les peignait — trace
-            // « peinture 1648x464 dans une zone cliente 1654x466 » — mais la
-            // fenêtre de la WebView2, sœur de la nôtre et dépourvue de
-            // `WS_CLIPSIBLINGS`, repeignait par-dessus. Ce style posé, l'image
-            // est apparue, et la session du 18/09 a validé le reste : plus de
-            // scintillement (double tampon), plus d'oscillation de géométrie,
-            // curseurs des viewers peints en GDI, souris relayée au partageur.
-            //
-            // Ce qu'on y gagne est l'objet même de la 2.0 : le chemin JPEG
-            // réencodait chaque image décodée par NVDEC pour la faire redécoder
-            // par la webview, soit 7,2 Mo/s d'IPC et un fil principal saturé —
-            // il ne délivrait plus que 4 positions de souris par seconde.
-            //
-            // `SION_DISABLE_NATIVE_VIDEO_SURFACE=1` rend la main au chemin JPEG
-            // si une machine se comporte autrement.
+            // Place native HWND video surfaces beside WebView2 and clip sibling windows
+            // so the webview cannot paint over them. Keep BGRA outside JavaScript.
+            // SION_DISABLE_NATIVE_VIDEO_SURFACE=1 enables the JPEG diagnostic fallback.
             #[cfg(target_os = "windows")]
             if std::env::var_os("SION_DISABLE_NATIVE_VIDEO_SURFACE").is_none() {
                 if let Some(window) = app.get_webview_window("main") {
@@ -4505,29 +4048,22 @@ pub fn run() {
                 }
             }
 
-            // Diagnostic : overlay curseurs ouvert au démarrage
-            // (`SION_OVERLAY_OPEN=1`) — fenêtre + blit sans attendre un viewer.
+            // SION_OVERLAY_OPEN=1 starts the diagnostic cursor overlay without a viewer.
             #[cfg(not(target_os = "android"))]
             crate::cursor_overlay::maybe_autotest_open();
 
-            // Sans sink, WebRTC n'émet aucun log (échecs PipeWire/portail
-            // indiscernables d'une absence de frame).
+            // Install a WebRTC log sink to expose capture and portal failures.
             #[cfg(feature = "native-voice")]
             crate::voice_engine::install_webrtc_log_sink();
 
-            // Actions des boutons du PIP natif (retour sur Sion, son du
-            // partage) : la fenêtre vit sur un fil winit hors de l'arbre
-            // Tauri — elle a besoin de ce handle pour agir.
+            // Give the native PIP thread a Tauri handle for return-to-app and share-audio controls.
             #[cfg(not(target_os = "android"))]
             pip_window::set_app_handle(app.handle().clone());
-            // Préchauffe la boucle winit du PIP : le premier clic ne paie
-            // plus sa construction.
+            // Prewarm the PIP's winit event loop to remove first-open latency.
             #[cfg(not(target_os = "android"))]
             pip_window::prewarm();
 
-            // WebSocket server for global shortcuts (évite l'IPC Tauri, dont
-            // les événements peuvent être différés quand la fenêtre n'a pas
-            // le focus selon le runtime webview).
+            // Start the shortcut WebSocket to avoid unfocused-window IPC event delays.
             #[cfg(not(target_os = "android"))]
             start_ws_server();
 

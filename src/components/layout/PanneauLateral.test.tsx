@@ -3,6 +3,8 @@ import { act } from "react";
 import { beforeEach, expect, it, vi } from "vitest";
 import { PanneauLateral, CiblesModules } from "./PanneauLateral";
 import { useLayoutStore } from "../../stores/useLayoutStore";
+import { useAppStore } from "../../stores/useAppStore";
+import { useSettingsStore } from "../../stores/useSettingsStore";
 import { useApercuPlacementModule } from "./apercuPlacementModule";
 vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 vi.mock("./panneaux", () => ({
@@ -14,6 +16,7 @@ const vue = montage();
 const elementSousPointeur = vi.fn<() => Element | null>();
 const calquesSousCible = vi.fn<() => Element[]>();
 beforeEach(() => {
+  useAppStore.setState({ connectedVoiceChannel: "!vocal" });
   useLayoutStore.setState({ panneau: null, panneaux: [], positionsPanneaux: {}, panneauEnDeplacement: null, largeurPanneau: 360, largeurPanneauGauche: 360, hauteurPanneauxBas: 280, hauteurPanneauxHaut: 280 });
   useApercuPlacementModule.getState().liberer();
   vi.stubGlobal("ResizeObserver", class { observe() {} disconnect() {} });
@@ -59,6 +62,28 @@ const saisirPoignee = async (id: string) => {
 it("n'affiche rien sans panneau ouvert", async () => {
   await vue.render(<PanneauLateral />);
   expect(vue.container.childElementCount).toBe(0);
+});
+
+it("masque les boards hors vocal puis les restaure sans déplacer les autres modules", async () => {
+  useLayoutStore.getState().ouvrirPanneau("soundboard");
+  useLayoutStore.getState().ouvrirPanneau("memeboard");
+  useLayoutStore.getState().ouvrirPanneau("members");
+  const positions = { soundboard: "left", memeboard: "bottom", members: "right" } as const;
+  useLayoutStore.setState({ positionsPanneaux: positions });
+  useAppStore.setState({ connectedVoiceChannel: null });
+  await vue.render(layout());
+  expect(vue.container.querySelector('[data-panneau="members"]')).not.toBeNull();
+  expect(vue.container.querySelector('[data-zone-panneaux="left"]')).toBeNull();
+  expect(vue.container.querySelector('[data-zone-panneaux="bottom"]')).toBeNull();
+  await act(async () => useAppStore.getState().setConnectedVoice("!vocal"));
+  expect(vue.container.querySelector('[data-zone-panneaux="left"] [data-panneau="soundboard"]')).not.toBeNull();
+  expect(vue.container.querySelector('[data-zone-panneaux="bottom"] [data-panneau="memeboard"]')).not.toBeNull();
+  await act(async () => useAppStore.getState().disconnectVoice());
+  for (const id of ["soundboard", "memeboard"]) expect(vue.container.querySelector(`[data-panneau="${id}"]`)).toBeNull();
+  expect(vue.container.querySelector('[data-panneau="members"]')).not.toBeNull();
+  expect(useLayoutStore.getState().positionsPanneaux).toEqual(positions);
+  expect(useLayoutStore.getState().panneaux).toEqual(["soundboard", "memeboard", "members"]);
+  expect(useSettingsStore.getState().soundboardOpenAtLaunch).toBe(true);
 });
 it("affiche le titre et un seul bouton Fermer", async () => {
   useLayoutStore.getState().ouvrirPanneau("soundboard");

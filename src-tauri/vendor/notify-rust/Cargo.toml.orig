@@ -1,6 +1,6 @@
 [package]
 name = "notify-rust"
-version = "4.18.0"
+version = "4.18.2"
 authors = ["Hendrik Sollich <hendrik@hoodie.de>"]
 description = "Show desktop notifications (linux, bsd, mac). Pure Rust dbus client and server."
 repository = "https://github.com/hoodie/notify-rust"
@@ -56,7 +56,7 @@ mac-usernotifications = { version = "0.3.1", optional = true }
 chrono = { version = "0.4", optional = true }
 
 [target.'cfg(target_os="windows")'.dependencies]
-winrt-notification = { package = "tauri-winrt-notification", version = "0.7" }
+winrt-notification = { package = "tauri-winrt-notification", version = "0.8" }
 
 [dev-dependencies]
 color-backtrace = "0.7" # wait for MSVR 1.70 to update

@@ -12,6 +12,7 @@ import { NavigationEspaces } from "../sidebar/NavigationEspaces";
 import { ChannelList } from "../sidebar/ChannelList";
 import { AccountPopover } from "../sidebar/AccountPopover";
 import { UserAvatar } from "../sidebar/UserAvatar";
+import { ImageAvatar } from "../sidebar/ImageAvatar";
 import { VerificationBanner } from "../sidebar/VerificationBanner";
 import { DirectMessagesIcon, HashIcon, ServerIcon, SettingsIcon } from "../icons";
 import { MOBILE_VOICE_BAR_HEIGHT } from "./MobileVoiceBar";
@@ -31,7 +32,7 @@ function EnteteSalonsMobile() {
   return <header className="sion-mobile-canaux-entete">
     <button type="button" className="sion-mobile-ouvrir-espaces" aria-label={t("spaces.title")}
       title={t("spaces.title")} onClick={() => useAppStore.getState().setMobileView("sidebar")}>
-      {prive ? <DirectMessagesIcon /> : espace?.icon ? <img src={espace.icon} alt="" /> : <HashIcon />}
+      {prive ? <DirectMessagesIcon /> : espace?.icon ? <ImageAvatar src={espace.icon} alt="" loading="eager" fallback={<HashIcon />} /> : <HashIcon />}
     </button>
     <button type="button" className="sion-mobile-nom-espace sion-titre" title={titre}
       onClick={() => { if (espace && !prive) useEspacesStore.getState().ouvrir("gerer"); }}>

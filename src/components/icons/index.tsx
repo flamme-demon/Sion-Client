@@ -26,7 +26,7 @@ export function HeadphoneIcon({ muted, className }: MuteableIconProps) {
   );
 }
 
-/** Téléphone : participant connecté depuis un mobile. */
+/** Phone icon for a participant connected from mobile. */
 export function PhoneIcon({ className, size = 12 }: IconProps & { size?: number }) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
@@ -55,7 +55,7 @@ export function SoundboardIcon({ muted, className, size = 16 }: MuteableIconProp
   );
 }
 
-/** Visage qui pleure de rire : les traits sont évidés dans la forme pleine. */
+/** Laughing face with facial details cut out from its filled shape. */
 export function MemeboardIcon({ muted, className, size = 16 }: MuteableIconProps & { size?: number }) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" className={className} aria-hidden="true">
@@ -85,7 +85,7 @@ export function HashIcon({ className, style }: IconProps) {
   );
 }
 
-/** Haut-parleur barré : son d'une personne coupé pour soi. */
+/** Slashed speaker for a participant muted locally. */
 export function SpeakerOffIcon({ className, style }: IconProps) {
   return (
     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className={className} style={style}>
@@ -96,7 +96,7 @@ export function SpeakerOffIcon({ className, style }: IconProps) {
   );
 }
 
-/** Salon d'administration du serveur. */
+/** Server administration room. */
 export function AdminRoomIcon({ className, style }: IconProps) {
   return (
     <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" className={className} style={style}>
@@ -276,14 +276,6 @@ export function SortIcon({ className }: IconProps) {
   );
 }
 
-export function HomeIcon({ className }: IconProps) {
-  return (
-    <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor" className={className} aria-hidden="true">
-      <path d="M11.4 2.7a1 1 0 0 1 1.2 0l9 7a1 1 0 0 1-.6 1.8h-2V20a1 1 0 0 1-1 1h-4v-7h-4v7H6a1 1 0 0 1-1-1v-8.5H3a1 1 0 0 1-.6-1.8l9-7Z" />
-    </svg>
-  );
-}
-
 export function MessageBubbleIcon({ className }: IconProps) {
   return (
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
@@ -321,9 +313,8 @@ export function PencilIcon({ className, style }: IconProps) {
 
 export function PinIcon({ className, filled }: IconProps & { filled?: boolean }) {
   return (
-    // `filled` : épingle pleine pour un message DÉJÀ épinglé. Le contour seul
-    // ne distinguait pas les deux états, et l'action étant une bascule, rien
-    // n'annonçait qu'un clic désépinglerait.
+    // Use a filled pin for an already pinned message so the toggle
+    // visually indicates that clicking will unpin it.
     <svg width="16" height="16" viewBox="0 0 24 24" fill={filled ? "currentColor" : "none"} stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
       <line x1="12" y1="17" x2="12" y2="22" />
       <path d="M5 17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1v4.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24z" />
@@ -387,17 +378,6 @@ export function UsersIcon({ className }: IconProps) {
   );
 }
 
-/** Disposition : un grand cadre, un rail à gauche, un panneau à droite. */
-export function LayoutIcon({ className }: IconProps) {
-  return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
-      <rect x="3" y="3" width="18" height="18" rx="2" />
-      <line x1="9" y1="3" x2="9" y2="21" />
-      <line x1="16" y1="3" x2="16" y2="21" />
-    </svg>
-  );
-}
-
 export function DownloadIcon({ className }: IconProps) {
   return (
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
@@ -429,16 +409,6 @@ export function ArrowLeftIcon({ className }: IconProps) {
     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
       <line x1="19" y1="12" x2="5" y2="12" />
       <polyline points="12 19 5 12 12 5" />
-    </svg>
-  );
-}
-
-export function MenuIcon({ className }: IconProps) {
-  return (
-    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" className={className}>
-      <line x1="3" y1="6" x2="21" y2="6" />
-      <line x1="3" y1="12" x2="21" y2="12" />
-      <line x1="3" y1="18" x2="21" y2="18" />
     </svg>
   );
 }

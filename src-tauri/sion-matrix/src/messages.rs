@@ -37,6 +37,7 @@ pub(crate) struct EvenementBrut {
     pub type_: String,
     pub contenu: Value,
     pub id: String,
+    pub transaction_id: Option<String>,
     pub expediteur: String,
     pub ts: i64,
     /// Échec de déchiffrement (clé manquante).
@@ -170,6 +171,8 @@ pub struct Sondage {
 pub struct Message {
     pub id: String,
     pub event_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transaction_id: Option<String>,
     pub sender_id: String,
     pub user: String,
     pub role: &'static str,
@@ -303,6 +306,7 @@ fn nouveau(ev: &EvenementBrut, ctx: &Contexte, texte: String) -> Message {
     Message {
         id: ev.id.clone(),
         event_id: ev.id.clone(),
+        transaction_id: ev.transaction_id.clone(),
         user: nom.unwrap_or_else(|| crate::appels::partie_locale(&expediteur)),
         sender_id: expediteur,
         role: "user",
@@ -319,19 +323,21 @@ fn nouveau(ev: &EvenementBrut, ctx: &Contexte, texte: String) -> Message {
     }
 }
 
-/// Miniature d'une image (`vignetteDe`).
-fn vignette(source: &SourceMedia, info: &Value, ctx: &Contexte) -> Option<String> {
-    match source {
-        SourceMedia::Mxc(_) => (ctx.url)(source, true),
-        SourceMedia::Chiffre(_) => {
-            // Écart voulu : le JS s'arrêtait là faute de savoir déchiffrer.
-            if let Some(fichier) = info.get("thumbnail_file").filter(|f| f.is_object()) {
-                return (ctx.url)(&SourceMedia::Chiffre(fichier.clone()), false);
-            }
-            let miniature = info.get("thumbnail_url").and_then(Value::as_str)?;
-            (ctx.url)(&SourceMedia::Mxc(miniature.to_owned()), false)
-        }
+/// Miniature jointe au message : on demande cette petite image directement.
+fn vignette_fournie(info: &Value, ctx: &Contexte) -> Option<String> {
+    if let Some(fichier) = info.get("thumbnail_file").filter(|f| f.is_object()) {
+        return (ctx.url)(&SourceMedia::Chiffre(fichier.clone()), false);
     }
+    let miniature = info.get("thumbnail_url").and_then(Value::as_str)?;
+    (ctx.url)(&SourceMedia::Mxc(miniature.to_owned()), false)
+}
+
+/// Sans miniature fournie, le serveur peut en fabriquer pour une image.
+fn vignette(source: &SourceMedia, info: &Value, ctx: &Contexte) -> Option<String> {
+    vignette_fournie(info, ctx).or_else(|| match source {
+        SourceMedia::Mxc(_) => (ctx.url)(source, true),
+        SourceMedia::Chiffre(_) => None,
+    })
 }
 
 /// Le contenu d'édition, avec la relation d'origine (réponse) gardée.
@@ -514,7 +520,11 @@ pub(crate) fn extraire(evenements: &[EvenementBrut], ctx: &Contexte) -> Vec<Mess
                     size: entier(info.get("size")).filter(|&t| t != 0).unwrap_or(0),
                     mime_type: type_mime,
                     url,
-                    thumbnail_url: (msgtype == "m.image").then(|| vignette(&source, info, ctx)).flatten(),
+                    thumbnail_url: if msgtype == "m.image" {
+                        vignette(&source, info, ctx)
+                    } else {
+                        vignette_fournie(info, ctx)
+                    },
                     width: entier(info.get("w")),
                     height: entier(info.get("h")),
                 };
@@ -579,11 +589,24 @@ mod tests {
 
     static SEQ: AtomicU32 = AtomicU32::new(0);
 
+    #[test]
+    fn transaction_restituee_pour_rapprocher_echo_local() {
+        let mut evenement = ev("m.room.message", json!({ "msgtype": "m.text", "body": "salut" }));
+        evenement.transaction_id = Some("sion-transaction".into());
+        let profil = |_: &str| (None, None);
+        let url = |_: &SourceMedia, _: bool| None;
+        let ctx = Contexte { profil: &profil, url: &url };
+        let messages = extraire(&[evenement], &ctx);
+        assert_eq!(messages[0].transaction_id.as_deref(), Some("sion-transaction"));
+        assert_eq!(serde_json::to_value(&messages[0]).unwrap()["transactionId"], "sion-transaction");
+    }
+
     fn ev(type_: &str, contenu: Value) -> EvenementBrut {
         EvenementBrut {
             type_: type_.into(),
             contenu,
             id: format!("$e{}", SEQ.fetch_add(1, Ordering::Relaxed)),
+            transaction_id: None,
             expediteur: "@alice:hs".into(),
             ts: 1_700_000_000_000,
             echec_dechiffrement: false,
@@ -869,6 +892,42 @@ mod tests {
         )]);
         let p = &m[0].attachments.as_ref().unwrap()[0];
         assert_eq!(p.thumbnail_url.as_deref(), Some("https://hs.test/media/hs/mini"));
+    }
+
+    #[test]
+    fn miniature_video_fournie_lue_sans_demander_de_vignette_au_serveur() {
+        let video = ev("m.room.message", json!({
+            "msgtype": "m.video", "body": "clip.webm", "url": "mxc://hs/video",
+            "info": {"thumbnail_url": "mxc://hs/jpeg", "size": 19749104}
+        }));
+        let url = |source: &SourceMedia, vignette: bool| {
+            assert!(!vignette, "la miniature fournie est déjà une petite image");
+            match source { SourceMedia::Mxc(u) => Some(u.clone()), _ => None }
+        };
+        let profil = |_: &str| (None, None);
+        let messages = extraire(&[video], &Contexte { profil: &profil, url: &url });
+        let piece = &messages[0].attachments.as_ref().unwrap()[0];
+        assert_eq!(piece.url, "mxc://hs/video");
+        assert_eq!(piece.thumbnail_url.as_deref(), Some("mxc://hs/jpeg"));
+    }
+
+    #[test]
+    fn miniature_video_chiffree_passe_par_le_dechiffrement_des_medias() {
+        let messages = extraire_(&[ev("m.room.message", json!({
+            "msgtype": "m.video", "body": "clip.webm", "file": {"url": "mxc://hs/video"},
+            "info": {"thumbnail_file": {"url": "mxc://hs/jpeg", "key": {"k": "secrete"}}}
+        }))]);
+        let piece = &messages[0].attachments.as_ref().unwrap()[0];
+        assert_eq!(piece.thumbnail_url.as_deref(), Some("https://hs.test/media/hs/jpeg"));
+        assert!(!serde_json::to_string(piece).unwrap().contains("secrete"));
+    }
+
+    #[test]
+    fn ancienne_video_sans_miniature_ne_demande_pas_le_film_sur_la_route_des_vignettes() {
+        let messages = extraire_(&[ev("m.room.message", json!({
+            "msgtype": "m.video", "body": "clip.webm", "url": "mxc://hs/video"
+        }))]);
+        assert!(messages[0].attachments.as_ref().unwrap()[0].thumbnail_url.is_none());
     }
 
     // — sondages

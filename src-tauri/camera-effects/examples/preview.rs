@@ -95,16 +95,22 @@ fn main() {
         assert!(control.status.lock().unwrap().ready, "effets non prêts");
         output.save(format!("{folder}/{name}.png")).unwrap();
         let mut samples = Vec::new();
+        let mut render_samples = Vec::new();
+        let mut analysis_samples = Vec::new();
         for _ in 0..20 {
             let t = Instant::now();
             processor.process(input.clone());
             samples.push(t.elapsed().as_secs_f32() * 1000.0);
+            let status = control.status.lock().unwrap();
+            render_samples.push(status.render_ms);
+            analysis_samples.push(status.analysis_ms);
         }
         samples.sort_by(f32::total_cmp);
-        let status = control.status.lock().unwrap();
+        render_samples.sort_by(f32::total_cmp);
+        analysis_samples.sort_by(f32::total_cmp);
         println!(
-            "{name}: rendu médian {:.1} ms, analyse {:.1} ms",
-            samples[10], status.analysis_ms
+            "{name}: traitement médian {:.1} ms (rendu {:.1} ms, analyse {:.1} ms)",
+            samples[10], render_samples[10], analysis_samples[10]
         );
     }
 }

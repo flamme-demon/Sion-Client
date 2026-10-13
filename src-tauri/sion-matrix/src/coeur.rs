@@ -23,7 +23,6 @@ use crate::medias::{FormatMedia, Medias, PREFIXE_PAR_DEFAUT};
 use crate::salons::Salon;
 use crate::session::{self, Secrets, Session, DOSSIER_MAGASIN};
 use crate::synchro::{self, Publication};
-use crate::migration::{ImportMigration, RapportMigration};
 use crate::voix::Voix;
 use crate::{Coffre, Erreur, Resultat};
 
@@ -299,17 +298,14 @@ impl CoeurMatrix {
         });
     }
 
-    /// Connexion par mot de passe, toujours comme **nouvel appareil** avec des
-    /// magasins neufs : tout état local précédent est effacé.
+    /// Sign in as a new device with fresh stores, clearing previous local session state.
     pub async fn connecter(&self, serveur: &str, identifiant: &str, mot_de_passe: &str) -> Resultat<()> {
-        Box::pin(self.connecter_(serveur, Identification::MotDePasse { identifiant, mot_de_passe }, None)).await.map(|_| ())
+        Box::pin(self.connecter_(serveur, Identification::MotDePasse { identifiant, mot_de_passe })).await
     }
 
-    /// Connexion par jeton (`m.login.token`) : celui qu'un autre appareil du
-    /// compte a obtenu (`jeton_connexion`) et montré en QR code — le
-    /// téléphone se connecte sans qu'on y tape le mot de passe.
+    /// Sign in with an m.login.token obtained from another device's QR code.
     pub async fn connecter_par_jeton(&self, serveur: &str, jeton: &str) -> Resultat<()> {
-        Box::pin(self.connecter_(serveur, Identification::Jeton(jeton), None)).await.map(|_| ())
+        Box::pin(self.connecter_(serveur, Identification::Jeton(jeton))).await
     }
 
     /// Jeton de connexion à usage unique pour un autre appareil (spec
@@ -344,30 +340,15 @@ impl CoeurMatrix {
         Ok((reponse.login_token, reponse.expires_in.as_millis() as u64))
     }
 
-    /// Connexion d'un nouvel appareil qui REPREND l'ancien, celui du moteur
-    /// JS (étape 4, migration) : paquet de secrets (signature croisée et clé
-    /// de sauvegarde, donc appareil vérifié d'emblée) et clés des salons
-    /// exportées par l'ancien moteur, importés AVANT la première synchro.
-    pub async fn connecter_et_migrer(
-        &self,
-        serveur: &str,
-        identifiant: &str,
-        mot_de_passe: &str,
-        import: &ImportMigration,
-    ) -> Resultat<RapportMigration> {
-        Box::pin(self.connecter_(serveur, Identification::MotDePasse { identifiant, mot_de_passe }, Some(import))).await
-    }
-
     async fn connecter_(
         &self,
         serveur: &str,
         identification: Identification<'_>,
-        import: Option<&ImportMigration>,
-    ) -> Resultat<RapportMigration> {
+    ) -> Resultat<()> {
         self.quitter_voix().await;
         self.arreter_synchro().await;
         let mut garde = self.client.lock().await;
-        drop(garde.take()); // libère SQLite avant d'effacer les magasins
+        drop(garde.take()); // Release SQLite handles before deleting the stores.
         session::effacer(&self.dossier, &*self.coffre)?;
         self.salons.send_replace(Vec::new());
         self.fils.vider();
@@ -377,7 +358,6 @@ impl CoeurMatrix {
 
         let phrase = session::phrase_aleatoire()?;
         let mut client_connecte: Option<Client> = None;
-        let mut rapport = RapportMigration::default();
         let resultat = async {
             let client = self.construire(serveur, &phrase, false).await?;
             let connexion = match identification {
@@ -389,9 +369,6 @@ impl CoeurMatrix {
             connexion.initial_device_display_name(&self.nom_appareil).await?;
             client_connecte = Some(client.clone());
             activer_cache(&client)?;
-            if let Some(import) = import {
-                rapport = crate::migration::importer(&client, &self.dossier, import).await;
-            }
             let s = client.matrix_auth().session().ok_or(Erreur::PasDeSession)?;
             Session {
                 serveur: client.homeserver().to_string(),
@@ -404,7 +381,7 @@ impl CoeurMatrix {
                 },
             }
             .enregistrer(&self.dossier, &*self.coffre)?;
-            // Première synchro : publie les clés du nouvel appareil.
+            // Initial sync publishes the new device's keys.
             client.sync_once(synchro_immediate()).await?;
             Ok::<_, Erreur>(client)
         }
@@ -420,11 +397,10 @@ impl CoeurMatrix {
                 self.publier_connecte(&client);
                 self.lancer_synchro(client.clone());
                 *garde = Some(client);
-                Ok(rapport)
+                Ok(())
             }
             Err(e) => {
-                // Connecté au serveur mais échec ensuite : ne pas laisser un
-                // appareil orphelin sur le compte.
+                // If setup fails after sign-in, remove the orphaned server-side device.
                 if let Some(client) = client_connecte {
                     let _ = client.matrix_auth().logout().await;
                 }

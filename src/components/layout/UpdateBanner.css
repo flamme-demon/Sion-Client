@@ -22,8 +22,68 @@
   outline: 2px solid currentColor;
   outline-offset: 3px;
 }
+.sion-update-notes .sion-update-notes-close {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  flex-shrink: 0;
+  border-radius: 999px;
+  border: none;
+  font-size: 15px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
 .sion-update-banner [role="alert"] {
   flex-basis: 100%;
   text-align: center;
   overflow-wrap: anywhere;
+}
+
+.sion-update-transfer {
+  flex: 0 1 260px;
+  min-width: 190px;
+  max-width: 100%;
+  display: grid;
+  gap: 5px;
+  margin-inline: 8px;
+}
+.sion-update-transfer-details {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.sion-update-percent {
+  min-width: 4ch;
+  text-align: end;
+  font-weight: 700;
+}
+.sion-update-progress {
+  height: 5px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-on-primary) 20%, transparent);
+}
+.sion-update-progress-fill {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--color-on-primary);
+  transition: width 180ms ease-out;
+}
+.sion-update-progress-fill--pending {
+  animation: sion-update-pending 1.4s ease-in-out infinite;
+}
+@keyframes sion-update-pending {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(340%); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .sion-update-progress-fill { transition: none; }
+  .sion-update-progress-fill--pending { animation: none; margin-inline: auto; }
 }

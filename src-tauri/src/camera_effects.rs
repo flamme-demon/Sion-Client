@@ -67,7 +67,7 @@ pub async fn voice_native_camera_background_import(
             .map_err(|e| e.to_string())?
             .join("camera-backgrounds");
         std::fs::create_dir_all(&folder).map_err(|e| e.to_string())?;
-        let hash = format!("{:x}", Sha256::digest(&bytes));
+        let hash = Sha256::digest(&bytes).iter().map(|byte| format!("{byte:02x}")).collect::<String>();
         let path = folder.join(format!("{}.{}", &hash[..24], extension));
         let animated = ["mp4", "webm", "mov"].contains(&extension.as_str());
         let target = if animated {

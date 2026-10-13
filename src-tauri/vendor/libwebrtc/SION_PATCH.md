@@ -1,6 +1,6 @@
 # Sion `libwebrtc` extension
 
-Based on the published `libwebrtc` **0.3.50** crate used by LiveKit 0.9.3
+Based on the published `libwebrtc` **0.3.52** crate used by LiveKit 0.9.3
 (rebased from 0.3.46 on 02/10, patches unchanged).
 The original sources and notices are retained.
 

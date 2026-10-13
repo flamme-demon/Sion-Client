@@ -1,8 +1,4 @@
-export interface LiveKitConfig {
-  url: string;
-  token: string;
-  roomName: string;
-}
+
 
 export type ConnectionQuality = "excellent" | "good" | "poor" | "lost" | "unknown";
 

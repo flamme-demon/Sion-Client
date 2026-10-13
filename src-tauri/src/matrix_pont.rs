@@ -559,21 +559,6 @@ pub mod commandes {
         coeur()?.reprendre().await.map_err(|e| e.to_string())
     }
 
-    /// Connexion qui reprend l'appareil de l'ancien moteur (étape 4) : son
-    /// paquet de secrets et ses clés de salons, exportés par l'interface.
-    #[tauri::command]
-    pub async fn matrix_connecter_migration(
-        serveur: String,
-        identifiant: String,
-        mot_de_passe: String,
-        secrets: Option<serde_json::Value>,
-        cles: Option<String>,
-    ) -> Result<serde_json::Value, String> {
-        let import = sion_matrix::ImportMigration { secrets, cles_salons: cles };
-        let rapport = coeur()?.connecter_et_migrer(&serveur, &identifiant, &mot_de_passe, &import).await.map_err(|e| e.to_string())?;
-        serde_json::to_value(rapport).map_err(|e| e.to_string())
-    }
-
     #[tauri::command]
     pub async fn matrix_deconnecter() -> Result<(), String> {
         coeur()?.deconnecter().await.map_err(|e| e.to_string())
@@ -628,13 +613,13 @@ pub mod commandes {
     }
 
     #[tauri::command]
-    pub async fn matrix_envoyer_texte(salon: String, corps: String) -> Result<String, String> {
-        coeur()?.envoyer_texte(&salon, &corps).await.map_err(erreur)
+    pub async fn matrix_envoyer_texte(salon: String, corps: String, transaction: Option<String>) -> Result<String, String> {
+        coeur()?.envoyer_texte_transaction(&salon, &corps, transaction.as_deref()).await.map_err(erreur)
     }
 
     #[tauri::command]
-    pub async fn matrix_repondre(salon: String, cible: String, corps: String) -> Result<String, String> {
-        coeur()?.repondre(&salon, &cible, &corps).await.map_err(erreur)
+    pub async fn matrix_repondre(salon: String, cible: String, corps: String, transaction: Option<String>) -> Result<String, String> {
+        coeur()?.repondre_transaction(&salon, &cible, &corps, transaction.as_deref()).await.map_err(erreur)
     }
 
     #[tauri::command]
@@ -695,9 +680,20 @@ pub mod commandes {
         largeur: Option<u32>,
         hauteur: Option<u32>,
         duree_ms: Option<u64>,
+        legende: Option<String>,
+        miniature_chemin: Option<String>,
     ) -> Result<String, String> {
         let octets = lire_depot(&chemin)?;
-        let infos = sion_matrix::InfosMedia { largeur, hauteur, duree_ms };
+        #[cfg(not(target_os = "android"))]
+        let miniature = miniature_chemin.and_then(|p| {
+            let octets = lire_depot(&p).ok()?;
+            if octets.len() > 512 * 1024 { return None; }
+            let (largeur, hauteur) = image::ImageReader::with_format(std::io::Cursor::new(&octets), image::ImageFormat::Jpeg).into_dimensions().ok()?;
+            Some(sion_matrix::MiniatureMedia { octets, largeur, hauteur })
+        });
+        #[cfg(target_os = "android")]
+        let miniature = { let _ = miniature_chemin; None };
+        let infos = sion_matrix::InfosMedia { largeur, hauteur, duree_ms, legende, miniature };
         coeur()?.envoyer_fichier(&salon, octets, &nom, &mime, infos).await.map_err(erreur)
     }
 
@@ -1254,17 +1250,6 @@ pub mod commandes {
     }
 
     #[tauri::command]
-    pub async fn matrix_connecter_migration(
-        _serveur: String,
-        _identifiant: String,
-        _mot_de_passe: String,
-        _secrets: Option<serde_json::Value>,
-        _cles: Option<String>,
-    ) -> Result<serde_json::Value, String> {
-        Err(INACTIF.into())
-    }
-
-    #[tauri::command]
     pub async fn matrix_deconnecter() -> Result<(), String> {
         Err(INACTIF.into())
     }
@@ -1305,12 +1290,12 @@ pub mod commandes {
     }
 
     #[tauri::command]
-    pub async fn matrix_envoyer_texte(_salon: String, _corps: String) -> Result<String, String> {
+    pub async fn matrix_envoyer_texte(_salon: String, _corps: String, _transaction: Option<String>) -> Result<String, String> {
         Err(INACTIF.into())
     }
 
     #[tauri::command]
-    pub async fn matrix_repondre(_salon: String, _cible: String, _corps: String) -> Result<String, String> {
+    pub async fn matrix_repondre(_salon: String, _cible: String, _corps: String, _transaction: Option<String>) -> Result<String, String> {
         Err(INACTIF.into())
     }
 
@@ -1371,6 +1356,8 @@ pub mod commandes {
         _largeur: Option<u32>,
         _hauteur: Option<u32>,
         _duree_ms: Option<u64>,
+        _legende: Option<String>,
+        _miniature_chemin: Option<String>,
     ) -> Result<String, String> {
         Err(INACTIF.into())
     }

@@ -137,6 +137,10 @@ echo "  ffmpeg embarque ($(du -h "$APPDIR/usr/lib/sion-client/resources/ffmpeg" 
 # leurs licences et attributions à côté des ressources de l'application.
 cp "$PROJECT_DIR/src-tauri/resources/camera-NOTICES.txt" "$APPDIR/usr/lib/sion-client/resources/"
 
+# Local voice activity detection must also be available in the shipped AppImage.
+cp "$PROJECT_DIR/src-tauri/resources/silero-vad-v6.2-F32.gguf" "$APPDIR/usr/lib/sion-client/resources/"
+cp "$PROJECT_DIR/src-tauri/resources/transcription-NOTICES.txt" "$APPDIR/usr/lib/sion-client/resources/"
+
 # Decodeur AV1 pour le moteur web.
 #
 # WebKitGTK ne decode rien lui-meme : il delegue a GStreamer et construit sa

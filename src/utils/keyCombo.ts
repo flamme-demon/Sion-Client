@@ -1,8 +1,8 @@
 // Key-combo helpers shared by settings, soundboard hotkeys and the web
-// fallback matcher. Combos are stored as PHYSICAL key codes (W3C `e.code`:
-// "KeyA", "Digit1", "Backquote", "F9"), joined with "+", modifiers first —
-// layout characters like "²" or "Ù" produced by `e.key` can't be registered
-// with rdev or the global-shortcut plugin, which both reason in physical keys.
+// fallback matcher. Combos are stored as PHYSICAL key codes (W3C e.code:
+// KeyA, Digit1, Backquote, F9), joined with +, modifiers first. Layout
+// characters from e.key cannot be registered with rdev or the global-shortcut
+// plugin, which both use physical keys.
 
 const MODIFIERS = ["Ctrl", "Shift", "Alt", "Meta"];
 
@@ -44,9 +44,9 @@ try {
     .catch(() => {});
 } catch { /* no Keyboard API */ }
 
-// F-keys interceptées par la webview avant la page (aide, recherche, reload,
-// caret, plein écran, devtools) — inutilisables comme raccourcis globaux.
-export const WEBVIEW_RESERVED_F_KEYS = new Set(["F1", "F3", "F5", "F7", "F11", "F12"]);
+// Webview-intercepted function keys (help, search, reload, caret, fullscreen,
+// DevTools) cannot serve as global shortcuts.
+const WEBVIEW_RESERVED_F_KEYS = new Set(["F1", "F3", "F5", "F7", "F11", "F12"]);
 
 export type ComboIssue = "empty" | "f12" | "webview-fkey" | "bare";
 

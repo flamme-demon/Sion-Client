@@ -6,6 +6,14 @@ import remarkBreaks from "remark-breaks";
 import rehypeHighlight from "rehype-highlight";
 import type { Components } from "react-markdown";
 import { useAppStore } from "../../stores/useAppStore";
+import { creerCacheRendus } from "../../utils/cacheRendusMessages";
+
+const htmlDeMessage = creerCacheRendus<{ __html: string }>();
+const markdownDeMessage = creerCacheRendus<ReactNode>();
+if (import.meta.hot) import.meta.hot.dispose(() => {
+  htmlDeMessage.dispose();
+  markdownDeMessage.dispose();
+});
 
 // Sanitize Matrix HTML — allow safe tags only
 function sanitizeHtml(html: string): string {
@@ -195,7 +203,7 @@ interface MarkdownRendererProps {
  *  (04/10). */
 export const MarkdownRenderer = memo(function MarkdownRenderer({ content, formattedBody, msgtype }: MarkdownRendererProps) {
   const openUserContextMenu = useAppStore((s) => s.openUserContextMenu);
-  const html = useMemo(() => (formattedBody ? { __html: sanitizeHtml(formattedBody) } : null), [formattedBody]);
+  const html = useMemo(() => (formattedBody ? htmlDeMessage(formattedBody, () => ({ __html: sanitizeHtml(formattedBody) })) : null), [formattedBody]);
 
   // If Matrix HTML is available, sanitize and render directly
   if (html) {
@@ -244,12 +252,27 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({ content, format
   }
 
   // Regular messages — render as Markdown
-  return (
-    <Markdown remarkPlugins={REMARK} rehypePlugins={REHYPE} components={components}>
-      {content}
-    </Markdown>
-  );
+  // Markdown est un transformateur synchrone sans hooks. Ses éléments
+  // préparés gardent les composants (copie du code, liens…) dont l'état React
+  // reste propre à chaque affichage ; seule l'analyse du texte est partagée.
+  return markdownDeMessage(content, () => Markdown({
+    children: content, remarkPlugins: REMARK, rehypePlugins: REHYPE, components,
+  }));
 });
 
 const REMARK = [remarkGfm, remarkBreaks];
 const REHYPE = [rehypeHighlight];
+
+/** Markdown d'un document — notes de version, par exemple. Mêmes styles que
+ *  les messages, mais sans `remark-breaks` : un document est coupé à 76
+ *  colonnes, et chaque retour à la ligne y deviendrait un saut. Jamais de
+ *  HTML brut (pas de rehype-raw) : le texte vient d'une page externe. */
+export function DocumentMarkdown({ content }: { content: string }) {
+  return (
+    <Markdown remarkPlugins={REMARK_DOCUMENT} components={components}>
+      {content}
+    </Markdown>
+  );
+}
+
+const REMARK_DOCUMENT = [remarkGfm];

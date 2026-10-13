@@ -1,18 +1,26 @@
 import { useTranslation } from "react-i18next";
-import { useRef, useState, useEffect } from "react";
+import { useRef, useState, useEffect, type ReactNode } from "react";
 import { useAuthStore } from "../../stores/useAuthStore";
 import { useAppStore } from "../../stores/useAppStore";
 import { useMatrixStore } from "../../stores/useMatrixStore";
 import * as matrixService from "../../services/matrixService";
 import { UserAvatar } from "./UserAvatar";
-import { ArrowLeftIcon } from "../icons";
+import { ArrowLeftIcon, PhoneIcon } from "../icons";
 import { useIsMobile } from "../../hooks/useIsMobile";
 import { SIDEBAR_RAIL_WIDTH } from "../../stores/useLayoutStore";
 import { ImageCropper } from "../chat/ImageCropper";
-import { SectionsCompteRust } from "./SectionsCompteRust";
+import { Banniere, Ignores, SuppressionCompte } from "./SectionsCompteRust";
 import { moteurRust } from "../../services/moteur";
 import { SUR_ANDROID } from "../../utils/plateforme";
 import { ConnexionTelephoneModal } from "../qr/ConnexionTelephoneModal";
+import "./AccountPopover.css";
+
+function SectionCompte({ title, children }: { title: string; children: ReactNode }) {
+  return <section className="sion-account-section" aria-label={title}>
+    <h2>{title}</h2>
+    {children}
+  </section>;
+}
 
 export function AccountPopover({ compact = false }: { compact?: boolean }) {
   const { t } = useTranslation();
@@ -265,6 +273,33 @@ export function AccountPopover({ compact = false }: { compact?: boolean }) {
       {/* Content wrapper for mobile padding */}
       <div style={{ padding: isMobile ? '0 16px 16px' : 0, display: 'flex', flexDirection: 'column', gap: 12 }}>
 
+      {moteurRust() && !SUR_ANDROID && (
+        <button
+          type="button"
+          className="sion-account-phone"
+          onClick={() => setConnexionTelephone(true)}
+          aria-label={t("qr.connectPhoneTitle")}
+          aria-describedby="sion-account-phone-hint"
+        >
+          <span className="sion-account-phone-icon" aria-hidden="true"><PhoneIcon size={26} /></span>
+          <span className="sion-account-phone-content">
+            <strong>{t("qr.phoneCardTitle")}</strong>
+            <span id="sion-account-phone-hint" className="sion-account-phone-hint">{t("qr.phoneCardHint")}</span>
+            <span className="sion-account-phone-action">
+              {t("qr.phoneCardAction")}
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m9 5 7 7-7 7" /></svg>
+            </span>
+          </span>
+        </button>
+      )}
+      {connexionTelephone && (
+        <ConnexionTelephoneModal
+          onFermer={() => setConnexionTelephone(false)}
+          onVerification={() => { setConnexionTelephone(false); toggleAccountPanel(); }}
+        />
+      )}
+
+      <SectionCompte title={t("account.profileSection")}>
       {/* Avatar + Display Name */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
         <div
@@ -313,6 +348,15 @@ export function AccountPopover({ compact = false }: { compact?: boolean }) {
         </div>
       </div>
 
+      {credentials?.userId && (
+        <dl style={{ margin: 0, fontSize: 12, minWidth: 0 }}>
+          <dt style={{ fontSize: 11, color: 'var(--color-on-surface-variant)' }}>{t("account.matrixId")}</dt>
+          <dd style={{ margin: '4px 0 0', color: 'var(--color-on-surface)', overflowWrap: 'anywhere', userSelect: 'text', WebkitUserSelect: 'text' }}>
+            {credentials.userId}
+          </dd>
+        </dl>
+      )}
+
       {nameChanged && (
         <button
           onClick={handleSaveDisplayName}
@@ -344,6 +388,10 @@ export function AccountPopover({ compact = false }: { compact?: boolean }) {
         </div>
       )}
 
+      {moteurRust() && <Banniere />}
+      </SectionCompte>
+
+      <SectionCompte title={t("account.securitySection")}>
       {/* Change Password */}
       <button
         onClick={() => { setShowPasswordForm(!showPasswordForm); setPasswordMsg(null); }}
@@ -409,6 +457,7 @@ export function AccountPopover({ compact = false }: { compact?: boolean }) {
       )}
 
       {/* Regenerate Recovery Key — only visible when device is verified */}
+      {!needsVerification && <p className="sion-account-hint">{t("account.recoveryHint")}</p>}
       {!needsVerification && !confirmRegenerate && (
         <button
           onClick={() => { setConfirmRegenerate(true); setRegenerateError(null); }}
@@ -501,33 +550,6 @@ export function AccountPopover({ compact = false }: { compact?: boolean }) {
         <div style={{ fontSize: 11, color: 'var(--color-error)' }}>{regenerateError}</div>
       )}
 
-      {/* Connecter un téléphone par QR code (moteur Rust, depuis l'ordinateur) */}
-      {moteurRust() && !SUR_ANDROID && (
-        <button
-          onClick={() => setConnexionTelephone(true)}
-          style={{
-            width: '100%',
-            padding: '8px 12px',
-            borderRadius: 12,
-            border: '1px solid var(--color-outline-variant)',
-            background: 'var(--color-surface-container-high)',
-            color: 'var(--color-on-surface)',
-            fontSize: 13,
-            fontFamily: 'inherit',
-            cursor: 'pointer',
-            textAlign: 'left',
-          }}
-        >
-          {t("qr.connectPhone")}
-        </button>
-      )}
-      {connexionTelephone && (
-        <ConnexionTelephoneModal
-          onFermer={() => setConnexionTelephone(false)}
-          onVerification={() => { setConnexionTelephone(false); toggleAccountPanel(); }}
-        />
-      )}
-
       {/* Sessions */}
       <button
         onClick={() => {
@@ -551,7 +573,7 @@ export function AccountPopover({ compact = false }: { compact?: boolean }) {
           textAlign: 'left',
         }}
       >
-        {t("settings.sessions")}
+        {t("account.devices")}
       </button>
 
       {showSessions && (
@@ -703,7 +725,11 @@ export function AccountPopover({ compact = false }: { compact?: boolean }) {
           )}
         </div>
       )}
-      {moteurRust() && <SectionsCompteRust />}
+      {moteurRust() && <Ignores />}
+      </SectionCompte>
+      {moteurRust() && <SectionCompte title={t("account.deleteSection")}>
+        <SuppressionCompte />
+      </SectionCompte>}
       </div>{/* end content wrapper */}
     </div>
     </>

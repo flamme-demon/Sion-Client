@@ -168,11 +168,14 @@ it("un départ de salon attend une connexion vocale déjà engagée avant de rac
 
 it("n'installe plus de heartbeat si la session ferme pendant la lecture tardive de son état", async () => {
   let terminer!: (value: null) => void;
-  services.status.mockImplementationOnce(() => new Promise((resolve) => { terminer = resolve; }));
+  let started!: () => void;
+  const statusStarted = new Promise<void>((resolve) => { started = resolve; });
+  services.status.mockImplementationOnce(() => new Promise((resolve) => { terminer = resolve; started(); }));
+  const interval = vi.spyOn(globalThis, "setInterval");
   await vue.render(<CommandesVocales />);
   let connexion!: Promise<void>;
   await act(async () => { connexion = commandes.joinVoiceChannel("!vocal:test"); });
-  await vi.waitFor(() => expect(services.status).toHaveBeenCalledOnce());
+  await statusStarted;
   await act(async () => { await session!.onClosed(); terminer(null); await connexion; });
-  expect(vi.getTimerCount()).toBe(0);
+  expect(interval).not.toHaveBeenCalled();
 });

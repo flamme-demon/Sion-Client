@@ -1,14 +1,27 @@
 .sion-membres { display: flex; flex-direction: column; flex: 1; min-height: 0; overflow: hidden; container: membres / size; }
+.sion-membres-recherche { flex-shrink: 0; padding: 6px 12px; }
+.sion-membres-recherche input::-webkit-search-cancel-button { -webkit-appearance: none; }
+.sion-membres-recherche .sion-recherche-effacer { background: transparent; color: var(--color-on-surface-variant); }
+.sion-membres-recherche .sion-recherche-effacer:hover { background: var(--color-surface-container-highest); }
+.sion-membres-recherche .sion-recherche-effacer:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; }
+.sion-membres-recherche .sion-recherche-effacer svg { width: 16px; height: 16px; }
+.sion-membres-vide { grid-column: 1 / -1; margin: 0; padding: 12px 10px; font-size: 12px; color: var(--color-on-surface-variant); }
 .sion-membres-groupes { overflow-y: auto; flex: 1; padding: 6px 6px 12px; }
 .sion-membres-groupe { min-width: 0; }
 .sion-membres-groupe-titre { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; color: var(--color-outline); padding: 10px 10px 4px; }
-.sion-membre { display: flex; align-items: center; gap: 10px; padding: 7px 10px; border-radius: 12px; cursor: default; min-width: 0; }
+.sion-membres-liste { --sion-membre-pas: 54px; }
+.sion-membre { display: flex; align-items: center; gap: 10px; padding: 7px 10px; border-radius: 12px; cursor: default; min-width: 0; height: 54px; box-sizing: border-box; }
 .sion-membre:hover { background: var(--color-surface-container); }
 .sion-membre-nom { font-size: 14px; }
 .sion-membre-presence-inconnue { display: block; font-size: 10px; color: var(--color-on-surface-variant); }
 .sion-carte-panneau[data-panneau="members"] { container: carte-membres / size; }
 /* Les rangées larges présentent les états en colonnes ; chaque groupe
    défile séparément pour garder les quatre titres visibles. */
+:is(.sion-panneau--top, .sion-panneau--bottom) .sion-panneau-recherche { flex: 1; min-width: 100px; max-width: 240px; }
+.sion-panneau-recherche:empty { display: none; }
+.sion-panneau-recherche .sion-membres-recherche { padding: 0; }
+:is(.sion-panneau--top, .sion-panneau--bottom) .sion-membres-recherche .sion-recherche-panneau { min-height: 28px; padding: 1px 4px 1px 8px; }
+:is(.sion-panneau--top, .sion-panneau--bottom) .sion-membres-recherche input { padding: 4px 0; font-size: 11px; }
 :is(.sion-panneau--top, .sion-panneau--bottom) .sion-membres-groupes {
   display: grid;
   grid-auto-flow: column;
@@ -21,25 +34,32 @@
 :is(.sion-panneau--top, .sion-panneau--bottom) .sion-membres-groupe { display: flex; flex-direction: column; min-height: 0; }
 :is(.sion-panneau--top, .sion-panneau--bottom) .sion-membres-groupe + .sion-membres-groupe { border-left: 1px solid var(--color-border); padding-left: 10px; }
 :is(.sion-panneau--top, .sion-panneau--bottom) .sion-membres-groupe-titre { flex-shrink: 0; padding-top: 4px; padding-bottom: 6px; }
-:is(.sion-panneau--top, .sion-panneau--bottom) .sion-membres-liste { overflow-y: auto; min-height: 0; scrollbar-width: thin; }
-:is(.sion-panneau--top, .sion-panneau--bottom) .sion-membre { padding: 5px 8px; }
+:is(.sion-panneau--top, .sion-panneau--bottom) .sion-membres-liste { --sion-membre-pas: 48px; overflow-y: auto; min-height: 0; scrollbar-width: thin; }
+:is(.sion-panneau--top, .sion-panneau--bottom) .sion-membre { padding: 5px 8px; height: 48px; }
 :is(.sion-panneau--top, .sion-panneau--bottom) .sion-membre-nom { line-height: 1.25; }
 :is(.sion-panneau--top, .sion-panneau--bottom) .sion-membre-salon { margin-top: 2px; }
 /* Une bande basse devient une rangée de petites cartes. Le passage dépend
    de la hauteur de la carte, sans redessiner les membres à chaque pixel. */
 @container carte-membres (max-height: 160px) {
   :is(.sion-panneau--top, .sion-panneau--bottom) .sion-panneau-entete { padding: 4px 10px; }
+  :is(.sion-panneau--top, .sion-panneau--bottom) .sion-membres-recherche .sion-recherche-panneau { min-height: 24px; }
+  :is(.sion-panneau--top, .sion-panneau--bottom) .sion-membres-recherche input { padding: 2px 0; }
+  :is(.sion-panneau--top, .sion-panneau--bottom) .sion-membres-recherche button { width: 20px; height: 20px; }
   :is(.sion-panneau--top, .sion-panneau--bottom) .sion-membres-groupes { grid-template-columns: var(--sion-membres-colonnes); gap: 8px; padding: 0 10px 4px; }
   :is(.sion-panneau--top, .sion-panneau--bottom) .sion-membres-groupe + .sion-membres-groupe { padding-left: 8px; }
   :is(.sion-panneau--top, .sion-panneau--bottom) .sion-membres-groupe-titre { padding: 2px 4px; font-size: 9px; line-height: 1.3; white-space: nowrap; }
-  :is(.sion-panneau--top, .sion-panneau--bottom) .sion-membres-liste { display: flex; align-items: flex-start; gap: 4px; overflow-x: auto; overflow-y: hidden; }
-  :is(.sion-panneau--top, .sion-panneau--bottom) .sion-membre { flex: 0 0 auto; width: 124px; gap: 6px; padding: 2px 4px; border-radius: 8px; }
+  :is(.sion-panneau--top, .sion-panneau--bottom) .sion-membres-liste { --sion-membre-pas: 128px; display: flex; align-items: flex-start; gap: 4px; overflow-x: auto; overflow-y: hidden; }
+  :is(.sion-panneau--top, .sion-panneau--bottom) .sion-membre { flex: 0 0 auto; width: 124px; height: 34px; gap: 6px; padding: 2px 4px; border-radius: 8px; }
   :is(.sion-panneau--top, .sion-panneau--bottom) .sion-membre-avatar { --sion-avatar-taille: 24px; --sion-avatar-police: 10px; --sion-avatar-presence: 8px; }
   :is(.sion-panneau--top, .sion-panneau--bottom) .sion-membre-nom { font-size: 12px; line-height: 1.25; }
   :is(.sion-panneau--top, .sion-panneau--bottom) .sion-membre-salon { font-size: 9px; line-height: 1.25; margin-top: 0; }
   :is(.sion-panneau--top, .sion-panneau--bottom) .sion-membre-presence-inconnue { font-size: 9px; }
   :is(.sion-panneau--top, .sion-panneau--bottom) .sion-membre-onde { width: 12px; gap: 1px; }
   :is(.sion-panneau--top, .sion-panneau--bottom) .sion-membre-afk svg { width: 12px; height: 12px; }
+}
+
+@container carte-membres (max-width: 480px) {
+  :is(.sion-panneau--top, .sion-panneau--bottom) .sion-panneau-entete > .sion-panneau-compteur { display: none; }
 }
 
 .sion-membre-salon {

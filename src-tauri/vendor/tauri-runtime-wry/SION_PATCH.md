@@ -1,4 +1,4 @@
-# Patch Sion — tauri-runtime-wry 2.11.4
+# Patch Sion — tauri-runtime-wry 2.12.1
 
 ## Problème
 
@@ -22,7 +22,7 @@ les callbacks GTK.
 Dans `src/lib.rs`, le `GtkOverlay` est créé et ajouté au vbox avant `build_gtk`,
 puis la WebView est construite directement comme son enfant principal. C'est
 le chemin Sion par défaut ; `SION_DISABLE_NATIVE_VIDEO_SURFACE=1` rétablit le
-conteneur publié par `tauri-runtime-wry` 2.11.4 pour le diagnostic.
+conteneur publié par `tauri-runtime-wry` 2.12.1 pour le diagnostic.
 
 ## Retrait
 

@@ -1,50 +1,39 @@
 /**
- * Quelqu'un est-il devant Sion ? Une seule notion de présence, pour les
- * non-lus (MessageList) comme pour les notifications système. Chargé dès le
- * démarrage (`main.tsx`) : un suivi installé plus tard ne saurait pas que la
- * fenêtre a déjà été quittée.
+ * One presence model for read receipts and system notifications, initialized
+ * at startup in main.tsx. Absence means leaving or hiding the window, or one
+ * minute without keyboard/mouse activity.
  *
- * Absent = fenêtre quittée (vers une autre application), cachée, ou sans
- * souris ni clavier depuis une minute — Sion resté au premier plan pendant
- * qu'on est devant un autre écran compte comme une absence (28/09 : mention
- * sans notification, l'utilisateur étant sur l'autre PC).
+ * WebKitGTK document.hasFocus can stay false while a native video surface
+ * has focus; use Tauri window focus instead of webview blur.
  *
- * `document.hasFocus()` ne convient pas : sous WebKitGTK il peut rester faux
- * alors qu'on est dans la fenêtre (focus sur la surface native du partage
- * d'écran). Pour la même raison, sous Tauri, la fenêtre quittée se lit sur la
- * fenêtre elle-même (`onFocusChanged`), pas sur le `blur` du WebView.
- *
- * Passer la souris au-dessus de Sion ne ramène pas : avec plusieurs écrans,
- * le pointeur traverse Sion pendant qu'on travaille ailleurs (29/09 : trois
- * mentions lues d'office, aucune notification). Seuls un clic, une touche ou
- * le retour du focus sur la fenêtre ramènent.
+ * Pointer movement alone does not restore presence because it may cross Sion
+ * while working on another monitor. Restore on click, keypress or window focus.
  */
 
-/** Sans souris ni clavier depuis ce délai, l'utilisateur est absent. */
-export const DELAI_ABSENCE_MS = 60_000;
+/** Without keyboard or mouse activity for this duration, the user is absent. */
+const DELAI_ABSENCE_MS = 60_000;
 
-/** Sur téléphone, l'écran s'éteint de lui-même et l'appli passée en arrière-
- *  plan cache la page : seule la visibilité compte. Lire un long message sans
- *  toucher l'écran n'est pas une absence, et Tauri n'y suit pas le focus de la
- *  fenêtre (`is_focused` ignoré, aucun évènement). */
+/**
+ * On mobile, use page visibility: the screen turns off or backgrounding hides it.
+ * Reading without touching the screen is not absence, and Tauri does not track mobile focus.
+ */
 const SUR_TELEPHONE = typeof navigator !== "undefined" && /Android/i.test(navigator.userAgent);
 
-/** Évènements qui prouvent qu'on est là. */
+/** Events that establish user presence. */
 export const EVENEMENTS_ACTIVITE = ["pointermove", "pointerdown", "keydown", "wheel", "touchstart", "focus"] as const;
 
-/** Gestes qui ne se font que dans la fenêtre active : ils prouvent qu'on y
- *  est revenu. Le survol et la molette, possibles sur une fenêtre inactive,
- *  ne font que repousser l'inactivité. */
+/**
+ * Active-window gestures restore presence. Hover and scrolling can occur
+ * in an inactive window, so they only extend the inactivity deadline.
+ */
 const GESTES_DE_RETOUR: ReadonlySet<string> = new Set(["pointerdown", "keydown", "touchstart", "focus"]);
 
-/** Émis sur `window` quand la fenêtre Tauri gagne ou perd le focus : les
- *  suivis de la présence se réévaluent aussitôt. */
+/** Window event emitted when Tauri focus changes so presence listeners reevaluate immediately. */
 export const EVENEMENT_PRESENCE = "sion:presence";
 
 let fenetreQuittee = false;
 let derniereActivite = Date.now();
-/** La fenêtre Tauri dit elle-même si elle est active : le `blur` du WebView
- *  est alors ignoré. */
+/** Use Tauri's window focus and ignore webview blur when this signal is available. */
 let focusParTauri = false;
 
 if (typeof window !== "undefined") {
@@ -73,8 +62,7 @@ async function suivreFenetreTauri(): Promise<void> {
   signaler(await fenetre.isFocused());
 }
 
-/** Suivi du focus de la fenêtre Tauri, installé au chargement (attendu par
- *  les tests). En cas d'échec, le `blur` du WebView reste la référence. */
+/** Install Tauri focus tracking at module load. Fall back to webview blur if setup fails. */
 export const suiviFenetre: Promise<void> = suivreFenetreTauri().catch((e) => {
   console.warn("[Sion][présence] focus de la fenêtre non suivi :", e);
 });
@@ -83,7 +71,7 @@ export interface EtatPresence {
   present: boolean;
   visible: boolean;
   quittee: boolean;
-  /** Secondes depuis la dernière action. */
+  /** Seconds since the last user action. */
   inactifS: number;
 }
 
@@ -103,7 +91,7 @@ export function utilisateurPresent(): boolean {
   return etatPresence().present;
 }
 
-/** Tests : repart d'un utilisateur présent, à l'instant. */
+/** Reset tests to a present user at the current time. */
 export function reinitialiserPresence(): void {
   fenetreQuittee = false;
   derniereActivite = Date.now();

@@ -18,6 +18,7 @@ import { PanelBackgroundLayer } from "./PanelBackground";
 import { useAppStore } from "../../stores/useAppStore";
 import { useLiveKitStore } from "../../stores/useLiveKitStore";
 import { useIsMobile } from "../../hooks/useIsMobile";
+import { usePanneauxVisibles } from "../../hooks/usePanneauxVisibles";
 import { readDroppedFile } from "../../utils/droppedFile";
 import { MOBILE_VOICE_BAR_HEIGHT } from "../mobile/MobileVoiceBar";
 
@@ -35,10 +36,10 @@ export function MainArea() {
   const connectedVoice = useAppStore((s) => s.connectedVoiceChannel);
   const isMobile = useIsMobile();
   const positionEspaces = useLayoutStore((s) => s.positionEspaces);
-  const panneauxDesDeuxCotes = useLayoutStore((s) =>
-    s.panneaux.some((id) => s.positionsPanneaux[id] === "left")
-    && s.panneaux.some((id) => (s.positionsPanneaux[id] ?? "right") === "right"),
-  );
+  const panneauxVisibles = usePanneauxVisibles();
+  const positionsPanneaux = useLayoutStore((s) => s.positionsPanneaux);
+  const panneauxDesDeuxCotes = panneauxVisibles.some((id) => positionsPanneaux[id] === "left")
+    && panneauxVisibles.some((id) => (positionsPanneaux[id] ?? "right") === "right");
   // Portail du chunk paresseux, **collant** : on monte la vue dès qu'un
   // partage est vu et on la garde montée (son early-return gère l'absence de
   // partage, comme avant le chargement paresseux). Sans ce latch, un

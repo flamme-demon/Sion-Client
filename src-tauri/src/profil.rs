@@ -120,11 +120,11 @@ fn ecrire(destination: &Path, manifeste: &str, fichiers: &[FichierAEcrire]) -> R
     let resultat = (|| {
         let fichier = std::fs::File::create(&partiel).map_err(|e| format!("création : {e}"))?;
         let mut zip = zip::ZipWriter::new(fichier);
-        let texte = zip::write::FileOptions::default()
+        let texte = zip::write::SimpleFileOptions::default()
             .compression_method(zip::CompressionMethod::Deflated);
         // Images et sons sont déjà compressés : les recompresser ne gagne rien.
         let brut =
-            zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
+            zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
         zip.start_file(MANIFESTE, texte).map_err(|e| e.to_string())?;
         zip.write_all(manifeste.as_bytes()).map_err(|e| e.to_string())?;
         for f in &retenus {
@@ -158,7 +158,7 @@ fn lire(chemin: &Path) -> Result<ProfilLu, String> {
     let mut total = 0u64;
     for i in 0..zip.len() {
         let entree = zip.by_index(i).map_err(|e| e.to_string())?;
-        let nom = entree.name().to_string();
+        let nom = entree.name().map_err(|e| e.to_string())?.into_owned();
         if nom == MANIFESTE || entree.is_dir() {
             continue;
         }
@@ -416,7 +416,7 @@ mod tests {
         let profil = d.join("piege.sionprofil");
         {
             let mut zip = zip::ZipWriter::new(std::fs::File::create(&profil).unwrap());
-            let o = zip::write::FileOptions::default();
+            let o = zip::write::SimpleFileOptions::default();
             zip.start_file("manifest.json", o).unwrap();
             zip.write_all(b"{}").unwrap();
             zip.start_file("fichiers/../../evade.png", o).unwrap();

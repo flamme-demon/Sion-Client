@@ -1,4 +1,4 @@
-import { Suspense, useEffect, useLayoutEffect, useRef } from "react";
+import { Suspense, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useLayoutStore, PANNEAU_MIN_WIDTH, PANNEAU_MAX_WIDTH, PANNEAU_DEFAULT_WIDTH,
   PANNEAUX_BAS_MIN_HEIGHT, PANNEAUX_BAS_MAX_HEIGHT, PANNEAUX_BAS_DEFAULT_HEIGHT,
@@ -11,6 +11,8 @@ import { useDeplacementModule } from "./useDeplacementModule";
 import { LIBELLES_PLACEMENT, ordreApresPlacement, useApercuPlacementModule } from "./apercuPlacementModule";
 import { ModuleEnMain } from "./ModuleEnMain";
 import { ContexteBoard } from "../chat/ContexteBoard";
+import { RechercheEntetePanneau } from "./RechercheEntetePanneau";
+import { usePanneauxVisibles } from "../../hooks/usePanneauxVisibles";
 
 const LIBELLES_COMPTEURS: Partial<Record<PanneauId, { cle: string; un: string; plusieurs: string }>> = {
   soundboard: { cle: "soundboard.soundCount", un: "{{count}} son", plusieurs: "{{count}} sons" },
@@ -26,12 +28,14 @@ function Compteur({ id }: { id: PanneauId }) {
   if (total == null) return null;
   const libelle = LIBELLES_COMPTEURS[id];
   const texte = libelle ? t(libelle.cle, { count: total, defaultValue: total === 1 ? libelle.un : libelle.plusieurs }) : total;
-  return <span style={{ fontSize: 10, padding: '2px 7px', borderRadius: 999, whiteSpace: 'nowrap', flexShrink: 0, color: 'var(--color-on-surface-variant)', background: 'var(--color-surface-container-high)' }}>{texte}</span>;
+  return <span className="sion-panneau-compteur" style={{ fontSize: 10, padding: '2px 7px', borderRadius: 999, whiteSpace: 'nowrap', flexShrink: 0, color: 'var(--color-on-surface-variant)', background: 'var(--color-surface-container-high)' }}>{texte}</span>;
 }
 
 function CartePanneau({ id, zone }: { id: PanneauId; zone: ZonePanneau }) {
   const { t } = useTranslation();
   const ref = useRef<HTMLDivElement>(null);
+  const [enteteRecherche, setEnteteRecherche] = useState<HTMLDivElement | null>(null);
+  const rechercheEnEntete = id === "members" && (zone === "top" || zone === "bottom");
   const deplacement = useDeplacementModule(id);
   useEffect(() => {
     if (useLayoutStore.getState().panneau !== id) return;
@@ -47,11 +51,13 @@ function CartePanneau({ id, zone }: { id: PanneauId; zone: ZonePanneau }) {
   return <div ref={ref} className="sion-carte-panneau" data-panneau={id}
     onKeyDown={(e) => { if (e.key === "Escape") { e.stopPropagation(); fermer(); } }}>
     <Bulle as="aside" scope={id} aria-label={t(PANNEAU_TITRES[id])} style={{ height: '100%', width: '100%' }}>
+      <RechercheEntetePanneau.Provider value={rechercheEnEntete ? enteteRecherche : null}>
       <div className="sion-panneau-entete">
         <div className="sion-panneau-titre" title={t("layout.dragPanel", { defaultValue: "Glisser pour déplacer le module" })} {...deplacement}>
           <span aria-hidden className="sion-poignee-module">⠿</span><span>{t(PANNEAU_TITRES[id])}</span>
         </div>
         <Compteur id={id} />
+        {rechercheEnEntete && <div className="sion-panneau-recherche" ref={setEnteteRecherche} />}
         <select className="sion-position-module" value={zone}
           aria-label={t("layout.panelPosition", { defaultValue: "Position de {{name}}", name: t(PANNEAU_TITRES[id]) })}
           onChange={(e) => {
@@ -73,6 +79,7 @@ function CartePanneau({ id, zone }: { id: PanneauId; zone: ZonePanneau }) {
       </div>
       {(id === "soundboard" || id === "memeboard") && <ContexteBoard />}
       <Suspense fallback={<div style={{ padding: 16, fontSize: 12 }}>{t("chat.loading")}</div>}><Corps /></Suspense>
+      </RechercheEntetePanneau.Provider>
     </Bulle>
   </div>;
 }
@@ -80,7 +87,7 @@ function CartePanneau({ id, zone }: { id: PanneauId; zone: ZonePanneau }) {
 /** Plusieurs bulles empilées sur les côtés, côte à côte en haut et en bas. */
 export function PanneauLateral({ zone = "right" }: { zone?: ZonePanneau }) {
   const { t } = useTranslation();
-  const panneaux = useLayoutStore((s) => s.panneaux);
+  const panneaux = usePanneauxVisibles();
   const positions = useLayoutStore((s) => s.positionsPanneaux);
   const taille = useLayoutStore((s) => zone === "top" ? s.hauteurPanneauxHaut : zone === "bottom" ? s.hauteurPanneauxBas : zone === "left" ? s.largeurPanneauGauche : s.largeurPanneau);
   const visibles = panneaux.filter((id) => (positions[id] ?? "right") === zone);
@@ -101,7 +108,7 @@ export function CiblesModules() {
   const { t } = useTranslation();
   const deplacement = useLayoutStore((s) => s.panneauEnDeplacement);
   const cible = useApercuPlacementModule((s) => s.cible);
-  const panneaux = useLayoutStore((s) => s.panneaux);
+  const panneaux = usePanneauxVisibles();
   const positions = useLayoutStore((s) => s.positionsPanneaux);
   const gauche = useLayoutStore((s) => s.largeurPanneauGauche);
   const positionEspaces = useLayoutStore((s) => s.positionEspaces);

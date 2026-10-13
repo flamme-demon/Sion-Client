@@ -12,72 +12,55 @@ use std::path::PathBuf;
 ///
 /// La contrepartie est que ces `.so`/`.dll` doivent voyager avec l'exécutable.
 ///
-/// On les cherche dans le dossier de build du crate -sys plutôt que via
-/// `DEP_TRANSCRIBE_LIB_DIR` : cargo ne transmet les variables `DEP_*` qu'aux
-/// dépendants DIRECTS du crate portant la clé `links`, or Sion passe par
-/// `transcribe-cpp` et n'est donc qu'un dépendant indirect.
+/// Transcribe 0.4 transmet le dossier exact de ses bibliothèques via les
+/// métadonnées Cargo. Ne jamais sélectionner un ancien build dans target/ :
+/// il peut encore contenir une ABI 0.1 et ne pas exporter les fonctions VAD.
 fn copy_transcribe_libs() {
-    // OUT_DIR = target/<profil>/build/<pkg>-<hash>/out → on remonte au dossier
-    // qui contiendra le binaire.
+    println!("cargo:rerun-if-env-changed=DEP_TRANSCRIBE_CPP_LIB_DIR");
+    let Some(lib_dir) = std::env::var_os("DEP_TRANSCRIBE_CPP_LIB_DIR").map(PathBuf::from) else {
+        return; // Android : aucun moteur ASR desktop dans ce graphe.
+    };
     let Some(target_dir) = std::env::var_os("OUT_DIR")
         .map(PathBuf::from)
-        .and_then(|p| p.ancestors().nth(3).map(PathBuf::from))
+        .and_then(|p| {
+            p.ancestors()
+                .find(|a| a.file_name().is_some_and(|n| n == "build"))
+                .and_then(|a| a.parent())
+                .map(PathBuf::from)
+        })
     else {
         return;
     };
 
-    // Plusieurs dossiers coexistent quand les features ont changé : on retient
-    // le plus récent qui contienne réellement des bibliothèques partagées.
-    let Ok(builds) = std::fs::read_dir(target_dir.join("build")) else {
-        return;
-    };
-    let mut best: Option<(std::time::SystemTime, PathBuf)> = None;
-    for entry in builds.flatten() {
-        let name = entry.file_name();
-        if !name.to_string_lossy().starts_with("transcribe-cpp-sys-") {
-            continue;
+    let mut directories = std::collections::BTreeSet::from([lib_dir]);
+    for key in ["RUNTIME_DIR", "MODULE_DIR", "BIN_DIR"] {
+        let variable = format!("DEP_TRANSCRIBE_CPP_{key}");
+        println!("cargo:rerun-if-env-changed={variable}");
+        if let Some(path) = std::env::var_os(variable) {
+            directories.insert(PathBuf::from(path));
         }
-        let lib = entry.path().join("out").join("lib");
-        let has_shared = std::fs::read_dir(&lib)
-            .map(|d| {
-                d.flatten().any(|f| {
-                    f.file_name().to_string_lossy().contains(".so")
-                        || f.file_name().to_string_lossy().ends_with(".dll")
-                })
-            })
-            .unwrap_or(false);
-        if !has_shared {
+    }
+    for directory in directories {
+        println!("cargo:rerun-if-changed={}", directory.display());
+        let Ok(entries) = std::fs::read_dir(&directory) else {
             continue;
-        }
-        let stamp = entry.metadata().and_then(|m| m.modified()).ok();
-        if let Some(stamp) = stamp {
-            if best.as_ref().map(|(t, _)| stamp > *t).unwrap_or(true) {
-                best = Some((stamp, lib));
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = entry.file_name();
+            let is_lib = name
+                .to_str()
+                .map(|n| n.contains(".so") || n.ends_with(".dll") || n.ends_with(".dylib"))
+                .unwrap_or(false);
+            if !is_lib || !path.is_file() {
+                continue;
             }
+            // Recopie inconditionnelle : une variante obsolète serait chargée en
+            // priorité et pourrait réexposer le SIGILL que tout ceci évite.
+            std::fs::copy(&path, target_dir.join(&name))
+                .expect("copie des bibliothèques de transcription");
         }
     }
-    let Some((_, lib_dir)) = best else {
-        return; // build statique : rien à recopier
-    };
-
-    let Ok(entries) = std::fs::read_dir(&lib_dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let name = entry.file_name();
-        let is_lib = name
-            .to_str()
-            .map(|n| n.contains(".so") || n.ends_with(".dll") || n.ends_with(".dylib"))
-            .unwrap_or(false);
-        if !is_lib || !path.is_file() {
-            continue;
-        }
-        // Recopie inconditionnelle : une variante obsolète serait chargée en
-        // priorité et pourrait réexposer le SIGILL que tout ceci évite.
-        let _ = std::fs::copy(&path, target_dir.join(&name));
-    }
-    println!("cargo:rerun-if-changed={}", lib_dir.display());
 }
 
 fn main() {

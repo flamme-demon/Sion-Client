@@ -2,7 +2,7 @@
 
 A TeamSpeak-like voice and text client built on the [Matrix](https://matrix.org/) protocol with [LiveKit](https://livekit.io/) for real-time audio/video — on Linux, Windows and Android.
 
-> **Status:** 2.0 is in beta (download it from [Releases](https://github.com/flamme-demon/Sion-Client/releases): AppImage, Windows installer, Android APK). The last stable release is 1.6.4; its maintenance branch is `release/1.6`. Upgrading from 1.x asks for the password once, then takes over the old session: the device stays verified and encrypted history stays readable.
+> **Current release:** [Sion Client 2.0.0](https://github.com/flamme-demon/Sion-Client/releases/tag/v2.0.0), for Linux (AppImage), Windows (installer) and Android (APK). See the [release notes](docs/release-notes-2.0.0.md) for the major changes since 1.6.4. Supported upgrades start at **2.0.0-beta.6**. The 1.x session/key-store migration has been retired; current native sessions and encryption keys use the Rust core's stores. The 1.x maintenance branch is `release/1.6`.
 
 ## Features
 
@@ -23,6 +23,7 @@ A TeamSpeak-like voice and text client built on the [Matrix](https://matrix.org/
 **Security & accounts**
 - **End-to-end encryption** for text and voice: [matrix-rust-sdk](https://github.com/matrix-org/matrix-rust-sdk) crypto + LiveKit E2EE, keys distributed over MatrixRTC
 - **Device verification** by QR code, emoji comparison or recovery key
+- **Room creation in Spaces** — text or voice, common or invitation-only, with an explicit end-to-end encryption option
 - **Phone sign-in by QR code** — on the PC, *Account → Connect a phone*; the phone scans it and signs in without typing anything (single-use `m.login.token`, 2 minutes)
 
 **Android**
@@ -30,6 +31,7 @@ A TeamSpeak-like voice and text client built on the [Matrix](https://matrix.org/
 - **Push notifications without Google services** — Sion keeps its own connection to an [ntfy](https://ntfy.sh/) server (Matrix push gateway); notifications arrive with the app closed, and can be answered inline
 
 **Everything else**
+- Integrated updates with release notes, downloaded/total size and percentage progress
 - Customizable layout: dockable/floating panels, themes and accent colour, exportable profiles (`.sionprofil`)
 - Global keyboard shortcuts (mute/deafen/soundboard), including AZERTY keys
 - Admin panel for [Continuwuity](https://github.com/continuwuation/continuwuity) (pending users, registration tokens, server stats and actions)
@@ -39,12 +41,12 @@ A TeamSpeak-like voice and text client built on the [Matrix](https://matrix.org/
 
 | Layer | Technology |
 |-------|-----------|
-| Runtime | [Bun](https://bun.sh/) 1.3+ |
-| Frontend | React 19.2, TypeScript 5.9, Vite 7.3, Tailwind CSS v4, Zustand 5 |
+| Runtime | [Bun](https://bun.sh/) 1.4+ |
+| Frontend | React 19.3, TypeScript 6.0, Vite 8.3, Tailwind CSS v4, Zustand 5 |
 | App shell | [Tauri 2](https://tauri.app/) with WRY — WebKitGTK (Linux), WebView2 (Windows), Android WebView |
-| Matrix | Rust core `sion-matrix` on [matrix-sdk](https://crates.io/crates/matrix-sdk) 0.19 (sync, crypto, verification, MatrixRTC). matrix-js-sdk remains only to migrate 1.x sessions |
+| Matrix | Native Rust core `sion-matrix` on [matrix-sdk](https://crates.io/crates/matrix-sdk) 0.19 (sync, crypto, verification, MatrixRTC). matrix-js-sdk supports the browser/development alternative |
 | Voice/Video | LiveKit Rust SDK (`livekit` + a patched `webrtc-sys`), native audio device and RNNoise |
-| i18n | react-i18next 16, i18next 25 |
+| i18n | react-i18next 17, i18next 26 |
 
 ## Project Structure
 
@@ -68,9 +70,9 @@ docs/                    # plans and release notes
 
 ## Prerequisites
 
-- [Bun](https://bun.sh/) ≥ 1.3 and [Rust](https://rustup.rs/) stable (≥ 1.96, required by matrix-sdk)
+- [Bun](https://bun.sh/) ≥ 1.4 and [Rust](https://rustup.rs/) stable (≥ 1.96, required by matrix-sdk)
 - clang ≥ 21 on Linux (the prebuilt libwebrtc ships a hermetic libc++), CMake + Ninja
-- Android: SDK, NDK 27.2, JDK 17 and the `aarch64-linux-android` Rust target
+- Android: SDK, NDK 30.0.16248370, JDK 17 and the `aarch64-linux-android` Rust target
 - A Matrix homeserver (tested with [Continuwuity](https://github.com/continuwuation/continuwuity)) and a LiveKit server with its MatrixRTC token service (`/sfu/get`)
 - Optional, downloaded in-app when needed: ffmpeg, yt-dlp, audio.cpp
 
@@ -89,6 +91,7 @@ bun run tauri dev                    # desktop app (Windows)
 bunx tsc -b                          # typecheck (the root tsconfig is a solution file:
                                      #   `tsc --noEmit` against it checks nothing)
 bun run lint
+bun run code:check                   # unused frontend files, exports and dependencies
 bun run test                         # vitest
 cd src-tauri && cargo test -j4       # Rust suites (app + sion-matrix core)
 ```
@@ -117,6 +120,10 @@ The Android release APK must be signed with the key of the published versions, o
 
 Pushing a `v*.*.*` tag triggers the **Release** workflow: Linux AppImage, Windows installer and signed Android APK are built in parallel and published as a GitHub Release (a pre-release when the tag has a suffix such as `-beta.4`). Release notes come from `docs/release-notes-<version>.md`. The Android job needs the `ANDROID_KEYSTORE_BASE64` and `ANDROID_KEYSTORE_PASSWORD` secrets (plus `ANDROID_KEY_PASSWORD` if the key has its own); the manual **Vérifier la clé Android** workflow checks them in a minute.
 
+Manual Release runs build the selected branch or existing tag without publishing
+by default. Enable `publish` to publish an existing tag. A stable release requires
+successful Linux, Windows and Android builds.
+
 ## Architecture
 
 - A voice channel is a Matrix room; being in its call is a MatrixRTC membership (`org.matrix.msc3401.call.member`), published and renewed by the Rust core, which also distributes the per-call media keys as encrypted to-device messages
@@ -125,6 +132,8 @@ Pushing a `v*.*.*` tag triggers the **Release** workflow: Linux AppImage, Window
 - Participant list = MatrixRTC memberships merged with LiveKit participants, per device (phone and PC can be in the same call)
 
 ## License
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution checks and the English code-comment convention.
 
 Sion is free software, licensed under either of
 

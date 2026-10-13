@@ -100,6 +100,7 @@ fn depuis_json(json: &Value, echec: bool) -> EvenementBrut {
         type_: if echec { "m.room.message".into() } else { chaine("type") },
         contenu: if echec { Value::Object(Default::default()) } else { json.get("content").cloned().unwrap_or(Value::Null) },
         id: chaine("event_id"),
+        transaction_id: json.pointer("/unsigned/transaction_id").and_then(Value::as_str).map(str::to_owned),
         expediteur: chaine("sender"),
         ts: json.get("origin_server_ts").and_then(Value::as_i64).unwrap_or(0),
         echec_dechiffrement: echec,
@@ -107,6 +108,26 @@ fn depuis_json(json: &Value, echec: bool) -> EvenementBrut {
             .pointer("/unsigned/m.relations/m.replace")
             .filter(|e| e.get("content").is_some())
             .map(|e| Box::new(depuis_json(e, false))),
+    }
+}
+
+#[cfg(test)]
+mod tests_echo {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn transaction_lue_dans_unsigned_meme_en_attente_de_dechiffrement() {
+        let json = json!({
+            "event_id": "$message", "type": "m.room.message", "sender": "@moi:hs",
+            "content": { "msgtype": "m.text", "body": "salut" },
+            "unsigned": { "transaction_id": "sion-transaction" }
+        });
+        for echec in [false, true] {
+            let brut = depuis_json(&json, echec);
+            assert_eq!(brut.transaction_id.as_deref(), Some("sion-transaction"));
+        }
+        assert!(depuis_json(&json!({ "event_id": "$autre" }), false).transaction_id.is_none());
     }
 }
 

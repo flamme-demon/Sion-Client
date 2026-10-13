@@ -169,7 +169,7 @@ async fn deroule(coeur: &CoeurMatrix, echange: &Path) {
         .expect("sondage");
     coeur.voter(&salon, &sondage, &["0".into()]).await.expect("vote");
     coeur.clore_sondage(&salon, &sondage).await.expect("clôture");
-    let infos = InfosMedia { largeur: Some(1), hauteur: Some(1), duree_ms: None };
+    let infos = InfosMedia { largeur: Some(1), hauteur: Some(1), duree_ms: None, ..Default::default() };
     let fichier = coeur.envoyer_fichier(&salon, PNG.to_vec(), "rust.png", "image/png", infos).await.expect("fichier");
     let supprime = coeur.envoyer_texte(&salon, &format!("R-à-supprimer {nonce}")).await.expect("texte");
     coeur.supprimer(&salon, &supprime).await.expect("suppression");

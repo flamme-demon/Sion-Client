@@ -9,7 +9,8 @@ les mises à jour du bureau.
 
 Le bandeau propose Télécharger → progression → Installer et relancer (bureau)
 ou Installer (Android). Le téléchargement ne ferme pas Sion. L'installation
-reste une action explicite et est bloquée pendant un appel. « Plus tard »
+reste une action explicite et est disponible pendant un appel : la fermeture
+de Sion interrompt le vocal. « Plus tard »
 masque le bandeau ; « Vérifier les mises à jour » le réaffiche dans les
 paramètres avancés. Les notes sont consultables dans Sion. Les anciennes
 releases sans manifeste signé restent en téléchargement manuel.
@@ -88,7 +89,7 @@ Aucune release existante n'est modifiée par l'intégration.
 ## Vérifications
 
 - Vitest : comparaison SemVer, sélection des canaux et plateformes, échecs
-  d'APK, cache, téléchargement puis installation séparée, protection des appels,
+  d'APK, cache, téléchargement puis installation séparée, installation pendant un appel,
   changement de canal et reprise après erreur.
 - Tests Rust : rejets des rétrogradations, tags invalides et artefacts externes.
 - Tests Python : choix du fichier exact, encodage des URLs, signatures absentes

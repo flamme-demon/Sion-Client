@@ -1,0 +1,103 @@
+.sion-account-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+.sion-account-section + .sion-account-section {
+  border-top: 1px solid var(--color-outline-variant);
+  padding-top: 14px;
+}
+
+.sion-account-section > h2 {
+  margin: 0 0 2px;
+  color: var(--color-on-surface);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.sion-account-hint {
+  margin: 0;
+  color: var(--color-on-surface-variant);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.sion-account-phone {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 14px;
+  border: 1px solid color-mix(in srgb, var(--color-primary) 30%, transparent);
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--color-primary) 8%, var(--color-surface-container));
+  color: var(--color-on-surface);
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+
+.sion-account-phone:hover {
+  border-color: color-mix(in srgb, var(--color-primary) 55%, transparent);
+  background: color-mix(in srgb, var(--color-primary) 13%, var(--color-surface-container));
+}
+
+.sion-account-phone:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
+.sion-account-phone-icon {
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 48px;
+  border-radius: 12px;
+  color: var(--color-primary);
+  background: color-mix(in srgb, var(--color-primary) 12%, transparent);
+}
+
+.sion-account-phone-content {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.sion-account-phone-content > strong {
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.sion-account-phone-hint {
+  color: var(--color-on-surface-variant);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.sion-account-phone-action {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 3px;
+  color: var(--color-primary);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.sion-account-phone-action > svg {
+  flex-shrink: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sion-account-phone {
+    transition: none;
+  }
+}

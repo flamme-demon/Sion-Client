@@ -178,13 +178,13 @@ it("une catégorie seule se modifie sans changer le nom, l'emoji ou l'identifian
   await act(async () => useSettingsStore.setState({ memeboardVolume: 0.6 }));
   await vue.click('[title="Bravo"] [data-action="modifier"]');
   expect(services.declencherMeme).not.toHaveBeenCalled();
-  const categorie = vue.container.querySelector<HTMLInputElement>('input[list]')!;
+  const categorie = document.querySelector<HTMLInputElement>('[role="dialog"] input[list]')!;
   expect(categorie.value).toBe("Films/Comédie");
   await act(async () => {
     Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(categorie, " Réactions / Rires ");
     categorie.dispatchEvent(new Event("input", { bubbles: true }));
   });
-  await act(async () => Array.from(vue.container.querySelectorAll("button")).find((b) => b.textContent === "memeboard.save")!.click());
+  await act(async () => Array.from(document.querySelectorAll<HTMLButtonElement>('[role="dialog"] button')).find((b) => b.textContent === "memeboard.save")!.click());
   expect(services.modifierMeme).toHaveBeenCalledWith("$bravo", "Bravo", null, "Réactions/Rires");
 });
 it("la suppression d'un mème demande la même confirmation intégrée et n'envoie rien après Annuler", async () => {
@@ -208,18 +208,18 @@ it("l'import propose la catégorie consultée et envoie le chemin choisi", async
   await vue.render(<MemeboardPanel />);
   await vue.click('[data-filter="Films"]');
   await vue.click('[aria-label="memeboard.add"]');
-  const fichier = vue.container.querySelector<HTMLInputElement>('input[type="file"]')!;
+  const fichier = document.querySelector<HTMLInputElement>('[role="dialog"] input[type="file"]')!;
   await act(async () => {
     Object.defineProperty(fichier, "files", { value: [new File(["meme"], "Extrait.mp4", { type: "video/mp4" })] });
     fichier.dispatchEvent(new Event("change", { bubbles: true }));
   });
-  const categorie = vue.container.querySelector<HTMLInputElement>('input[list]')!;
+  const categorie = document.querySelector<HTMLInputElement>('[role="dialog"] input[list]')!;
   expect(categorie.value).toBe("Films");
-  expect(vue.container.querySelector('datalist option[value="Films/Comédie"]')).not.toBeNull();
+  expect(document.querySelector('[role="dialog"] datalist option[value="Films/Comédie"]')).not.toBeNull();
   await act(async () => {
     Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(categorie, "Films / Kaamelott");
     categorie.dispatchEvent(new Event("input", { bubbles: true }));
   });
-  await act(async () => Array.from(vue.container.querySelectorAll("button")).find((b) => b.textContent === "memeboard.send")!.click());
+  await act(async () => Array.from(document.querySelectorAll<HTMLButtonElement>('[role="dialog"] button')).find((b) => b.textContent === "memeboard.send")!.click());
   expect(services.envoyerMeme).toHaveBeenCalledWith(expect.objectContaining({ video: "/tmp/prepare.mp4" }), "Extrait", null, "Films/Kaamelott");
 });

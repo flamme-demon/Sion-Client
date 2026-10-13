@@ -1,4 +1,4 @@
-import { act } from "react";
+import { act, StrictMode } from "react";
 import type { ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -43,10 +43,18 @@ function ajouter(m: ChatMessage) {
   });
 }
 
+it("un écho en cours d'envoi ne devient pas un identifiant de lecture", () => {
+  act(() => vi.advanceTimersByTime(6000));
+  ajouter({ ...message("~transaction", "@flamme:sion.test", Date.now()), eventId: undefined, sending: true, localEcho: true });
+  act(() => vi.advanceTimersByTime(100));
+  expect(useAppStore.getState().lastReadMessageId[SALON]).toBe("$1");
+});
+
 let conteneur: HTMLDivElement;
 let racine: Root;
 
 beforeEach(() => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   affichage.mobile = false;
   vi.useFakeTimers();
   // Présence commune (premierPlan) : chaque test part d'un utilisateur là.
@@ -98,6 +106,34 @@ it("le chat conservé derrière la navigation mobile ne lit pas les messages mas
   expect(conteneur.querySelector(".sion-messages")).toBe(fil);
 });
 
+it.each([0, 32, 62])("cancels pending initial positioning when the chat closes at %d ms", (delay) => {
+  act(() => vi.advanceTimersByTime(delay));
+  const frame = vi.spyOn(globalThis, "requestAnimationFrame");
+  act(() => racine.render(null));
+  const reads = useAppStore.getState().lastReadMessageId;
+  act(() => vi.advanceTimersByTime(200));
+  expect(frame).not.toHaveBeenCalled();
+  expect(useAppStore.getState().lastReadMessageId).toBe(reads);
+});
+
+it("does not mark the previous room as read when switching before initial positioning", () => {
+  act(() => vi.advanceTimersByTime(32));
+  const otherRoom = "!other:sion.test";
+  act(() => {
+    useMatrixStore.setState((s) => ({ messages: { ...s.messages, [otherRoom]: [message("$other", "@alice:sion.test", 1)] } }));
+    useAppStore.setState({ activeChannel: otherRoom });
+  });
+  act(() => vi.advanceTimersByTime(200));
+  expect(useAppStore.getState().lastReadMessageId[SALON]).toBeUndefined();
+  expect(useAppStore.getState().lastReadMessageId[otherRoom]).toBe("$other");
+});
+
+it("positions the chat after Strict Mode replays mount effects", () => {
+  act(() => racine.render(<StrictMode><MessageList /></StrictMode>));
+  act(() => vi.advanceTimersByTime(200));
+  expect(useAppStore.getState().lastReadMessageId[SALON]).toBe("$1");
+});
+
 afterEach(() => {
   act(() => racine.unmount());
   conteneur.remove();
@@ -118,6 +154,16 @@ it("la mosaïque conserve les identifiants de tous les événements et s'arrête
   expect(conteneur.querySelectorAll(".sion-mosaique")).toHaveLength(2);
   expect(conteneur.querySelectorAll('[data-case-image="true"]')).toHaveLength(4);
   expect(conteneur.querySelector('[data-unread-sep]')?.closest('.sion-mosaique')).toBeNull();
+});
+
+it("affiche une seule légende sous les images de l’album, dans la mosaïque", () => {
+  const photos = [1, 2, 3].map((id) => ({ ...message(`$photo${id}`, "@element:matrix.org", Date.now() + id), text: id === 1 ? "Pour avoir la bêta !" : "",
+    attachments: [{ id: String(id), name: "photo.png", mimeType: "image/png", size: 0, url: "https://media.invalid/photo" }] }));
+  act(() => useMatrixStore.setState({ messages: { [SALON]: photos } }));
+  const mosaïque = conteneur.querySelector(".sion-mosaique")!;
+  expect(mosaïque.querySelectorAll('[data-case-image="true"]')).toHaveLength(3);
+  expect(mosaïque.querySelector(".sion-mosaique-legende")?.textContent).toContain("Pour avoir la bêta !");
+  expect(mosaïque.textContent?.match(/Pour avoir la bêta !/g)).toHaveLength(1);
 });
 
 it("un message reçu en bas du fil est lu, même si le fil a bougé juste après l'ouverture du salon", () => {
@@ -155,6 +201,49 @@ it("à l'ouverture, remonte l'historique jusqu'au dernier lu pour afficher le ba
 
   expect(charger).toHaveBeenCalledWith(AUTRE);
   expect(conteneur.querySelector("[data-unread-sep]")).not.toBeNull();
+});
+
+it("charge les messages d'un salon vide même si le cœur a déjà annoncé qu'il reste de l'historique", async () => {
+  const MANJARO = "!manjaro:matrix.org";
+  let terminer!: () => void;
+  const charger = vi.fn(async (salon: string) => {
+    useMatrixStore.setState((s) => ({ roomLoadingHistory: { ...s.roomLoadingHistory, [salon]: true } }));
+    await new Promise<void>((resolve) => { terminer = resolve; });
+    useMatrixStore.setState((s) => ({
+      messages: { ...s.messages, [salon]: [message("$manjaro", "@alice:matrix.org", 1)] },
+      roomHasMore: { ...s.roomHasMore, [salon]: true },
+      roomLoadingHistory: { ...s.roomLoadingHistory, [salon]: false },
+    }));
+  });
+  await act(async () => {
+    useMatrixStore.setState((s) => ({ messages: { ...s.messages, [MANJARO]: [] }, roomHasMore: { ...s.roomHasMore, [MANJARO]: true }, loadRoomHistory: charger }));
+    useAppStore.setState({ activeChannel: MANJARO, lastReadMessageId: {} });
+  });
+  expect(charger).toHaveBeenCalledOnce();
+  expect(charger).toHaveBeenCalledWith(MANJARO);
+  expect(conteneur.textContent).toContain("chat.loading");
+  await act(async () => terminer());
+  expect(conteneur.querySelector('[data-event-id="$manjaro"]')).not.toBeNull();
+  expect(charger).toHaveBeenCalledOnce();
+});
+
+it("un chargement resté vide ne tourne pas en boucle et peut être retenté à la prochaine visite", async () => {
+  const VIDE = "!vide:matrix.org";
+  const charger = vi.fn(async (salon: string) => {
+    useMatrixStore.setState((s) => ({ roomLoadingHistory: { ...s.roomLoadingHistory, [salon]: true } }));
+    await Promise.resolve();
+    useMatrixStore.setState((s) => ({ roomLoadingHistory: { ...s.roomLoadingHistory, [salon]: false } }));
+  });
+  await act(async () => {
+    useMatrixStore.setState((s) => ({ messages: { ...s.messages, [VIDE]: [] }, roomHasMore: { ...s.roomHasMore, [VIDE]: true }, loadRoomHistory: charger }));
+    useAppStore.setState({ activeChannel: VIDE, lastReadMessageId: {} });
+  });
+  expect(charger).toHaveBeenCalledOnce();
+  await act(async () => useMatrixStore.setState({ pinnedVersion: 1 }));
+  expect(charger).toHaveBeenCalledOnce();
+  await act(async () => useAppStore.setState({ activeChannel: SALON }));
+  await act(async () => useAppStore.setState({ activeChannel: VIDE }));
+  expect(charger).toHaveBeenCalledTimes(2);
 });
 
 /** Géométrie simulée du fil (jsdom n'a pas de mise en page), puis un

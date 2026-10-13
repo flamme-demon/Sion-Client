@@ -20,9 +20,9 @@ cd "$PROJECT_DIR"
 # rustc de rustup (cibles Android installées), pas celui du système.
 export PATH="$HOME/.cargo/bin:$PATH"
 export ANDROID_HOME="${ANDROID_HOME:-$HOME/Android/Sdk}"
-export NDK_HOME="${NDK_HOME:-$ANDROID_HOME/ndk/27.2.12479018}"
+export NDK_HOME="${NDK_HOME:-$ANDROID_HOME/ndk/30.0.16248370}"
 export ANDROID_NDK_HOME="${ANDROID_NDK_HOME:-$NDK_HOME}"
-# Gradle 8 / AGP 8 : JDK 17.
+# Gradle 9 / AGP 9 : JDK 17 minimum.
 if [ -z "${JAVA_HOME:-}" ] && [ -d /usr/lib/jvm/java-17-openjdk ]; then
     export JAVA_HOME=/usr/lib/jvm/java-17-openjdk
 fi

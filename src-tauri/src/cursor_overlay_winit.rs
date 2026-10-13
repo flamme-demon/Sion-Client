@@ -1,15 +1,7 @@
-//! Hôte winit de l'overlay curseurs — **Windows** (tout ce qui n'est pas Linux).
-//!
-//! Historique : c'est l'hôte qui servait aussi Linux jusqu'à la réécriture X11
-//! du 13/09/2026. Raison du changement (cf. `cursor_overlay_x11.rs`) : winit
-//! n'autorise qu'UNE `EventLoop` par processus et le PIP natif préchauffe la
-//! sienne au démarrage, donc l'overlay ne pouvait plus la créer
-//! (`RecreationAttempt`) — il parle désormais X11 directement sur Linux.
-//!
-//! Ici, rien d'autre que la fenêtre et la boucle : fenêtre ARGB sans
-//! décoration, always-on-top, traversante (`set_cursor_hittest(false)`), blit
-//! softbuffer. L'état partagé, le dessin (`super::draw`), les commandes Tauri
-//! et le repack vivent dans le module parent.
+//! winit overlay host for desktop platforms other than Linux and Windows.
+//! The native X11, Wayland and Win32 hosts avoid conflicting with the PIP's
+//! single winit EventLoop. Shared state, drawing and pixel conversion live
+//! in the parent module; this host owns the window and softbuffer presentation.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -25,13 +17,8 @@ use winit::window::{Window, WindowAttributes, WindowId, WindowLevel};
 
 use super::{OverlayState, UserEvent};
 
-/// Hôte winit (Windows) — inchangé depuis l'origine, à ceci près qu'il ne
-/// construit plus la boucle sur Linux (c'est `x11_host` qui s'en charge).
-///
-/// On Linux l'`EventLoop` est `!Send` (elle tient des `Rc` sur la connexion au
-/// compositeur) : elle doit être construite *dans* le fil qui la fait tourner.
-/// On renvoie donc le `EventLoopProxy` par un canal oneshot — le proxy EST
-/// `Send`, c'est tout son intérêt.
+/// Create the event loop on its owner thread and return only its Send proxy
+/// through a one-shot channel; native event loops themselves may not be Send.
 pub(super) fn start(
     state: Arc<Mutex<OverlayState>>,
     thread_alive: Arc<AtomicBool>,
@@ -43,17 +30,7 @@ pub(super) fn start(
     thread::Builder::new()
         .name("sion-cursor-overlay".into())
         .spawn(move || {
-            // `with_any_thread(true)` lets us build + run the loop off
-            // the OS main thread.
-            #[cfg(target_os = "windows")]
-            use winit::platform::windows::EventLoopBuilderExtWindows;
-
             let mut builder = EventLoop::<UserEvent>::with_user_event();
-            #[cfg(target_os = "windows")]
-            {
-                EventLoopBuilderExtWindows::with_any_thread(&mut builder, true);
-            }
-
             let event_loop = match builder.build() {
                 Ok(el) => el,
                 Err(err) => {
@@ -88,7 +65,7 @@ pub(super) fn start(
     }
 }
 
-// ── winit app (Windows) ────────────────────────────────────────────────
+// winit presentation host.
 
 struct App {
     state: Arc<Mutex<OverlayState>>,
@@ -99,13 +76,9 @@ struct App {
     pixmap: Option<Pixmap>,
     last_frame: Instant,
     frame_counter: u64,
-    /// Cumul du temps passé dans `redraw()` (diagnostic, voir ci-dessus).
+    /// Accumulated redraw time for diagnostics.
     redraw_ms_total: u64,
     redraw_count: u64,
-    /// Arrête le fil qui ramène l'overlay sur le bureau virtuel courant
-    /// (Windows). Inutilisé ailleurs, mais gardé sans `cfg` pour que la
-    /// structure reste identique sur toutes les cibles.
-    desktop_stop: Arc<AtomicBool>,
 }
 
 impl App {
@@ -119,7 +92,6 @@ impl App {
             frame_counter: 0,
             redraw_ms_total: 0,
             redraw_count: 0,
-            desktop_stop: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -177,32 +149,6 @@ impl App {
             log::warn!("[Sion][CursorOverlay] set_cursor_hittest(false) failed: {err:?}");
         }
 
-        // Le collage « tous bureaux » n'a pas le même mécanisme selon la
-        // plateforme. Sous Linux c'est `_NET_WM_STATE_STICKY`, posé par
-        // `cursor_overlay_x11.rs`. Sous Windows aucun équivalent documenté
-        // n'existe : une fenêtre appartient au bureau virtuel où elle est née
-        // et y reste. « Toujours au-dessus » ne suffit donc pas — l'overlay
-        // disparaît dès que l'utilisateur change de bureau, alors que le
-        // partage, lui, suit l'écran. On le fait suivre.
-        #[cfg(target_os = "windows")]
-        {
-            use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-            // Drapeau remis à zéro : une fenêtre neuve ne doit pas hériter de
-            // l'arrêt demandé pour la précédente.
-            self.desktop_stop.store(false, Ordering::Relaxed);
-            match window.window_handle().map(|h| h.as_raw()) {
-                Ok(RawWindowHandle::Win32(handle)) => {
-                    crate::virtual_desktop::suivre(
-                        handle.hwnd.get(),
-                        std::sync::Arc::clone(&self.desktop_stop),
-                    );
-                }
-                _ => log::warn!(
-                    "[Sion][CursorOverlay] handle Win32 indisponible — pas de suivi des bureaux"
-                ),
-            }
-        }
-
         Some(window)
     }
 
@@ -253,10 +199,8 @@ impl App {
 
         // Blit into the softbuffer surface.
         if let Ok(mut buffer) = surface.buffer_mut() {
-            // softbuffer expects BGRA or platform-native u32. tiny-skia
-            // produces RGBA premultiplied. We repack on copy — en parallèle
-            // (scope) : 7,4 Mpx en scalaire -O0 prenaient >100 ms/frame et
-            // l'event loop ne suivait plus (curseur saccadé pour tous).
+            // Repack tiny-skia premultiplied RGBA into softbuffer pixels in parallel;
+            // scalar conversion of large surfaces cannot keep up with cursor updates.
             super::repack_rgba_to_bgra_parallel(&mut buffer, pixmap.data());
             let _ = buffer.present();
         }
@@ -326,9 +270,6 @@ impl ApplicationHandler<UserEvent> for App {
                 );
             }
             UserEvent::Hide => {
-                // Arrête le suivi des bureaux virtuels sans attendre que la
-                // destruction de la fenêtre soit constatée.
-                self.desktop_stop.store(true, Ordering::Relaxed);
                 if let Some(w) = self.window.take() {
                     w.set_visible(false);
                     // Drop the window so the compositor truly releases it.
@@ -337,12 +278,6 @@ impl ApplicationHandler<UserEvent> for App {
                 self.surface = None;
                 self.pixmap = None;
                 log::info!("[Sion][CursorOverlay] window hidden");
-            }
-            UserEvent::Shutdown => {
-                self.window = None;
-                self.surface = None;
-                self.pixmap = None;
-                event_loop.exit();
             }
         }
     }
@@ -364,9 +299,7 @@ impl ApplicationHandler<UserEvent> for App {
                 event_loop.set_control_flow(ControlFlow::Wait);
             }
             WindowEvent::RedrawRequested => {
-                // Mesure du coût réel du rendu (diagnostic : l'overlay
-                // plein écran en software est suspecté de saturer le CPU
-                // du sharer — voir logs `redraw Nms`).
+                // Measure redraw cost to diagnose full-screen software rendering overhead.
                 let t_redraw = Instant::now();
                 self.redraw();
                 self.redraw_ms_total += t_redraw.elapsed().as_millis() as u64;
@@ -380,13 +313,8 @@ impl ApplicationHandler<UserEvent> for App {
                     self.redraw_ms_total = 0;
                     self.redraw_count = 0;
                 }
-                // Redessin conditionné : à 60 Hz en continu, le remplissage
-                // plein écran + le texte à chaque frame coûtent cher sur la
-                // machine du sharer (qui capture + encode déjà) → saccades
-                // pour tout le monde. On n'anime que si nécessaire :
-                // - clics actifs : on maintient une cadence d'animation ;
-                // - sinon (curseurs figés) : on dort jusqu'à la prochaine
-                //   expiration (sweep), zéro CPU entre-temps.
+                // Redraw while click ripples animate; otherwise wake only at expiry.
+                // Continuous full-screen painting competes with capture and encoding.
                 let (animate, wake_at) = {
                     let s = self.state.lock().unwrap();
                     let clicks = !s.clicks.is_empty();
@@ -399,9 +327,7 @@ impl ApplicationHandler<UserEvent> for App {
                     }
                     (clicks, wake)
                 };
-                // Cadence ~30 Hz pour les clics : à 5120 px de large, le
-                // remplissage plein écran + le texte à chaque frame saturent
-                // inutilement le CPU du sharer, qui capture et encode déjà.
+                // Limit click animation to roughly 30 Hz to bound capture-side CPU usage.
                 if animate {
                     event_loop.set_control_flow(ControlFlow::WaitUntil(
                         Instant::now() + Duration::from_millis(33),
@@ -410,9 +336,7 @@ impl ApplicationHandler<UserEvent> for App {
                         w.request_redraw();
                     }
                 } else if let Some(t) = wake_at {
-                    // Un seul redraw à l'expiration (le sweep purge alors).
-                    // `request_redraw` dès maintenant : la demande reste en
-                    // file et n'est servie qu'au réveil à `t`.
+                    // Queue one redraw for the expiry deadline; it is serviced when the loop wakes.
                     if let Some(w) = &self.window {
                         w.request_redraw();
                     }

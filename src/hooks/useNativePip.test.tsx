@@ -10,7 +10,6 @@ vi.mock("../services/voiceNativeService", () => ({
   onVoiceNativePip: mock.listen,
   pipNativeSources: mock.source,
   pipNativeOpenStreams: vi.fn(() => Promise.resolve(true)),
-  pipNativeOpen: vi.fn(() => Promise.resolve(true)),
   pipNativeClose: vi.fn(() => Promise.resolve()),
 }));
 import { useNativePip } from "./useNativePip";

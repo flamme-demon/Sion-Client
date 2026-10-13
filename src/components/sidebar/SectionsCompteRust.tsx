@@ -19,7 +19,7 @@ const champ: React.CSSProperties = {
 };
 
 /** Bannière de profil (MSC4427) : image large, en tête de la fiche d'un membre. */
-function Banniere() {
+export function Banniere() {
   const { t } = useTranslation();
   const moi = useAuthStore((s) => s.credentials?.userId);
   const [url, setUrl] = useState<string | null>(null);
@@ -81,7 +81,7 @@ function Banniere() {
 }
 
 /** Utilisateurs ignorés, pour revenir sur sa décision. */
-function Ignores() {
+export function Ignores() {
   const { t } = useTranslation();
   const ignores = useEntreMembresStore((s) => s.ignores);
   const [ouvert, setOuvert] = useState(false);
@@ -125,7 +125,7 @@ function Ignores() {
 
 /** Suppression définitive du compte : mot de passe exigé, effacement des
  *  messages au choix. */
-function SuppressionCompte() {
+export function SuppressionCompte() {
   const { t } = useTranslation();
   const [ouvert, setOuvert] = useState(false);
   const [motDePasse, setMotDePasse] = useState("");
@@ -181,17 +181,6 @@ function SuppressionCompte() {
           </button>
         </div>
       )}
-    </>
-  );
-}
-
-/** Ce que le panneau du compte gagne avec le moteur Rust. */
-export function SectionsCompteRust() {
-  return (
-    <>
-      <Banniere />
-      <Ignores />
-      <SuppressionCompte />
     </>
   );
 }

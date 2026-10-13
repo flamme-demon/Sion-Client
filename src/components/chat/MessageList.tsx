@@ -13,6 +13,8 @@ import { groupesImages, lignesMosaique, ratioImage } from "../../utils/mosaique"
 import "./Mosaique.css";
 import { SelectionMessagesContext } from "./selectionMessages";
 import { BarreSelectionMessages } from "./BarreSelectionMessages";
+import { MarkdownRenderer } from "./MarkdownRenderer";
+import { useFenetreMessages } from "../../hooks/useFenetreMessages";
 
 const EMPTY_MESSAGES: never[] = [];
 const SCROLL_TOP_THRESHOLD = 100;
@@ -125,8 +127,10 @@ export function MessageList() {
   const scrollToMessageId = useAppStore((s) => s.scrollToMessageId);
   const setScrollToMessageId = useAppStore((s) => s.setScrollToMessageId);
   const [highlightedId, setHighlightedId] = useState<string | null>(null);
+  const [pendingJump, setPendingJump] = useState<string | null>(null);
 
   const containerRef = useRef<HTMLDivElement>(null);
+  const lireConteneur = useCallback(() => containerRef.current, []);
   const contentRef = useRef<HTMLDivElement>(null);
   const isAtBottomRef = useRef(true);
   // Start as null so the first render after mount (including a reload with
@@ -173,6 +177,34 @@ export function MessageList() {
   /** Génération des défilements vers le bas en attente (rAF, minuteur) : un
    *  placement sur le bandeau l'incrémente, ce qui les annule. */
   const defilementGenRef = useRef(0);
+  const scrollFramesRef = useRef(new Set<number>());
+  const scrollTimersRef = useRef(new Set<ReturnType<typeof setTimeout>>());
+  const nextScrollFrame = useCallback((work: () => void) => {
+    const id = requestAnimationFrame(() => {
+      scrollFramesRef.current.delete(id);
+      work();
+    });
+    scrollFramesRef.current.add(id);
+  }, []);
+  const deferScroll = useCallback((work: () => void, delay: number) => {
+    const id = setTimeout(() => {
+      scrollTimersRef.current.delete(id);
+      work();
+    }, delay);
+    scrollTimersRef.current.add(id);
+  }, []);
+  const cancelScrollJobs = useCallback(() => {
+    const frames = scrollFramesRef.current;
+    const timers = scrollTimersRef.current;
+    defilementGenRef.current++;
+    prevChannelRef.current = null;
+    for (const id of frames) cancelAnimationFrame(id);
+    for (const id of timers) clearTimeout(id);
+    frames.clear();
+    timers.clear();
+  }, []);
+  // Pending positioning belongs to this room and account, including nested jobs.
+  useEffect(() => cancelScrollJobs, [activeChannel, currentUserId, cancelScrollJobs]);
 
   // Snapshot of lastReadId taken when the channel becomes active.
   // The real lastReadId is bumped to the latest message as soon as markAsRead()
@@ -240,7 +272,10 @@ export function MessageList() {
     // Personne devant l'écran : rien n'est lu (voir « Présence » plus bas).
     if (!presentRef.current || (isMobile && !chatVisible)) return;
     if (!activeChannel || messages.length === 0) return;
-    const lastMsg = messages[messages.length - 1];
+    let dernier = messages.length - 1;
+    while (dernier >= 0 && messages[dernier].sending) dernier--;
+    if (dernier < 0) return;
+    const lastMsg = messages[dernier];
     const lastId = lastMsg.eventId || String(lastMsg.id);
     if (lastId && lastId !== lastReadMessageId[activeChannel]) {
       setLastReadMessageId(activeChannel, lastId);
@@ -319,9 +354,9 @@ export function MessageList() {
         suppressScrollLoadRef.current = false;
       }
     };
-    requestAnimationFrame(() => requestAnimationFrame(doScroll));
-    setTimeout(doScroll, 50);
-  }, []);
+    nextScrollFrame(() => nextScrollFrame(doScroll));
+    deferScroll(doScroll, 50);
+  }, [nextScrollFrame, deferScroll]);
 
   // Scroll to unread separator
   const scrollToUnread = useCallback(() => {
@@ -418,7 +453,7 @@ export function MessageList() {
       // replace pendant quelques secondes, tant que l'utilisateur ne touche
       // à rien (voir `arreterAncre` et l'observateur de hauteur).
       ancreJusquaRef.current = Date.now() + 4000;
-      requestAnimationFrame(finirPositionnement);
+      nextScrollFrame(finirPositionnement);
       return;
     }
     // Le dernier lu n'est pas chargé (après un redémarrage, le cœur ne
@@ -437,8 +472,8 @@ export function MessageList() {
     }
     // Rien de nouveau : en bas.
     scrollToBottom();
-    requestAnimationFrame(finirPositionnement);
-  }, [placerSurSeparateur, finirPositionnement, activeChannel, lastReadMessageId, messages, hasMore, currentUserId, scrollToBottom, remonterPourDernierLu]);
+    nextScrollFrame(finirPositionnement);
+  }, [placerSurSeparateur, finirPositionnement, activeChannel, lastReadMessageId, messages, hasMore, currentUserId, scrollToBottom, remonterPourDernierLu, nextScrollFrame]);
 
   // Recherche du dernier lu (voir `positionInitialScroll`) : à chaque page
   // chargée, le bandeau est-il apparu ?
@@ -447,7 +482,7 @@ export function MessageList() {
     if (placerSurSeparateur()) {
       chercheDernierLuRef.current = false;
       ancreJusquaRef.current = Date.now() + 4000;
-      requestAnimationFrame(finirPositionnement);
+      nextScrollFrame(finirPositionnement);
       return;
     }
     const dernierLu = activeChannel ? lastReadMessageId[activeChannel] : undefined;
@@ -457,11 +492,11 @@ export function MessageList() {
       // Trouvé sans non-lu d'autrui après lui, ou hors d'atteinte : en bas.
       chercheDernierLuRef.current = false;
       scrollToBottom();
-      requestAnimationFrame(finirPositionnement);
+      nextScrollFrame(finirPositionnement);
       return;
     }
     remonterPourDernierLu();
-  }, [messages, isLoading, hasMore, activeChannel, lastReadMessageId, placerSurSeparateur, finirPositionnement, scrollToBottom, remonterPourDernierLu]);
+  }, [messages, isLoading, hasMore, activeChannel, lastReadMessageId, placerSurSeparateur, finirPositionnement, scrollToBottom, remonterPourDernierLu, nextScrollFrame]);
 
   // On channel change: reset per-channel state and schedule initial scroll.
   // We do NOT call markAsRead unconditionally here — if the channel has
@@ -477,7 +512,7 @@ export function MessageList() {
       ancreJusquaRef.current = 0;
       chercheDernierLuRef.current = false;
     }
-  }, [activeChannel, messages.length]);
+  }, [activeChannel, currentUserId, messages.length]);
 
   // Fin de la fenêtre « salon tout juste ouvert », 5 s après le changement de
   // salon — et lui seul. Le minuteur vivait dans l'effet ci-dessus, qui dépend
@@ -533,9 +568,9 @@ export function MessageList() {
         initialScrollDoneRef.current = true;
         // Double rAF + short delay: let the sepAnchor state update and the
         // separator render before we try to scroll to it.
-        requestAnimationFrame(() => {
-          requestAnimationFrame(() => {
-            setTimeout(positionInitialScroll, 30);
+        nextScrollFrame(() => {
+          nextScrollFrame(() => {
+            deferScroll(positionInitialScroll, 30);
           });
         });
       } else if (currLen === 0) {
@@ -584,7 +619,7 @@ export function MessageList() {
       scrollToBottom();
       markAsRead("nouveau message, vue en bas");
     }
-  }, [messages, scrollToBottom, markAsRead, placerSurSeparateur]);
+  }, [messages, currentUserId, positionInitialScroll, scrollToBottom, markAsRead, placerSurSeparateur, nextScrollFrame, deferScroll]);
 
   // ResizeObserver — observe the inner CONTENT wrapper, not the scroll viewport.
   // The viewport's box size is fixed, so observing it never fires when a child
@@ -613,13 +648,25 @@ export function MessageList() {
   const userHasScrolledRef = useRef(false);
   useEffect(() => { userHasScrolledRef.current = false; }, [activeChannel]);
 
-  // Auto-load initial history
+  // Un fil Rust reçu à la connexion peut être vide tout en annonçant aPlus.
+  // Ce drapeau décrit la pagination, pas un historique déjà chargé.
+  const historiqueInitialRef = useRef({ salon: "", utilisateur: currentUserId, demande: false });
   useEffect(() => {
+    if (historiqueInitialRef.current.salon !== activeChannel || historiqueInitialRef.current.utilisateur !== currentUserId) {
+      historiqueInitialRef.current = { salon: activeChannel, utilisateur: currentUserId, demande: false };
+    }
     if (!activeChannel) return;
-    const alreadyLoaded = roomHasMore[activeChannel] !== undefined;
-    if (alreadyLoaded || roomLoadingHistory[activeChannel]) return;
-    loadRoomHistory(activeChannel);
-  }, [activeChannel, roomHasMore, roomLoadingHistory, loadRoomHistory]);
+    const historique = roomHasMore[activeChannel];
+    if (historique === false || (historique === true && messages.length > 0) || roomLoadingHistory[activeChannel]) return;
+    // Une seule tentative automatique par visite, même si la page reste vide
+    // ou la requête échoue. Revenir dans le salon permet de réessayer.
+    if (historiqueInitialRef.current.demande) return;
+    historiqueInitialRef.current.demande = true;
+    void import("@tauri-apps/plugin-log").then(({ info }) => info(
+      `[Sion][historique] chargement initial salon=${activeChannel} messages=${messages.length}`,
+    )).catch(() => {});
+    void loadRoomHistory(activeChannel);
+  }, [activeChannel, currentUserId, messages.length, roomHasMore, roomLoadingHistory, loadRoomHistory]);
 
   // Recoller au bas quand la HAUTEUR DISPONIBLE change.
   //
@@ -670,6 +717,9 @@ export function MessageList() {
   }, [sepAnchor, present, nonLusEnDessous]);
 
   // Scroll handler
+  const cibleIndex = messages.findIndex(m => (m.eventId || String(m.id)) === (pendingJump ?? scrollToMessageId));
+  const cibleAffichage = cibleIndex >= 0 ? cibleIndex : unreadSepIndex;
+  const { debut: debutAffiche, afficherPlus } = useFenetreMessages(activeChannel, messages, cibleAffichage, lireConteneur);
   const handleScroll = useCallback(() => {
     const el = containerRef.current;
     if (!el) return;
@@ -694,6 +744,10 @@ export function MessageList() {
     if (suppressScrollLoadRef.current || channelJustChangedRef.current) return;
     if (!userHasScrolledRef.current) return;
     const isScrollable = el.scrollHeight > el.clientHeight + 10;
+    if (isScrollable && el.scrollTop < SCROLL_TOP_THRESHOLD && debutAffiche > 0) {
+      afficherPlus();
+      return;
+    }
     if (isScrollable && el.scrollTop < SCROLL_TOP_THRESHOLD && activeChannel && hasMore && !isLoading) {
       // Instantané AVANT la pagination : la seule mesure qui survit à tout ce
       // qui va s'insérer en tête. Additionner la hauteur des premiers enfants
@@ -703,7 +757,7 @@ export function MessageList() {
       prependAnchorRef.current = { height: el.scrollHeight, top: el.scrollTop };
       loadRoomHistory(activeChannel);
     }
-  }, [activeChannel, hasMore, isLoading, loadRoomHistory, markAsRead]);
+  }, [activeChannel, hasMore, isLoading, loadRoomHistory, markAsRead, debutAffiche, afficherPlus]);
 
   // Aller à un message précis (barre des épinglés).
   //
@@ -716,7 +770,6 @@ export function MessageList() {
   // On remonte donc l'historique jusqu'à trouver la cible, par paginations
   // successives et avec un plafond : sans lui, un épinglé supprimé ou hors
   // d'atteinte ferait défiler le salon entier.
-  const [pendingJump, setPendingJump] = useState<string | null>(null);
   const jumpPagesRef = useRef(0);
   useEffect(() => {
     if (!scrollToMessageId) return;
@@ -761,6 +814,7 @@ export function MessageList() {
   }, [pendingJump, messages, activeChannel, hasMore, isLoading, loadRoomHistory, setScrollToMessageId]);
 
   const groupes = useMemo(() => groupesImages(messages, unreadSepIndex), [messages, unreadSepIndex]);
+  const groupesAffiches = groupes.filter(g => g.debut + g.messages.length > debutAffiche);
   const [choix, setChoix] = useState({ salon: activeChannel, utilisateur: currentUserId, ids: new Set<string>() });
   useEffect(() => {
     const vider = () => setChoix({ salon: useAppStore.getState().activeChannel, utilisateur: useMatrixStore.getState().currentUserId, ids: new Set() });
@@ -827,16 +881,16 @@ export function MessageList() {
         {isLoading && (
           <div className="text-center text-text-muted text-sm py-3">{t("chat.loading")}</div>
         )}
-        {!isLoading && !hasMore && messages.length > 0 && (
+        {!isLoading && !hasMore && debutAffiche === 0 && messages.length > 0 && (
           <div className="text-center text-text-muted text-sm py-3">{t("chat.conversationStart")}</div>
         )}
 
-        {groupes.map(({ debut: i, messages: groupe }) => {
+        {groupesAffiches.map(({ debut: i, messages: groupe }) => {
           const msg = groupe[0];
           const prev = i > 0 ? messages[i - 1] : null;
           const showDaySeparator =
-            msg.ts !== undefined && (i === 0 || (prev?.ts !== undefined && !isSameDay(prev.ts, msg.ts)));
-          const showHeader = i === 0 || showDaySeparator || (msg.senderId && messages[i - 1].senderId
+            msg.ts !== undefined && (i === groupesAffiches[0].debut || (prev?.ts !== undefined && !isSameDay(prev.ts, msg.ts)));
+          const showHeader = i === groupesAffiches[0].debut || showDaySeparator || (msg.senderId && messages[i - 1].senderId
             ? messages[i - 1].senderId !== msg.senderId : messages[i - 1].user !== msg.user);
           const eventId = msg.eventId || String(msg.id);
           const showUnreadSep = i === unreadSepIndex;
@@ -858,7 +912,13 @@ export function MessageList() {
                     {activeChannel && <div className="sion-lecteurs-image"><LecteursMessage salon={activeChannel} eventId={id} /></div>}
                   </div>;
                 })}</div>)}
-                <span className="sion-mosaique-heure">{groupe.at(-1)?.time}</span>
+                {(msg.text.trim() || msg.formattedBody) ? <div className="sion-mosaique-legende" onClickCapture={cliquerSelection(eventId)} style={{
+                  background: msg.senderId === currentUserId ? 'var(--color-primary-container)' : 'var(--color-surface-container-high)',
+                  color: msg.senderId === currentUserId ? 'var(--color-on-primary-container)' : 'var(--color-on-surface)',
+                }}>
+                  <MarkdownRenderer content={msg.text} formattedBody={msg.formattedBody} msgtype={msg.msgtype} />
+                  <span className="sion-mosaique-legende-heure">{groupe.at(-1)?.time}</span>
+                </div> : <span className="sion-mosaique-heure">{groupe.at(-1)?.time}</span>}
               </div> : undefined}</Message></GalerieImagesProvider> : <Message
                 message={msg}
                 showHeader={showHeader}

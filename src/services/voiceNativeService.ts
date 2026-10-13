@@ -1,10 +1,6 @@
 /**
- * Pont front vers la voix native (moteur LiveKit Rust, unique moteur).
- *
- * Ce service expose l'API Tauri de `voice_native.rs` (état + événements).
- * `useLiveKitStore` consomme la même forme `ParticipantInfo` que l'ancien
- * moteur JS supprimé ; il ne reste plus aucun `livekit-client` dans la
- * webview.
+ * Frontend bridge to the Rust LiveKit voice engine. Exposes voice_native.rs
+ * Tauri commands and events with the ParticipantInfo contract used by useLiveKitStore.
  */
 
 import type { ConnectionQuality, ParticipantInfo } from "../types/livekit";
@@ -19,35 +15,32 @@ export interface VoiceNativeStatus {
   room_name: string | null;
   muted: boolean;
   deafened: boolean;
-  /** Vérité terrain moteur : une publication micro existe-t-elle vraiment ?
-   *  Peut contredire `muted` après une désync historique. */
+  /** Actual engine microphone publication state; may differ from mute after desynchronization. */
   mic_published: boolean;
-  /** Vérité terrain moteur : une piste de partage d'écran est-elle publiée ?
-   *  Le store front repart à zéro à chaque rechargement de webview alors que
-   *  le moteur, lui, continue de partager — c'est la seule source fiable. */
+  /**
+   * Actual screen-share publication state. The engine can keep sharing
+   * while frontend memory resets during a webview reload.
+   */
   screenshare_published: boolean;
-  /** Vérité terrain moteur : le partage local publie-t-il aussi le son ?
-   *  L'avertissement « partage sans son » était calculé au démarrage et perdu
-   *  à tout rechargement de webview. */
+  /** Whether the local share actually publishes audio; restore the indicator after reload. */
   screenshare_audio_published: boolean;
   camera_published?: boolean;
   identity: string | null;
 }
 
-/** Événement Tauri émis par le Rust à chaque changement d'état natif. */
+/** Tauri event emitted on native state changes. */
 export const VOICE_NATIVE_STATUS_EVENT = "voice-native-status";
-/** Liste des participants natifs (même forme que `ParticipantInfo`). */
+/** Native participant snapshot matching ParticipantInfo. */
 export const VOICE_NATIVE_PARTICIPANTS_EVENT = "voice-native-participants";
-/** Relais data-channel brut `{ topic, payload_b64, sender }` (sérialisé avec
- *  tag `type: "data_received"`) — dispatché par le front vers les handlers
- *  existants (soundboard, AFK, curseurs…) au fil de la migration. */
+/**
+ * Raw data-channel relay: topic, payload_b64 and sender, with type=data_received.
+ * The frontend dispatches to soundboard, AFK and cursor handlers.
+ */
 export const VOICE_NATIVE_DATA_EVENT = "voice-native-data";
-/** La capture locale est tombée après publication : le front doit fermer
- * l'overlay et demander la dépublication immédiatement. */
+/** Capture failed after publication; close the overlay and request unpublishing immediately. */
 export const VOICE_NATIVE_LOCAL_SHARE_FAILED_EVENT = "voice-native-local-share-failed";
 
-/** État E2EE d'un participant (`Ok`, `MissingKey`, `DecryptionFailed`…).
- *  Diagnostic décisif en salon chiffré (cf. `E2eeStateChanged` Rust). */
+/** Participant E2EE diagnostics: Ok, MissingKey, DecryptionFailed, etc. */
 export interface VoiceNativeE2eeState {
   identity: string;
   state: string;
@@ -63,9 +56,10 @@ export interface VoiceNativeLocalShareFailed {
   reason: string;
 }
 
-/** L'auto-join ne doit jamais percuter un join manuel en cours ni voler une
- *  session active : il ne démarre que si personne n'est en ligne ni en
- *  connexion. Fonction pure (testée). */
+/**
+ * Auto-join may start only while no session is connected or connecting,
+ * so it cannot collide with manual join or replace an active call.
+ */
 export function shouldAutoJoinVoice(
   targetRoomId: string,
   connectedVoiceChannel: string | null,
@@ -92,32 +86,29 @@ export function bytesToB64(bytes: Uint8Array): string {
   return btoa(bin);
 }
 
-/** Envoie un paquet data-channel sur la session native (soundboard, AFK,
- *  curseurs…). Miroir de `publishData` JS — `reliable: false` pour le
- *  curseur (60 Hz), `true` partout ailleurs. */
+/** Publish session data: lossy delivery for 60 Hz cursors, reliable delivery otherwise. */
 export function voiceNativePublishData(topic: string, payloadB64: string, reliable = true): Promise<void> {
   return tauriInvoke<void>("voice_native_publish_data", { topic, payloadB64, reliable });
 }
 
-/** Envoie un clip déjà décodé (PCM i16 mono, 48 kHz) au mixeur de rendu
- * WebRTC. Le clip traverse l'IPC une fois puis le callback audio le consomme
- * nativement par tranches de 10 ms. */
+/**
+ * Send decoded mono 48 kHz i16 PCM once through IPC.
+ * The native WebRTC render callback consumes it in 10 ms blocks.
+ */
 export function playVoiceNativeSoundboard(
   pcmB64: string,
   gain: number,
-  /** Retour d'action de l'utilisateur lui-même : joué malgré la sourdine, qui
-   *  n'est censée faire taire que les pairs. */
+  /** Local action feedback plays even while deafened; deafen silences peers. */
   localFeedback = false,
 ): Promise<void> {
   return tauriInvoke<void>("voice_native_play_soundboard", { pcmB64, gain, localFeedback });
 }
 
-/** Repousse l'échéance du rond soundboard d'un expéditeur (`sender` = son
- *  identité LiveKit) sur la durée réellement mesurée au démarrage de la
- *  lecture locale. Le badge natif est posé à l'arrivée du paquet, donc avant
- *  le téléchargement/décodage : sans ce réarmement, il s'éteint de toute la
- *  latence de démarrage. `emoji` rallume un badge déjà expiré (une échéance
- *  n'est jamais raccourcie). À n'utiliser que lorsqu'on joue vraiment le son. */
+/**
+ * Extend a sender's badge using measured duration when playback actually starts.
+ * Packet receipt precedes downloading and decoding; emoji restores an expired badge.
+ * Never shorten expiry, and call only when the sound is played locally.
+ */
 export function extendVoiceNativeSoundboardBadge(
   sender: string,
   durationMs: number,
@@ -126,16 +117,15 @@ export function extendVoiceNativeSoundboardBadge(
   return tauriInvoke<void>("voice_native_extend_soundboard_badge", { sender, durationMs, emoji });
 }
 
-/** Coupe / rétablit le SON du partage d'écran d'un expéditeur (miroir du
- *  toggle 🔊 JS). Retourne `true` si une piste `ScreenshareAudio` existe.
- *  Le volume local de cette piste se règle séparément ci-dessous. */
+/**
+ * Toggle a sender's screen-share audio; return true if ScreenshareAudio exists.
+ * Local track volume is controlled separately.
+ */
 export function setVoiceNativeShareAudioMuted(sender: string, muted: boolean): Promise<boolean> {
   return tauriInvoke<boolean>("voice_native_set_screenshare_audio_muted", { sender, muted });
 }
 
-/** État local du son d'un partage (mute + volume), relu au moteur — sert au
- *  front pour se recaler après un reload de la webview : le moteur garde ses
- *  réglages par partageur, pas la mémoire JS. */
+/** Read share mute and volume from the engine to restore state after webview reload. */
 export function getVoiceNativeShareAudioState(sender: string): Promise<{ muted: boolean; volume: number }> {
   return tauriInvoke<{ muted: boolean; volume: number }>("voice_native_get_screenshare_audio_state", { sender });
 }
@@ -144,9 +134,7 @@ export function setVoiceNativeShareAudioVolume(sender: string, volume: number): 
   return tauriInvoke<boolean>("voice_native_set_screenshare_audio_volume", { sender, volume });
 }
 
-/** Démarre / arrête le partage de NOTRE écran en mode natif (miroir de
- *  `toggleScreenShare` JS). `withAudio=false` (case décochée) = vidéo seule,
- *  les viewers voient "sans son". */
+/** Toggle native local screen sharing. withAudio=false publishes video only. */
 export interface NativeScreenShareResult { audioPublished: boolean }
 export function setVoiceNativeScreensharing(
   enabled: boolean,
@@ -155,9 +143,10 @@ export function setVoiceNativeScreensharing(
     withAudio?: boolean;
     resolution?: "720p" | "1080p" | "1440p";
     framerate?: 5 | 15 | 30 | 60;
-    /** Codec d'encodage de la piste publiée : `auto` est résolu AVANT l'appel
-     *  (choix inter-clients) ; `av1`/`h264` = VAAPI (CPU quasi nul),
-     *  `vp9`/`vp8` = logiciel. */
+    /**
+     * Published-track codec. Resolve auto before calling through peer negotiation.
+     * AV1/H264 request available hardware backends; VP9/VP8 use software.
+     */
     videoCodec?: "av1" | "vp9" | "h264" | "vp8";
   } = {},
 ): Promise<NativeScreenShareResult> {
@@ -255,8 +244,7 @@ export interface VoiceNativeDebug {
     webrtc_noise_suppression: boolean; rnnoise: boolean; mix: number } | null;
 }
 
-/** Diagnostic instantané (DevTools : `await getVoiceNativeDebug()` après
- *  import du service, ou via les réglages quand le panneau debug arrive). */
+/** Instant diagnostics, available through getVoiceNativeDebug after importing this service. */
 export function getVoiceNativeDebug(): Promise<VoiceNativeDebug> {
   return tauriInvoke<VoiceNativeDebug>("voice_native_debug");
 }
@@ -291,14 +279,12 @@ export function setVoiceNativeMuted(muted: boolean): Promise<VoiceNativeStatus> 
   return tauriInvoke<VoiceNativeStatus>("voice_native_set_muted", { muted });
 }
 
-/** Masque / réaffiche la vidéo d'un partage reçu : masquée, le serveur ne
- *  l'envoie plus (économie de données et de batterie). */
+/** Hide or restore received share video; hiding stops server delivery and saves data/power. */
 export function setVoiceNativeShareVideoVisible(sender: string, visible: boolean): Promise<boolean> {
   return tauriInvoke<boolean>("voice_native_set_screenshare_video_visible", { sender, visible });
 }
 
-/** Push-to-talk : garder la capture ouverte micro coupé, pour que la voix
- *  parte dès l'appui (voir `capture_maintenue` côté Rust). */
+/** Push-to-talk keeps capture open while muted so speech begins immediately on keypress. */
 export function setVoiceNativeCaptureMaintenue(active: boolean): Promise<void> {
   return tauriInvoke<void>("voice_native_capture_maintenue", { active });
 }
@@ -307,8 +293,10 @@ export function setVoiceNativeDeafened(deafened: boolean): Promise<VoiceNativeSt
   return tauriInvoke<VoiceNativeStatus>("voice_native_set_deafened", { deafened });
 }
 
-/** Pont E2EE : transfère une clé MatrixRTC brute au provider natif.
- *  `keyB64` = 32 octets bruts encodés (cf. `validate_e2ee_key` côté Rust). */
+/**
+ * Import a base64-encoded raw MatrixRTC key of 16 or 32 bytes.
+ * See Rust validate_e2ee_key.
+ */
 export function setVoiceNativeE2EEKey(
   identity: string,
   keyIndex: number,
@@ -335,9 +323,10 @@ export async function onVoiceNativeParticipants(
   return listen<ParticipantInfo[]>(VOICE_NATIVE_PARTICIPANTS_EVENT, (e) => cb(e.payload));
 }
 
-/** Raison d'un départ, émise juste avant la liste qui l'annonce :
- *  connexion perdue (`perdu: true`), départ volontaire (`false`), ou raison
- *  qui ne tranche pas (`null`). */
+/**
+ * Departure reason emitted before the participant list: perdu=true for loss,
+ * false for voluntary departure, or null when the reason is ambiguous.
+ */
 export interface VoiceNativeParticipantLeft {
   identity: string;
   perdu: boolean | null;
@@ -350,9 +339,10 @@ export async function onVoiceNativeParticipantLeft(
   return listen<VoiceNativeParticipantLeft>("voice-native-participant-left", (e) => cb(e.payload));
 }
 
-/** Session perdue par le moteur ; `reprendre` : perte subie (réseau,
- *  serveur redémarré), l'interface rejoint le salon d'elle-même. Émis juste
- *  avant l'état « déconnecté ». */
+/**
+ * Session-loss event emitted before disconnected state. reprendre requests
+ * automatic rejoin after network or server loss.
+ */
 export interface VoiceNativeSessionPerdue { raison: string; reprendre: boolean }
 export async function onVoiceNativeSessionPerdue(
   cb: (ev: VoiceNativeSessionPerdue) => void,
@@ -372,7 +362,7 @@ export async function onVoiceNativeData(
   cb: (ev: VoiceNativeData) => void,
 ): Promise<() => void> {
   const { listen } = await import("@tauri-apps/api/event");
-  // Le Rust émet l'enum avec tag `type: "data_received"` + champs à plat.
+  // Rust serializes the enum with type=data_received and flat fields.
   return listen<VoiceNativeData & { type?: string }>(VOICE_NATIVE_DATA_EVENT, (e) =>
     cb({ topic: e.payload.topic ?? null, payload_b64: e.payload.payload_b64, sender: e.payload.sender ?? null }),
   );
@@ -390,9 +380,7 @@ export async function onVoiceNativeLocalShareFailed(
 /** `{ sender }` — fin de partage (unsubscribe, leave, fin de piste). */
 export const VOICE_NATIVE_FRAME_STOPPED_EVENT = "voice-native-frame-stopped";
 
-/** Son du partage (mute/volume) changé côté moteur — la vue et le PIP natif
- *  sont deux fenêtres sur le même état : sans cet événement, un mute fait
- *  dans le PIP laissait la vue « actif » (constaté le 2026-09-12). */
+/** Share mute/volume changed in the engine; synchronize the main view and native PIP. */
 export const VOICE_NATIVE_SHARE_AUDIO_EVENT = "voice-native-share-audio";
 
 export interface VoiceNativeShareAudio {
@@ -410,13 +398,12 @@ export async function onVoiceNativeShareAudio(
   );
 }
 
-/** État du PIP natif : la fenêtre peut se fermer elle-même (bouton maison,
- *  clic droit, Échap) — l'état du bouton de la vue doit suivre. */
+/** Native PIP state follows self-closing controls such as Home, right-click or Escape. */
 export const VOICE_NATIVE_PIP_EVENT = "voice-native-pip";
 
 export interface VoiceNativePipState {
   open: boolean;
-  /** Flux affiché : identité du partage ou clé `camera:…` d'une webcam. */
+  /** Displayed stream identity: screen-share sender or camera:... key. */
   sender?: string | null;
   sources?: string[];
 }
@@ -490,8 +477,10 @@ let nativeSurfaceLastPayload = "";
 let nativeSurfaceAvailablePromise: Promise<boolean> | null = null;
 let nativeSurfaceSizeListenerPromise: Promise<void> | null = null;
 
-/** Le renderer intégré n'est disponible que lorsque Rust a effectivement
- *  installé son GtkOverlay. Le résultat est stable pour la durée de la page. */
+/**
+ * The embedded renderer is available only after Rust installs its GtkOverlay.
+ * Availability stays stable for the page lifetime.
+ */
 export function isNativeVideoSurfaceAvailable(): Promise<boolean> {
   if (!nativeSurfaceAvailablePromise) {
     nativeSurfaceAvailablePromise = tauriInvoke<boolean>("native_video_surface_available")
@@ -501,33 +490,24 @@ export function isNativeVideoSurfaceAvailable(): Promise<boolean> {
 }
 
 function applyNativeFrameSize(sender: string, width: number, height: number) {
-  // libwebrtc peut livrer brièvement une frame sentinelle 8×8 pendant une
-  // republication. Elle est utile au renderer, mais ne doit jamais modifier
-  // le ratio du DOM : en mosaïque la tuile passerait 16:9 → 1:1 → 16:9.
+  // WebRTC may briefly emit an 8x8 sentinel frame during republishing.
+  // Render it without changing DOM aspect ratio or making grid tiles jump to square.
   if (width < 64 || height < 64) return;
   nativeSurfaceSizes.set(sender, { width, height });
   for (const registration of nativeSurfaceRegistrations.values()) {
     if (registration.sender !== sender) continue;
-    // La surface native porte les pixels : garder un backing-store canvas à
-    // la résolution vidéo ferait malgré tout composer plusieurs Mo par
-    // WebKit à chaque frame. Le DOM conserve le ratio et les dimensions
-    // source en métadonnées, avec un tampon symbolique de 1×1 seulement.
+    // Native surfaces own pixels. Keep the canvas backing store at 1x1 to avoid
+    // WebKit compositing video-sized buffers; preserve source dimensions as metadata.
     registration.element.dataset.nativeVideoWidth = String(width);
     registration.element.dataset.nativeVideoHeight = String(height);
-    // Une tuile possède déjà son ratio de mise en page (16:9 ou dimensions
-    // contraintes). Seule la vue simple, sans ratio inline, est pilotée par
-    // le flux. Le marqueur permet ensuite d'actualiser ce ratio si la source
-    // change réellement de résolution.
+    // Grid tiles already have layout aspect ratios. Only an unconstrained single view
+    // uses source dimensions; mark it so later source-size changes can update its ratio.
     if (!registration.element.style.aspectRatio || registration.element.dataset.nativeAspectManaged === "true") {
       registration.element.style.aspectRatio = `${width} / ${height}`;
       registration.element.dataset.nativeAspectManaged = "true";
-      // L'élément doit épouser l'image, pas la déborder. Avec seulement
-      // `width: 100%` et `aspect-ratio`, une hauteur bridée par `max-height`
-      // casse le ratio : la boîte reste pleine largeur et laisse des bandes
-      // noires latérales qui ressemblent à la vidéo sans en être — le
-      // pointeur y produit des coordonnées hors [0,1] et aucun curseur n'est
-      // émis. Borner aussi la largeur par « hauteur maximale × ratio » rend
-      // la boîte strictement égale à l'image dans les deux orientations.
+      // Keep the element box equal to the visible image. max-height alone can leave
+      // side bands outside the video and produce invalid pointer coordinates.
+      // Also cap width by maximum height times aspect ratio.
       registration.element.style.maxWidth =
         `min(100%, calc(var(--sion-share-max-height, 100vh) * ${width / height}))`;
     }
@@ -553,7 +533,7 @@ function ensureNativeSurfaceSizeListener(): Promise<void> {
   return nativeSurfaceSizeListenerPromise;
 }
 
-/** Geste de souris reçu par la fenêtre vidéo native de Windows. */
+/** Mouse gesture received by the native Windows video window. */
 interface GesteSurface {
   genre: "down" | "dblclick" | "move" | "up" | "annule";
   x: number;
@@ -563,27 +543,19 @@ interface GesteSurface {
 let rejeuSourisPromise: Promise<void> | null = null;
 
 /**
- * Cet événement a-t-il été rejoué depuis la fenêtre vidéo de Windows ?
- *
- * Rust y publie déjà clic et position du curseur de spectateur, à la source.
- * Les gestionnaires de la page qui en publient aussi doivent donc passer leur
- * tour — sinon chaque clic faisait deux ondes chez le partageur.
+ * Whether this event was replayed from the Windows surface. Rust already
+ * publishes cursor positions and clicks there; frontend publishers must skip it
+ * to avoid duplicate click ripples.
  */
 export function estRejoue(e: Event): boolean {
   return (e as Event & { sionRejoue?: boolean }).sionRejoue === true;
 }
 
 /**
- * Rejoue dans la page les gestes que la fenêtre vidéo de Windows a captés.
- *
- * Sous Windows, la vidéo est une fenêtre native posée sur la WebView2, qui
- * vit dans un autre processus : aucune souris ne la traverse
- * (`HTTRANSPARENT` n'agit qu'entre fenêtres d'un même fil). Les boutons de la
- * page posés sous la vidéo — lecteur, partage — ne recevaient donc rien
- * (24/09). Rust renvoie chaque geste ; on le rejoue sur l'élément visé, dans
- * l'ordre d'un vrai clic : `mousedown`, `mouseup`, puis `click` sur l'ancêtre
- * commun, et `dblclick` au second clic d'un double-clic. Linux n'en a pas
- * besoin : sa surface laisse passer la souris.
+ * Replay mouse gestures captured by the Windows video surface into the page.
+ * WebView2 lives in another process, so HTTRANSPARENT cannot pass them through.
+ * Replay mousedown, mouseup, click on the common ancestor, and dblclick
+ * on the second click. Linux's surface already passes mouse input through.
  */
 function ensureRejeuSouris(): Promise<void> {
   if (!rejeuSourisPromise) {
@@ -626,9 +598,7 @@ function ensureRejeuSouris(): Promise<void> {
             case "move":
               envoyer("mousemove", x, y, sous ?? document);
               break;
-            // Capture perdue en plein appui (Alt+Tab…) : le bouton est
-            // relâché pour clore un glissement, mais sans clic — un vrai
-            // navigateur n'en envoie pas non plus.
+            // When capture is lost during a press, release to end dragging but emit no click.
             case "annule":
               envoyer("mouseup", x, y, sous ?? document);
               enfonce = null;
@@ -656,28 +626,19 @@ function ensureRejeuSouris(): Promise<void> {
   return rejeuSourisPromise;
 }
 
-/** Le rectangle réellement visible d'un élément.
- *
- *  getBoundingClientRect() ignore le rognage des ancêtres. Une surface
- *  native n'en sait rien non plus, et peindrait par-dessus les barres
- *  latérales, les cartes arrondies ou les panneaux masqués : on intersecte
- *  chaque ancêtre qui rogne avant de passer le rectangle à Rust. */
+/**
+ * Compute the visible element rectangle by intersecting clipping ancestors.
+ * getBoundingClientRect ignores clipping, and native surfaces would otherwise
+ * paint over sidebars, rounded cards or hidden panels.
+ */
 function rectVisible(element: Element): DOMRect {
   let visible = element.getBoundingClientRect();
-  // Le rognage s'arrête à l'élément affiché en plein écran.
-  //
-  // Un élément plein écran sort de la composition normale : ses ancêtres ne
-  // le contiennent plus visuellement, même s'ils restent ses parents dans
-  // le DOM. Sans cette borne, le lecteur passé en plein écran se voyait
-  // intersecté avec la liste des messages qui le contient, et sa surface
-  // tombait à 1076×61 au milieu d'un écran de 5120×1440 (21/09).
+  // Stop ancestor clipping at the fullscreen element. It leaves normal composition
+  // even though DOM parents remain; clipping against the message list would shrink fullscreen video.
   const plein = document.fullscreenElement;
   const sousPlein = plein?.contains(element) ?? false;
-  // Seuls rognent les ancêtres qui contiennent la boîte au sens CSS. Un
-  // élément en position fixe échappe à tous — le mini-lecteur vidéo, la carte
-  // de survol du rail (23/09 : rognée à la largeur du rail, elle ne perçait
-  // plus la vidéo). Un élément absolu échappe à ceux qui ne sont pas
-  // positionnés.
+  // Clip only ancestors that contain the box in CSS. Fixed elements escape
+  // ordinary ancestors; absolute elements escape ancestors that are not positioned.
   let position = getComputedStyle(element).position;
   for (let ancestor = element.parentElement; ancestor; ancestor = ancestor.parentElement) {
     if (sousPlein && (ancestor === plein || !plein!.contains(ancestor))) break;
@@ -714,8 +675,10 @@ function rectVisible(element: Element): DOMRect {
   return visible;
 }
 
-/** Cet ancêtre sert-il de bloc contenant aux éléments en position fixe ?
- *  Une transformation, un filtre ou un confinement le font. */
+/**
+ * Whether this ancestor establishes a fixed-position containing block
+ * through transforms, filters or containment.
+ */
 function contientLesFixes(style: CSSStyleDeclaration): boolean {
   return style.transform !== "none"
     || style.filter !== "none"
@@ -731,16 +694,14 @@ interface ZonePage {
   height: number;
 }
 
-/** Calques pouvant recouvrir une vidéo, dont le panneau positionné par CSS
- *  dans une fenêtre étroite. */
+/** Layers that may cover video, including CSS-positioned panels in narrow windows. */
 const SELECTEUR_CALQUES =
   '.sion-panneau, [class*="fixed"], [class*="absolute"], [style*="position: fixed"], [style*="position: absolute"]';
 
-/** Même plafond que Rust ; au-delà, un seul trou : leur enveloppe. */
+/** Match the Rust hole limit; beyond it, use one bounding rectangle. */
 const TROUS_MAX = 16;
 
-/** Cinq points dans une zone : le centre et quatre points intérieurs,
- *  plutôt que les coins, qui tombent sur les bordures arrondies. */
+/** Sample the center and four interior points, avoiding rounded-border corners. */
 function echantillons(left: number, top: number, width: number, height: number): Array<[number, number]> {
   return [
     [left + width / 2, top + height / 2],
@@ -751,8 +712,7 @@ function echantillons(left: number, top: number, width: number, height: number):
   ];
 }
 
-/** Le calque auquel appartient un élément : son plus proche ancêtre sorti
- *  du flux, à défaut lui-même. */
+/** An element's layer is its nearest out-of-flow ancestor, or itself. */
 function calqueDe(element: Element, video: Element): Element {
   for (let e: Element | null = element; e && !e.contains(video); e = e.parentElement) {
     const position = getComputedStyle(e).position;
@@ -761,18 +721,12 @@ function calqueDe(element: Element, video: Element): Element {
   return element;
 }
 
-/** Les zones de la vidéo que la page recouvre — menus, panneaux flottants,
- *  boîtes de dialogue —, ou `null` si elle est recouverte tout entière.
- *
- *  La surface native est peinte AU-DESSUS de la WebView : aucun `z-index` ne
- *  peut faire passer un élément devant elle. Rust la perce donc là où la page
- *  doit se voir. Avant, on l'effaçait tout entière dès qu'un de cinq points
- *  tombait sur autre chose que la vidéo ; un panneau posé entre ces points
- *  passait dessous — la soundboard flottante, le 23/09.
- *
- *  Tout ce qui appartient au conteneur de la vidéo (boutons, chevrons,
- *  calques du partage) reste légitime. `elementFromPoint` respecte
- *  `pointer-events: none` : un calque décoratif ne perce jamais rien. */
+/**
+ * Find page regions covering video, or return null for full occlusion.
+ * Native painting sits above the webview, so Rust cuts holes for menus and dialogs.
+ * Allow video-container controls. elementFromPoint honors pointer-events:none
+ * so decorative layers do not cut holes.
+ */
 function trousSur(element: HTMLCanvasElement, left: number, top: number, width: number, height: number): ZonePage[] | null {
   const right = left + width;
   const bottom = top + height;
@@ -801,8 +755,7 @@ function trousSur(element: HTMLCanvasElement, left: number, top: number, width: 
 
   for (const calque of document.querySelectorAll(SELECTEUR_CALQUES)) {
     if (!etranger(calque) || calque.contains(element)) continue;
-    // Hors de l'élément plein écran : invisible, il est dans la couche du
-    // dessous.
+    // Elements outside fullscreen are hidden beneath its top layer.
     if (plein && !plein.contains(calque)) continue;
     const r = calque.getBoundingClientRect();
     const gauche = Math.max(left, r.left);
@@ -810,19 +763,18 @@ function trousSur(element: HTMLCanvasElement, left: number, top: number, width: 
     const droite = Math.min(right, r.right);
     const bas = Math.min(bottom, r.bottom);
     if (droite <= gauche || bas <= haut) continue;
-    // Recouvrir la vidéo ne suffit pas : il faut être DEVANT elle. Un calque
-    // dessous serait caché par le fond du canvas, et le trou montrerait ce
-    // fond noir au lieu de la vidéo.
+    // Only layers in front of video should create holes; a layer beneath it
+    // would reveal the canvas's black background instead of the image.
     const devant = echantillons(gauche, haut, droite - gauche, bas - haut).some(([x, y]) => {
       const hit = document.elementFromPoint(x, y);
       return hit !== null && calque.contains(hit);
     });
     if (devant) retenir(calque);
   }
-  // Filet : ce qui est devant la vidéo sans que le sélecteur l'ait vu.
+  // Catch foreground elements missed by the layer selector.
   for (const [x, y] of echantillons(left, top, width, height)) {
     const hit = document.elementFromPoint(x, y);
-    // Rien sous le point (hors viewport) : ne pas conclure à une occultation.
+    // A point outside the viewport has no element and does not imply occlusion.
     if (!hit || !etranger(hit) || hit.contains(element)) continue;
     retenir(calqueDe(hit, element));
   }
@@ -859,8 +811,8 @@ function nativeSurfaceLoop() {
     try {
       holes = trousSur(element, left, top, width, height);
     } catch (error) {
-      // Une exception ici arrêterait la boucle : la vidéo resterait figée
-      // à son dernier rectangle, par-dessus tout ce qui s'ouvrirait ensuite.
+      // Catch errors so geometry updates continue; otherwise video stays
+      // at its last rectangle over subsequently opened UI.
       console.warn("[Sion][partage-natif] calcul des trous impossible", error);
       holes = [];
     }
@@ -881,10 +833,8 @@ function nativeSurfaceLoop() {
     void tauriInvoke<boolean>("native_video_surfaces_set", { surfaces }).catch(() => false);
   }
   if (nativeSurfaceRegistrations.size > 0) {
-    // Une rAF permanente maintenait WebKit et le GtkOverlay en composition
-    // continue, même avec une géométrie inchangée. Quatre contrôles par
-    // seconde suffisent pour suivre resize/scroll/transitions sans brûler le
-    // thread principal pendant toute la durée d'un partage.
+    // Check geometry four times per second instead of running a permanent rAF.
+    // This follows resize/scroll/transitions without continuous WebKit/GTK composition.
     nativeSurfaceTimer = window.setTimeout(nativeSurfaceLoop, 250);
   }
 }
@@ -895,13 +845,12 @@ function startNativeSurfaceLoop() {
   nativeSurfaceTimer = window.setTimeout(nativeSurfaceLoop, 0);
 }
 
-/** Un menu s'ouvre ou se ferme sur un clic, une touche : on reprend la
- *  géométrie à l'image suivante — React a alors fini de le monter — plutôt
- *  que d'attendre le prochain contrôle, un quart de seconde plus tard, avec
- *  la vidéo par-dessus le menu. */
+/**
+ * After clicks or keys, update geometry on the next frame once React mounts
+ * the menu; do not wait a quarter-second with native video covering it.
+ */
 function apresInteraction(event: Event) {
-  // Une frappe dans un champ de saisie n'ouvre aucun menu : sans ce filtre,
-  // chaque lettre d'un message relançait un parcours complet de la page.
+  // Typing in an input does not open menus; avoid rescanning the page for every character.
   if (event.type === "keydown") {
     const cible = event.target;
     if (cible instanceof HTMLElement
@@ -928,22 +877,21 @@ function ensureNativeSurfaceGeometryObservers() {
   }
 }
 
-/** Enregistre le rectangle DOM qui doit recevoir les pixels natifs. La
- *  géométrie est envoyée à Rust seulement lorsqu'elle change ; aucun pixel ne
- *  traverse l'IPC. */
+/**
+ * Register the DOM rectangle receiving native pixels. Send geometry only
+ * when changed; no pixel data crosses IPC.
+ */
 export async function registerNativeVideoSurface(
   element: HTMLCanvasElement,
   sender: string,
 ): Promise<() => void> {
   if (!sender || !(await isNativeVideoSurfaceAvailable())) return () => {};
-  // Le premier changement de taille peut être émis dès que la surface est
-  // publiée à Rust. Installer l'écouteur avant cette publication évite de
-  // rater l'unique événement d'un partage dont la résolution reste fixe.
+  // Install the listener before publishing the surface so the initial
+  // and potentially only size event cannot be missed.
   await ensureNativeSurfaceSizeListener();
   void ensureRejeuSouris().catch(() => { /* hors Tauri */ });
   const id = `native-video-${++nativeSurfaceSequence}`;
-  // Marque l'élément comme placeholder de surface native : son backing-store
-  // ne porte aucune résolution, les calculs de letterbox doivent le savoir.
+  // Mark the native placeholder; letterbox calculations must not use its tiny backing store.
   element.dataset.nativeSurface = "true";
   nativeSurfaceRegistrations.set(id, { id, sender, element });
   ensureNativeSurfaceGeometryObservers();
@@ -1001,13 +949,15 @@ export function parseVoiceNativeVideoPacket(data: ArrayBuffer): VoiceNativeBinar
   };
 }
 
-/** Ouvre le flux vidéo local binaire. Le WebSocket transporte les JPEG sans
- * JSON/base64 et garde l'IPC Tauri réservé aux petits événements de contrôle. */
-/** Android : Chromium interdit à la page de joindre le WebSocket local
- *  (accès au réseau local) — les images du partage passent par le protocole
- *  interne `sion-video`, en requêtes successives : chaque réponse porte le
- *  dernier numéro d'image puis les images arrivées depuis la précédente, la
- *  plus récente par expéditeur (voir `images_depuis` côté Rust). */
+/**
+ * Open binary local JPEG transport without JSON/base64.
+ * Reserve Tauri IPC for small control events.
+ */
+/**
+ * On Android, use internal sion-video requests when Chromium blocks
+ * the local WebSocket. Each response carries the latest sequence and
+ * new frames since the previous request, keeping the latest per sender.
+ */
 function lireImagesParRequetes(onFrame: (frame: VoiceNativeBinaryFrame) => void): () => void {
   let actif = true;
   let vu = 0;
@@ -1036,7 +986,7 @@ function lireImagesParRequetes(onFrame: (frame: VoiceNativeBinaryFrame) => void)
           }
           onFrame(frame);
         }
-        // Rien de nouveau : on laisse passer une image (~15 im/s émises).
+        // No new frame: wait roughly one source frame interval.
         if (recues === 0) await pause(40);
       } catch {
         await pause(500);
@@ -1100,7 +1050,7 @@ export async function onVoiceNativeFrameStopped(
   );
 }
 
-/** Qualité string du natif → type front (même vocabulaire que LiveKit JS). */
+/** Map native quality strings to the frontend's LiveKit-compatible type. */
 export function toConnectionQuality(q: string): ConnectionQuality {
   switch (q) {
     case "excellent":
@@ -1113,17 +1063,15 @@ export function toConnectionQuality(q: string): ConnectionQuality {
   }
 }
 
-/** Matrix user-ID extrait d'une identité LiveKit (`@user:server[:device]`).
- *  Même regex que le filtre du panneau vocal (`ChannelItem`). */
+/** Extract a Matrix user ID from @user:server[:device], matching ChannelItem's filter. */
 export function matrixUserIdOf(identity: string): string {
   return identity.match(/^(@[^:]+:[^:]+)/)?.[1] ?? identity;
 }
 
-/** Pseudo d'affichage d'un participant vocal natif : membre Matrix de la
- *  room (pseudo choisi par l'utilisateur), sinon displayname global, sinon
- *  localpart — jamais l'identité longue (`@user:server:device`). Miroir de
- *  `getParticipantInfo` (panneau vocal) pour les pastilles de curseur.
- *  Synchrone et pas cher (lectures de maps) : appelable à chaque paquet. */
+/**
+ * Resolve the participant's room display name, then global name, then localpart.
+ * Use map reads so every cursor packet can obtain a short name cheaply.
+ */
 export function resolveNativeDisplayName(identity: string, roomId: string | null): string {
   const userId = matrixUserIdOf(identity);
   try {
@@ -1146,25 +1094,15 @@ export interface MatrixVoiceUserState {
   id: string;
   muted: boolean;
   deafened: boolean;
-  /** Par appareil (un call.member chacun), quand c'est connu. */
+  /** Per-device state, with one call.member entry per known device. */
   devices?: { id: string; muted: boolean; deafened: boolean }[];
 }
 
-/** Fusionne l'état voix Matrix (`sion_muted` / `sion_deafened` des events
- *  `call.member`) dans la liste des participants natifs.
- *
- *  Pourquoi : l'état LiveKit (data-channel) ne contient que ce qui a été
- *  reçu depuis le join — un broadcast manqué (join en course) laisse un
- *  sourdine affiché "mute" simple pour toute la session. L'état Matrix est
- *  lui persistant (lisible via /sync à tout moment, sans course) : `main`
- *  le fait déjà circuler dans `voiceUsers` pour la sidebar.
- *
- *  Règle : OU logique (soit source à vrai l'emporte). Les faux négatifs
- *  Matrix sont impossibles par construction (champs absents = false, jamais
- *  de stale-false), et un stale-true se nettoie tout seul (expiration du
- *  membership → filtré de la liste, + heartbeat 30 s des nouveaux builds).
- *  Fonction pure (testée). Retourne la liste d'origine si rien ne change
- *  (référence identique → pas de re-render inutile).
+/**
+ * Merge persistent Matrix call.member mute/deafen state with native participant state.
+ * Missed data-channel broadcasts during join must not hide deafen for the whole call.
+ * Use logical OR; membership expiry and heartbeats remove stale true values.
+ * Return the original list reference when unchanged to avoid unnecessary renders.
  */
 export function overlayMatrixVoiceState(
   participants: ParticipantInfo[],
@@ -1176,9 +1114,8 @@ export function overlayMatrixVoiceState(
   const out = participants.map((p) => {
     const u = byUser.get(matrixUserIdOf(p.identity));
     if (!u) return p;
-    // L'état de CET appareil : un compte en appel depuis le PC (micro coupé)
-    // et le téléphone (micro ouvert) ne doit pas voir le premier couvrir le
-    // second (29/09). Appareil inconnu de Matrix : rien à ajouter.
+    // Use this device's state: a muted desktop must not override the same
+    // account's unmuted phone. Unknown Matrix devices add no state.
     const appareil = appareilDeIdentite(p.identity);
     const etat = u.devices?.length ? u.devices.find((d) => d.id === appareil) : u;
     if (!etat) return p;
@@ -1191,48 +1128,17 @@ export function overlayMatrixVoiceState(
   return touched ? out : participants;
 }
 
-// ── PIP natif (fenêtre OS au-dessus de toutes les applis) ───────────────────
-//
-// Complète la carte PIP interne : ici, c'est une vraie fenêtre native winit
-// (Rust) qui décode le flux JPEG déjà côté Rust — aucun aller-retour webview.
-
-/** Ouvre la fenêtre PIP native sur ce partage. `false` si refusé. */
-export async function pipNativeOpen(sender: string): Promise<boolean> {
-  try {
-    await tauriInvoke<null>("pip_native_open", { sender });
-    return true;
-  } catch (err) {
-    console.warn("[Sion][PIP] ouverture de la fenêtre native refusée:", err);
-    return false;
-  }
-}
+// Native always-on-top PIP, painted from Rust-side BGRA frames without webview transfers.
 
 export async function pipNativeClose(): Promise<void> {
   try {
     await tauriInvoke<null>("pip_native_close");
   } catch {
-    /* hors Tauri : rien à fermer */
+    /* Nothing to close outside Tauri. */
   }
 }
 
-export async function pipNativeStatus(): Promise<boolean> {
-  try {
-    return await tauriInvoke<boolean>("pip_native_status");
-  } catch {
-    return false;
-  }
-}
-
-/** Flux actuellement détaché, pour distinguer webcam et partage d'écran. */
-export async function pipNativeSource(): Promise<string | null> {
-  try {
-    return await tauriInvoke<string | null>("pip_native_source");
-  } catch {
-    return null;
-  }
-}
-
-/** État du lecteur vidéo natif, tel que le rapporte Rust. */
+/** Native video-player state reported by Rust. */
 export interface EtatLecteurVideo {
   actif: boolean;
   largeur: number;
@@ -1240,16 +1146,14 @@ export interface EtatLecteurVideo {
   duree_ms: number;
   position_ms: number;
   en_pause: boolean;
-  /** Faux si le média est muet, ou si la machine n'a pas de sortie utilisable. */
+  /** False for silent media or when no usable output device exists. */
   a_du_son: boolean;
 }
 
-/** Identifiant de flux du lecteur dans la surface native. Doit rester
- *  identique à `SENDER_LECTEUR` côté Rust. */
+/** Player stream ID; keep identical to Rust SENDER_LECTEUR. */
 export const SENDER_LECTEUR = "sion:lecteur";
 
-/** Avancement d'un téléchargement du lecteur. `total` vaut 0 quand le serveur
- *  n'annonce pas la taille. */
+/** Player download progress; total is zero when the server omits content length. */
 export interface ProgresVideo {
   source: string;
   recus: number;
@@ -1257,14 +1161,9 @@ export interface ProgresVideo {
 }
 
 /**
- * Ramène la vidéo sur le disque avant de l'ouvrir, en signalant l'avancement.
- *
- * Indispensable, et pas seulement confortable : le ffmpeg que nous livrons
- * est lié statiquement à la glibc, sa résolution DNS est cassée, et il
- * s'effondre sur la moindre URL. C'est donc Rust qui va chercher le fichier.
- * L'appel est asynchrone côté Rust pour ne pas figer l'interface pendant le
- * transfert, et le résultat est mis en cache : revoir une vidéo ne la
- * retélécharge pas.
+ * Download video to disk with progress and caching before playback.
+ * The bundled statically linked ffmpeg has unreliable DNS resolution, so Rust
+ * fetches URLs asynchronously to keep the UI responsive and avoid repeat downloads.
  */
 export async function precharcherVideo(
   source: string,
@@ -1283,13 +1182,9 @@ export async function precharcherVideo(
 }
 
 /**
- * Ouvre une vidéo dans le lecteur natif.
- *
- * `source` peut être un chemin local ou une URL : dans ce dernier cas le
- * fichier est d'abord ramené sur le disque. Appeler `precharcherVideo` avant
- * rend la main tout de suite ici, le cache étant déjà chaud. Le décodage se
- * fait hors du moteur web et les images sont peintes dans la surface native —
- * voir docs/lecteur-video-natif.md pour la raison de ce détour.
+ * Open local or remote video in the native player. Remote sources are downloaded
+ * first; precharcherVideo can warm the cache. Decode outside the webview and paint
+ * native surfaces; see docs/lecteur-video-natif.md.
  */
 export async function ouvrirLecteurVideo(source: string): Promise<EtatLecteurVideo> {
   const { useSettingsStore } = await import("../stores/useSettingsStore");
@@ -1299,38 +1194,29 @@ export async function ouvrirLecteurVideo(source: string): Promise<EtatLecteurVid
   });
 }
 
-/** Arrête la lecture et libère la surface. Sans effet s'il n'y a rien à
- *  arrêter : appelable à chaque fermeture sans condition. */
+/** Stop playback and release the surface; safe to call when already stopped. */
 export function fermerLecteurVideo(): Promise<void> {
   return tauriInvoke<void>("lecteur_video_fermer");
 }
 
-/** Position et durée courantes, pour la barre de progression. */
+/** Current position and duration for the progress bar. */
 export function etatLecteurVideo(): Promise<EtatLecteurVideo> {
   return tauriInvoke<EtatLecteurVideo>("lecteur_video_etat");
 }
 
 /**
- * Met la lecture en pause, ou la reprend.
- *
- * Reprendre RELANCE le film à la position atteinte : `-re` fait cadencer
- * ffmpeg sur son horloge de départ, et à la reprise il rattraperait à pleine
- * vitesse le temps passé à l'arrêt — l'image sautait en avant en laissant le
- * son derrière. Compter donc quelques dixièmes de seconde, comme pour un
- * déplacement.
+ * Pause or resume playback. Resume restarts ffmpeg at the saved position
+ * so its -re clock does not catch up the paused interval at full speed
+ * and desynchronize video/audio. Restart may take a few tenths of a second.
  */
 export function pauseLecteurVideo(enPause: boolean): Promise<EtatLecteurVideo> {
   return tauriInvoke<EtatLecteurVideo>("lecteur_video_pause", { enPause });
 }
 
 /**
- * Taille, en pixels physiques, où la vidéo s'affiche.
- *
- * Quand l'affichage dépasse nettement la résolution du média — en plein
- * écran —, Rust relance la lecture à la position atteinte avec une toile à
- * la taille de l'écran : sinon la vidéo ET le bandeau peint dedans étaient
- * étirés par le GPU, et tout ressortait pixelisé. Sans effet quand rien ne
- * change ; rend l'état, dont les nouvelles dimensions de toile.
+ * Physical display size. When fullscreen exceeds source resolution, Rust
+ * restarts at the current position with a larger canvas to keep video controls sharp.
+ * No-op for unchanged size; returns state including the new canvas dimensions.
  */
 export function resolutionLecteurVideo(largeur: number, hauteur: number): Promise<EtatLecteurVideo> {
   return tauriInvoke<EtatLecteurVideo>("lecteur_video_resolution", {
@@ -1339,41 +1225,39 @@ export function resolutionLecteurVideo(largeur: number, hauteur: number): Promis
   });
 }
 
-/** Volume, de 0 à 1,5 — au-delà de 1 le son est amplifié. */
+/** Volume from 0 to 1.5; values above one amplify audio. */
 export function volumeLecteurVideo(valeur: number): Promise<void> {
   return tauriInvoke<void>("lecteur_video_volume", { valeur });
 }
 
-/** Se déplace dans le film. Relance ffmpeg à la position demandée : compter
- *  quelques dixièmes de seconde avant la reprise. */
+/** Seek by restarting ffmpeg at the requested position; expect a short startup delay. */
 export function seekLecteurVideo(positionMs: number): Promise<EtatLecteurVideo> {
   return tauriInvoke<EtatLecteurVideo>("lecteur_video_seek", { positionMs: Math.max(0, Math.round(positionMs)) });
 }
 
-/** Découpe du bandeau incrusté, en pixels du média. Rust dessine, la page
- *  pose ses zones de clic aux mêmes endroits. */
+/** Embedded control layout in media pixels; Rust drawing and page hit areas must agree. */
 export interface ZonesLecteur {
   bandeau_y: number;
   bandeau_h: number;
   barre_h: number;
-  /** Centre de la piste, depuis le haut du bandeau. */
+  /** Track center measured from the control strip's top edge. */
   barre_y: number;
   bouton_x: number;
   bouton_l: number;
-  /** La piste, en retrait des bords comme le reste de la rangée. */
+  /** Inset track geometry matching the rest of the row. */
   barre_x: number;
   barre_l: number;
-  /** Icône du haut-parleur, puis la jauge s'il y en a une. */
+  /** Speaker icon followed by the optional volume gauge. */
   volume_x: number;
   volume_l: number;
-  /** Piste de la jauge : c'est sur elle que se lit le niveau. */
+  /** Gauge track used to read the volume level. */
   jauge_x: number;
   jauge_l: number;
   compteur_x: number;
   compteur_l: number;
   /** "complet" | "court" | "aucun" */
   compteur: string;
-  /** Bouton de fermeture, carré, en haut à droite de l'image. */
+  /** Square close button in the image's top-right corner. */
   fermer_x: number;
   fermer_y: number;
   fermer_l: number;
@@ -1385,14 +1269,9 @@ export interface ZonesLecteur {
 }
 
 /**
- * Découpe du bandeau, et déclaration de l'affichage.
- *
- * `echelle` vaut « pixels d'écran par pixel de média ». Rust s'en sert pour
- * dimensionner le bandeau afin qu'il reste lisible APRÈS réduction : sans
- * elle, une vidéo verticale affichée au tiers de sa taille donnait des
- * contrôles minuscules. `densite` — le `devicePixelRatio` — fixe la finesse
- * du dessin : le bandeau est peint à la résolution physique de l'écran.
- * `pleinEcran` choisit l'icône du bouton de plein écran.
+ * Declare display size and control layout. echelle is screen pixels per media
+ * pixel, keeping controls readable after scaling. densite is devicePixelRatio
+ * for physical-resolution drawing; pleinEcran selects the fullscreen button icon.
  */
 export function zonesLecteurVideo(
   largeur: number,
@@ -1411,11 +1290,8 @@ export function zonesLecteurVideo(
 }
 
 /**
- * Affiche d'une vidéo, en JPEG encodé en base64.
- *
- * Le serveur n'en produit pas — interrogé sur la route des vignettes, il
- * renvoie la vidéo entière — donc ffmpeg extrait une image, mise en cache sur
- * disque. À n'appeler que pour une carte réellement visible.
+ * Cached JPEG/base64 video poster extracted by ffmpeg because the server's
+ * thumbnail route returns the whole video. Request only for visible cards.
  */
 export async function afficheLecteurVideo(source: string): Promise<string> {
   const { useSettingsStore } = await import("../stores/useSettingsStore");
@@ -1426,9 +1302,10 @@ export async function afficheLecteurVideo(source: string): Promise<string> {
   return `data:image/jpeg;base64,${b64}`;
 }
 
-/** Position visée pendant un glissement sur la barre, ou `null` à la fin du
- *  geste. Seule la pastille bouge — le déplacement réel attend le
- *  relâchement. */
+/**
+ * Seek preview position during dragging, or null when finished.
+ * Only move the indicator; actual seeking waits for release.
+ */
 export function apercuLecteurVideo(positionMs: number | null): Promise<void> {
   return tauriInvoke<void>("lecteur_video_apercu", {
     positionMs: positionMs === null ? null : Math.max(0, Math.round(positionMs)),

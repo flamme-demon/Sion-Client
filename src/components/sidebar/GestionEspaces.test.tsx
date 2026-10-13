@@ -63,6 +63,38 @@ it("l'acceptation d'une invitation à un espace propose ensuite le choix de ses 
   expect(document.querySelector('[data-choix-salons="!equipe"]')).not.toBeNull();
 });
 afterEach(() => vi.useRealTimers());
+it.each([false, true])("creates an encrypted room in the selected space (voice: %s)", async (vocal) => {
+  appels.responsable = true;
+  await vue.render(<GestionEspaces />);
+  await rubrique("salons");
+  const formulaire = document.querySelector<HTMLFormElement>('[role="tabpanel"] form')!;
+  const casePour = (cle: string) => Array.from(formulaire.querySelectorAll("label"))
+    .find((label) => label.textContent === cle)!.querySelector<HTMLInputElement>('input[type="checkbox"]')!;
+  expect(casePour("spaces.encryptedRoom").checked).toBe(false);
+  await act(async () => {
+    const nom = formulaire.querySelector<HTMLInputElement>('input:not([type="checkbox"])')!;
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(nom, "Réunion privée");
+    nom.dispatchEvent(new Event("input", { bubbles: true }));
+    casePour("spaces.encryptedRoom").click();
+    if (vocal) casePour("spaces.voice").click();
+    casePour("spaces.commonRoom").click();
+  });
+  expect(formulaire.textContent).toContain("spaces.encryptedRoomHelp");
+  await act(async () => formulaire.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
+  expect(appels.creerSalon).toHaveBeenCalledExactlyOnceWith("!equipe", "Réunion privée", vocal, false, true);
+});
+it("allows disabling encryption before creating a room", async () => {
+  appels.responsable = true;
+  await vue.render(<GestionEspaces />);
+  await rubrique("salons");
+  const formulaire = document.querySelector<HTMLFormElement>('[role="tabpanel"] form')!;
+  const chiffre = Array.from(formulaire.querySelectorAll("label")).find((l) => l.textContent === "spaces.encryptedRoom")!.querySelector<HTMLInputElement>("input")!;
+  await act(async () => chiffre.click());
+  await act(async () => chiffre.click());
+  expect(formulaire.textContent).not.toContain("spaces.encryptedRoomHelp");
+  await act(async () => formulaire.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
+  expect(appels.creerSalon.mock.calls[0]?.[4]).toBe(false);
+});
 it("propose Conservation dans les réglages de l'espace et désactive les durées sans extension serveur", async () => {
   await vue.render(<GestionEspaces />);
   await rubrique("conservation");

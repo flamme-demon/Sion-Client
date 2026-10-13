@@ -1,27 +1,12 @@
-//! Hôte X11 natif de l'overlay curseurs — x11rb + MIT-SHM.
+//! Native X11 cursor overlay using x11rb and MIT-SHM.
 //!
-//! **Pourquoi pas winit.** winit 0.30 n'autorise qu'UNE `EventLoop` par
-//! processus (`EVENT_LOOP_CREATED.swap` → `EventLoopError::RecreationAttempt`,
-//! `winit/src/event_loop.rs`). Le PIP natif préchauffe la sienne au démarrage
-//! (`pip_window::prewarm`) ; l'overlay, qui créait la sienne à l'ouverture,
-//! ne pouvait donc plus jamais s'afficher depuis l'alpha.2 (son journal
-//! disait `winit EventLoop build failed: RecreationAttempt`). Ici, plus aucune
-//! boucle winit : une connexion X11 à nous, et le PIP garde son préchauffage.
+//! The PIP already owns winit's only EventLoop, so the overlay uses a separate
+//! X11 connection. It creates a transparent, undecorated ARGB window with
+//! above/sticky hints and an empty SHAPE input region.
 //!
-//! **Ce que fait cet hôte**
-//!   - fenêtre 32 bits ARGB à la taille du moniteur principal (`RANDR` pour
-//!     l'interroger ; repli sur l'écran entier), sans décoration,
-//!     `_NET_WM_STATE_ABOVE|STICKY|SKIP_TASKBAR|SKIP_PAGER` et
-//!     `_NET_WM_DESKTOP = ~0` (tous bureaux) ;
-//!   - traversante aux clics (région d'entrée SHAPE vide) ;
-//!   - blit par MIT-SHM (`shm_put_image`) — le serveur lit notre mémoire, pas
-//!     de copie sur le socket ; repli `put_image` si l'extension manque ;
-//!   - la même politique de redraw que l'ancien hôte : ≈30 Hz seulement quand
-//!     des clics s'animent, un seul réveil à la prochaine expiration sinon,
-//!     sommeil complet quand il n'y a plus rien à peindre.
-//!
-//! Toute la peinture (curseurs, ondes, pastilles de nom) vient du module
-//! parent (`super::draw`) : cet hôte ne fait que la fenêtre et le blit.
+//! MIT-SHM lets X read shared pixels without copying through the socket;
+//! put_image is the fallback. Shared drawing comes from the parent module.
+//! Animate clicks around 30 Hz and otherwise sleep until cursor expiry.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
@@ -44,13 +29,12 @@ use x11rb::wrapper::ConnectionExt as _;
 
 use super::{OverlayState, UserEvent};
 
-/// Cadence d'animation des ondes de clic (l'ancien hôte : 33 ms).
+/// Click animation interval.
 const ANIMATE_STEP: Duration = Duration::from_millis(33);
-/// Plafond d'attente du fil : on doit aussi relire les événements X
-/// (Expose, ConfigureNotify) sans dépendre d'un réveil de commande.
+/// Maximum sleep before polling X events such as Expose and ConfigureNotify.
 const POLL_CAP: Duration = Duration::from_millis(100);
 
-/// Démarre le fil X11. Le canal renvoyé accepte `Show` / `Hide` / `Shutdown`.
+/// Start the X11 thread; the returned channel accepts Show and Hide.
 pub(super) fn start(
     state: Arc<Mutex<OverlayState>>,
     thread_alive: Arc<AtomicBool>,
@@ -87,7 +71,7 @@ pub(super) fn start(
     }
 }
 
-/// Segments SHM attachés (le serveur lit notre mémoire).
+/// Attached shared-memory segments read by the X server.
 struct Shm {
     seg: shm::Seg,
     size: usize,
@@ -112,7 +96,7 @@ struct Atoms {
     net_wm_window_type: u32,
     net_wm_window_type_utility: u32,
     motif_wm_hints: u32,
-    /// Propriété privée servant de signal de synchronisation SHM.
+    /// Private property used to acknowledge SHM consumption.
     overlay_sync: u32,
 }
 
@@ -122,43 +106,37 @@ struct Host {
     depth: u8,
     visual: u32,
     atoms: Atoms,
-    /// Géométrie du moniteur principal (x, y, w, h).
+    /// Primary monitor geometry (x, y, width, height).
     mon: (i16, i16, u16, u16),
     win: Option<Win>,
     shm: Option<Shm>,
     pixmap: Option<Pixmap>,
-    /// Tampon de repli quand MIT-SHM manque.
+    /// Fallback buffer when MIT-SHM is unavailable.
     wire: Vec<u32>,
-    /// Synchronisation du segment SHM : on écrit le prochain frame seulement
-    /// quand le serveur a signalé avoir traité le précédent. Le signal est un
-    /// `PropertyNotify` sur notre propre fenêtre (événement, donc **aucune
-    /// attente bloquante**) — même rôle que la réponse `GetInputFocus` de
-    /// softbuffer, mais sans figer le fil.
+    /// Reuse SHM only after a PropertyNotify acknowledges consumption of the
+    /// previous frame. This event-driven fence avoids blocking on GetInputFocus.
     sync_pending: bool,
     sync_done: bool,
     sync_counter: u32,
-    /// Diagnostic : le premier blit est vérifié (`.check()`) pour faire
-    /// remonter une éventuelle erreur X asynchrone (BadMatch/Depth), les
-    /// suivants sont ignorés pour ne pas payer d'aller-retour par frame.
+    /// Check the first blit for asynchronous X errors; avoid a round trip on
+    /// every subsequent frame.
     first_present_checked: bool,
-    /// Diagnostic : première frame contenant du dessin (log unique).
+    /// Log the first frame containing drawn pixels once.
     logged_content: bool,
-    /// Diagnostic : première frame contenant un curseur/onde (log unique).
+    /// Log the first frame containing a cursor or ripple once.
     logged_cursor_frame: bool,
     frame_counter: u64,
     redraw_ms_total: u64,
     redraw_count: u64,
     need_redraw: bool,
     redraw_at: Option<Instant>,
-    /// Nombre de lots de 64 évènements X drainés d'affilée (diagnostic).
+    /// Number of consecutive batches of 64 drained X events.
     floods: usize,
-    /// Dimensions de l'écran X (repli quand RANDR ne donne rien) et drapeau
-    /// « la géométrie a bougé » (écran éteint, résolution changée en plein
-    /// partage) — constat du 13/09 : XWayland à 0×0 donnait une fenêtre 0×0.
+    /// Fallback X screen dimensions and a geometry-change flag. Disabled
+    /// outputs can report 0x0, so window creation must wait for valid geometry.
     screen_wh: (u16, u16),
     geometry_dirty: bool,
-    /// L'ouverture a été demandée (pour recréer la fenêtre quand l'écran
-    /// revient).
+    /// Remember a Show request so the window can be recreated when the display returns.
     open_requested: bool,
 }
 
@@ -168,7 +146,7 @@ impl Host {
         let screen = conn.setup().roots[screen_num].clone();
         let root = screen.root;
 
-        // Visual 32 bits (ARGB) : le fond doit pouvoir être transparent.
+        // Select a 32-bit ARGB visual for a transparent background.
         let (visual, depth) = screen
             .allowed_depths
             .iter()
@@ -211,9 +189,8 @@ impl Host {
             mon.1
         );
 
-        // Écoute des changements d'écran (extinction, résolution, sortie
-        // rebranchée) : sans ça une ouverture pendant un écran éteint restait
-        // bloquée sur une géométrie 0×0.
+        // Subscribe to output and resolution changes so a failed 0x0 opening
+        // can resume when an active output becomes available.
         if let Err(err) = conn.randr_select_input(
             root,
             randr::NotifyMask::SCREEN_CHANGE
@@ -252,14 +229,11 @@ impl Host {
         })
     }
 
-    /// Boucle principale : événements X, commandes, redraws dus.
+    /// Main loop: X events, commands and scheduled redraws.
     fn run(&mut self, state: &Arc<Mutex<OverlayState>>, rx: Receiver<UserEvent>) {
         loop {
-            // 1) Événements X en attente, DRAINAGE BORNÉ : un gestionnaire qui
-            //    « ping-pong » (redimensionnement contre nos hints) peut en
-            //    produire un flux continu — une boucle non bornée affamait
-            //    alors le redraw et les commandes (constat du 13/09 : fil à
-            //    100 % CPU pendant 3 min, fenêtre mappée jamais repeinte).
+            // 1) Bound event draining so continuous resize/hint feedback cannot
+            // starve redraws or commands.
             let mut drained = 0usize;
             loop {
                 match self.conn.poll_for_event() {
@@ -285,8 +259,7 @@ impl Host {
                 }
             }
 
-            // 2) Géométrie à rafraîchir ? (RANDR a annoncé un changement, ou
-            //    l'écran était sans sortie active à l'ouverture).
+            // 2) Refresh geometry after a RANDR event or an opening without an active output.
             if self.geometry_dirty {
                 self.geometry_dirty = false;
                 self.refresh_geometry();
@@ -298,14 +271,14 @@ impl Host {
                 }
             }
 
-            // 3) Redraw dû ?
+            // 3) Process a scheduled redraw.
             let due = self.need_redraw || self.redraw_at.is_some_and(|t| Instant::now() >= t);
             if due {
                 self.redraw(state);
                 continue;
             }
 
-            // 3) Attendre une commande (ou l'échéance du prochain redraw).
+            // 4) Wait for a command or the next redraw deadline.
             let timeout = self
                 .redraw_at
                 .map(|t| t.saturating_duration_since(Instant::now()))
@@ -314,18 +287,13 @@ impl Host {
             match rx.recv_timeout(timeout) {
                 Ok(UserEvent::Show) => {
                     if let Err(err) = self.show() {
-                        // Normal quand l'écran n'a pas de sortie active : on
-                        // reprendra sur évènement RANDR (cf. geometry_dirty).
+                        // No active output yet; retry after RANDR updates geometry.
                         log::debug!("[Sion][CursorOverlay] ouverture différée : {err}");
                         continue;
                     }
                     self.need_redraw = true;
                 }
                 Ok(UserEvent::Hide) => self.hide(),
-                Ok(UserEvent::Shutdown) => {
-                    self.cleanup();
-                    return;
-                }
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => {
                     self.cleanup();
@@ -341,14 +309,12 @@ impl Host {
                 self.need_redraw = true;
             }
             XEvent::MapNotify(_) => {
-                // La fenêtre vient d'être prise en gestion : c'est seulement
-                // maintenant que le gestionnaire accepte un changement d'état.
+                // The window manager can accept state changes only after managing the window.
                 self.reassert_above();
             }
             XEvent::ConfigureNotify(ev) => {
-                // KWin réécrit `_NET_WM_STATE` quand il (re)positionne ou
-                // maximise la fenêtre. On réaffirme : l'appel est une requête
-                // X sans réponse, et les ConfigureNotify sont rares.
+                // KWin rewrites window state while positioning or maximizing; reassert
+                // the hints without waiting for a response.
                 self.reassert_above();
                 if let Some(win) = self.win.as_mut() {
                     if ev.width != win.w || ev.height != win.h {
@@ -367,27 +333,20 @@ impl Host {
                 }
             }
             XEvent::RandrScreenChangeNotify(_) | XEvent::RandrNotify(_) => {
-                // Écran éteint/rallumé, résolution changée en plein partage :
-                // on ré-interroge la géométrie (constat du 13/09, XWayland 0×0).
+                // Refresh geometry after display power or resolution changes.
                 self.geometry_dirty = true;
                 self.need_redraw = true;
             }
             XEvent::PropertyNotify(ev) => {
-                // Fin de traitement d'une frame : le serveur a consommé le
-                // `shm_put_image` précédent (requêtes traitées dans l'ordre),
-                // le segment SHM est réutilisable. On ne relance PAS de redraw
-                // ici : chaque changement de propriété en produirait un, donc
-                // une boucle de rendu à 100 % CPU. Les positions de curseur
-                // (poussées par le moteur) et la cadence des ondes de clic
-                // déclenchent les frames ; le prochain rendu profite simplement
-                // du segment libéré.
+                // PropertyNotify confirms consumption of the previous SHM frame.
+                // Release the buffer without requesting another redraw, which would create
+                // a busy render loop. Cursor updates and ripple timers drive rendering.
                 if ev.atom == self.atoms.overlay_sync {
                     self.sync_done = true;
                 }
             }
             XEvent::ClientMessage(ev) => {
-                // La fenêtre a été fermée par le gestionnaire (Alt+F4 sur une
-                // fenêtre sans décoration : rare mais possible) → on cache.
+                // Treat a window-manager close, such as Alt+F4, as Hide.
                 if ev.data.as_data32()[0] == self.atoms.net_wm_state {
                     log::info!("[Sion][CursorOverlay] WM state change");
                 }
@@ -396,16 +355,15 @@ impl Host {
         }
     }
 
-    /// Crée la fenêtre au premier `Show` (et la mappe). Idempotent.
+    /// Create and map the window on its first Show request; safe to repeat.
     fn show(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         self.open_requested = true;
         if self.mon.2 == 0 || self.mon.3 == 0 {
             self.refresh_geometry();
         }
         if self.mon.2 == 0 || self.mon.3 == 0 {
-            // Écran sans sortie active (XWayland 0×0 : écran éteint, session
-            // verrouillée…) : pas de fenêtre 0×0, on reprendra quand RANDR
-            // annoncera une géométrie (cf. `geometry_dirty`).
+            // Do not create a 0x0 window when outputs are disabled or the session
+            // is locked; retry when RANDR reports valid geometry.
             return Err("écran sans sortie active — overlay reporté".into());
         }
         if self.win.is_none() {
@@ -414,9 +372,8 @@ impl Host {
             self.conn.map_window(win.id)?;
             self.conn.flush()?;
         }
-        // Fermer puis rouvrir laissait `pixmap` à `None` (il est libéré dans
-        // `hide()` et seul `create_window` le recréait) : plus aucune frame
-        // peinte à la réouverture. On le reconstitue ici si besoin.
+        // Hide releases the pixmap; restore it on reopening even if the native
+        // window already exists.
         if self.pixmap.is_none() {
             if let Some(win) = self.win.as_ref() {
                 self.pixmap = Pixmap::new(win.w as u32, win.h as u32);
@@ -469,7 +426,7 @@ impl Host {
                 ),
         )?;
 
-        // Titre (debug : il apparaît dans wmctrl/xwininfo).
+        // Diagnostic title visible in wmctrl and xwininfo.
         self.conn.change_property8(
             PropMode::REPLACE,
             win_id,
@@ -484,7 +441,7 @@ impl Host {
             self.atoms.utf8_string,
             b"Sion cursor overlay",
         )?;
-        // Type : utilitaire (le gestionnaire n'ajoute pas de cadre).
+        // Use a utility window type to avoid decoration.
         self.conn.change_property32(
             PropMode::REPLACE,
             win_id,
@@ -492,8 +449,7 @@ impl Host {
             AtomEnum::ATOM,
             &[self.atoms.net_wm_window_type_utility],
         )?;
-        // Aucune décoration : _MOTIF_WM_HINTS.flags = MWM_HINTS_DECORATIONS(2),
-        // decorations = 0. KWin/Mutter respectent les deux mécanismes.
+        // Disable decoration with Motif hints; KWin and Mutter honor these flags.
         self.conn.change_property32(
             PropMode::REPLACE,
             win_id,
@@ -501,11 +457,8 @@ impl Host {
             self.atoms.motif_wm_hints,
             &[2, 0, 0, 0, 0],
         )?;
-        // Au-dessus + tous bureaux. Pas de `SKIP_TASKBAR`/`SKIP_PAGER` : la
-        // version winit (et la webview avant elle) apparaissait dans la barre
-        // des tâches — c'est ce que « la fenêtre Sion Overlay » désigne côté
-        // utilisateur, et la masquer faisait croire que l'overlay n'était pas
-        // lancé (constat du 13/09).
+        // Keep the overlay visible in the taskbar and pager, matching the original
+        // window behavior, while requesting above/sticky placement.
         self.conn.change_property32(
             PropMode::REPLACE,
             win_id,
@@ -516,7 +469,7 @@ impl Host {
                 self.atoms.net_wm_state_sticky,
             ],
         )?;
-        // 0xFFFFFFFF = « tous les bureaux » (spec EWMH).
+        // 0xFFFFFFFF selects every virtual desktop in EWMH.
         self.conn.change_property32(
             PropMode::REPLACE,
             win_id,
@@ -525,11 +478,8 @@ impl Host {
             &[0xFFFF_FFFF_u32],
         )?;
 
-        // Taille : AUCUN `WM_NORMAL_HINTS` min=max. KWin « maximise » la fenêtre
-        // à la zone de travail et nos hints la faisaient se redimensionner en
-        // boucle (flux de ConfigureNotify → fil de l'overlay affamé, constat du
-        // 13/09). On laisse le gestionnaire faire et on s'adapte à sa taille
-        // (`ConfigureNotify` → pixmap/SHM), comme le fait le reste du code.
+        // Leave size unconstrained. Fixed min/max hints can create a resize
+        // feedback loop with KWin; adapt pixmap and SHM through ConfigureNotify.
         self.conn.change_property8(
             PropMode::REPLACE,
             win_id,
@@ -538,7 +488,7 @@ impl Host {
             b"sion-client\0Sion-client\0",
         )?;
 
-        // Clics traversants : région d'entrée vide (extension SHAPE).
+        // An empty SHAPE input region passes clicks through.
         match self.conn.extension_information(shape::X11_EXTENSION_NAME) {
             Ok(Some(_)) => {
                 self.conn.shape_rectangles(
@@ -562,9 +512,7 @@ impl Host {
         self.conn.map_window(win_id)?;
         self.conn.flush()?;
 
-        // Post-mappage : le ClientMessage `_NET_WM_STATE` est honoré une fois
-        // la fenêtre visible (certains gestionnaires écrasent la propriété au
-        // mappage — même remarque que l'ancien `make_sticky_x11`).
+        // Reassert window state after mapping; some managers replace the initial property.
         self.send_state_message(win_id)?;
 
         self.pixmap = Pixmap::new(w as u32, h as u32);
@@ -591,9 +539,7 @@ impl Host {
         Ok(())
     }
 
-    /// Réaffirme « au-dessus + tous bureaux » sans faire échouer le rendu si
-    /// le gestionnaire refuse : l'overlay reste utilisable, simplement mal
-    /// empilé, et la prochaine occasion réessaiera.
+    /// Retry above/sticky hints without failing rendering when the manager refuses them.
     fn reassert_above(&self) {
         let Some(win) = self.win.as_ref() else {
             return;
@@ -603,20 +549,9 @@ impl Host {
         }
     }
 
-    /// `_NET_WM_STATE` ADD `_NET_WM_STATE_ABOVE` + `_NET_WM_STATE_STICKY` par
-    /// ClientMessage (source 1 = application, action 1 = add).
-    ///
-    /// Les deux états sont posés en propriété AVANT le mappage, mais KWin
-    /// remplace `_NET_WM_STATE` quand il prend la fenêtre en gestion. Mesuré le
-    /// 17/09 sur la fenêtre vivante : `_NET_WM_STATE` ne contenait plus que
-    /// `MAXIMIZED_VERT, MAXIMIZED_HORZ` — plus d'`ABOVE`, plus de `STICKY`.
-    /// L'overlay retombait donc dans la couche normale et toute fenêtre levée
-    /// ensuite passait devant lui (constat utilisateur : « le curseur passe
-    /// derrière Firefox »). Le ClientMessage envoyé juste après `map_window`
-    /// n'y changeait rien : le gestionnaire ignore les changements d'état d'une
-    /// fenêtre qu'il ne gère pas encore. Il est donc rejoué une fois la fenêtre
-    /// réellement gérée, à chaque `MapNotify` et `ConfigureNotify` — vérifié :
-    /// `ABOVE` et `STAYS_ON_TOP` réapparaissent alors dans la propriété.
+    /// Request ABOVE and STICKY with a ClientMessage (source 1, action ADD).
+    /// KWin can replace the initial property when it manages the window, so replay
+    /// the request on MapNotify and ConfigureNotify after management begins.
     fn send_state_message(&self, win: Window) -> Result<(), Box<dyn std::error::Error>> {
         let event = ClientMessageEvent::new(
             32,
@@ -640,8 +575,7 @@ impl Host {
         Ok(())
     }
 
-    /// (Re)attache un segment SHM si besoin. Sans extension SHM on reste sur
-    /// `put_image` (copie sur le socket) — correct, juste plus lourd.
+    /// Attach SHM when available; put_image remains the functional fallback.
     fn ensure_shm(&mut self, w: u16, h: u16) {
         let needed = w as usize * h as usize * 4;
         if self.shm.as_ref().is_some_and(|s| s.size >= needed) {
@@ -669,7 +603,7 @@ impl Host {
         }
     }
 
-    /// Peint une frame : sweep, dessin (module parent), blit.
+    /// Render a frame: expire state, draw through the parent module, then blit.
     fn redraw(&mut self, state: &Arc<Mutex<OverlayState>>) {
         let now = Instant::now();
         self.need_redraw = false;
@@ -685,9 +619,7 @@ impl Host {
         };
 
         self.frame_counter = self.frame_counter.wrapping_add(1);
-        // Diagnostic (13/09) : prouve qu'une frame est peinte *avec* du
-        // contenu — c'est ce qui manquait pour distinguer « curseurs filtrés »
-        // de « curseurs reçus mais non peints ».
+        // Log drawn content to distinguish filtered cursor packets from failed painting.
         if !self.logged_cursor_frame && (cursor_count > 0 || click_count > 0) {
             self.logged_cursor_frame = true;
             log::info!(
@@ -706,12 +638,10 @@ impl Host {
         }
 
         let t0 = Instant::now();
-        // Frame sautée (le serveur X lit encore la précédente) → on retente
-        // très vite au lieu d'attendre la prochaine position.
+        // If X still reads the previous frame, retry soon instead of waiting for a new position.
         let mut retry_soon = false;
-        // Le pixmap sort de `self` le temps du rendu : `present` a besoin de
-        // `&mut self` (segment SHM, requête-repère) et l'emprunt de
-        // `self.pixmap` l'en empêcherait. On le remet en place ensuite.
+        // Temporarily take the pixmap to allow present to borrow self mutably,
+        // then restore it after rendering.
         if let Some(mut pixmap) = self.pixmap.take() {
             if let Some((win_id, gc, w, h)) = self.win.as_ref().map(|w| (w.id, w.gc, w.w, w.h)) {
                 pixmap.fill(tiny_skia::Color::TRANSPARENT);
@@ -726,8 +656,7 @@ impl Host {
                     log::debug!("[Sion][CursorOverlay] frame sautée : {err}");
                     retry_soon = true;
                 }
-                // Diagnostic : une frame non vide prouve que le dessin (et donc
-                // la chaîne pixmap → repack) produit bien des pixels.
+                // A nonempty frame confirms that drawing and pixel repacking produced pixels.
                 if !self.logged_content {
                     let n = pixmap
                         .data()
@@ -754,8 +683,7 @@ impl Host {
             self.redraw_count = 0;
         }
 
-        // Planification : on n'anime que si des ondes de clic sont en cours ;
-        // sinon un seul réveil à la prochaine expiration ; sinon sommeil.
+        // Animate active click ripples, otherwise wake at the next expiry or sleep.
         let (animate, wake_at) = {
             let s = match state.lock() {
                 Ok(s) => s,
@@ -789,9 +717,7 @@ impl Host {
     ) -> Result<(), Box<dyn std::error::Error>> {
         let pixels = (w as usize) * (h as usize);
         if self.shm.is_some() {
-            // Le serveur n'a pas encore signalé avoir traité la frame
-            // précédente → on saute celle-ci. Aucune attente bloquante : le
-            // signal est un évènement (PropertyNotify), traité par la boucle.
+            // Skip the frame until PropertyNotify releases the SHM buffer; never block.
             if self.sync_pending && !self.sync_done {
                 return Err("le serveur X lit encore la frame précédente".into());
             }
@@ -815,19 +741,15 @@ impl Host {
                 shm.seg,
                 0,
             )?;
-            // Le premier envoi est vérifié : une erreur X asynchrone
-            // (BadMatch/BadDepth…) ne se voit que via `.check()`.
+            // Check the first request to surface asynchronous BadMatch or BadDepth errors.
             if !self.first_present_checked {
                 self.first_present_checked = true;
                 if let Err(err) = cookie.check() {
                     log::warn!("[Sion][CursorOverlay] shm_put_image refusé : {err:?}");
                 }
             }
-            // Signal de fin de traitement : le serveur traite les requêtes dans
-            // l'ordre, donc quand ce changement de propriété nous revient en
-            // PropertyNotify, la frame précédente est consommée et le segment
-            // est réutilisable. C'est l'équivalent non bloquant de la réponse
-            // `GetInputFocus` de softbuffer.
+            // X processes requests in order: the property change following shm_put_image
+            // acknowledges frame consumption without a blocking GetInputFocus round trip.
             self.sync_counter = self.sync_counter.wrapping_add(1);
             self.conn.change_property32(
                 PropMode::REPLACE,
@@ -861,10 +783,8 @@ impl Host {
         Ok(())
     }
 
-    /// Re-interroge la géométrie du moniteur et reconfigure la fenêtre si elle
-    /// existe déjà. RANDR peut n'annoncer aucune sortie active (écran éteint,
-    /// session verrouillée) : on garde alors la dernière géométrie connue et on
-    /// retentera au prochain évènement.
+    /// Refresh monitor geometry and resize an existing window. Keep the last
+    /// valid geometry if RANDR reports no active output, then retry on the next event.
     fn refresh_geometry(&mut self) {
         let mut geom = primary_monitor(&self.conn, self.root);
         if geom.is_none() {
@@ -922,10 +842,9 @@ impl Host {
     }
 }
 
-/// Crée un segment POSIX partagé et l'attache au serveur X.
+/// Create POSIX shared memory and attach it to X.
 fn attach_shm(conn: &RustConnection, needed: usize) -> Result<Shm, Box<dyn std::error::Error>> {
-    // Taille arrondie à la puissance de deux supérieure : on évite de
-    // recréer un segment à chaque micro-changement de géométrie.
+    // Round capacity up to a power of two to avoid reallocating for small size changes.
     let size = needed.next_power_of_two();
     let mut last_err = None;
     for i in 0..4 {
@@ -947,7 +866,7 @@ fn attach_shm(conn: &RustConnection, needed: usize) -> Result<Shm, Box<dyn std::
                         0,
                     )?
                 } as *mut u8;
-                // Le nom peut disparaître tout de suite : le fd suffit.
+                // Unlink the name immediately; the file descriptor keeps the allocation alive.
                 let _ = rustix::shm::unlink(name.as_str());
                 let seg = conn.generate_id()?;
                 conn.shm_attach_fd(seg, fd, true)?.check()?;
@@ -963,8 +882,7 @@ fn intern(conn: &RustConnection, name: &[u8]) -> Result<u32, Box<dyn std::error:
     Ok(conn.intern_atom(false, name)?.reply()?.atom)
 }
 
-/// Géométrie du moniteur principal via RANDR ; `None` si l'extension manque
-/// ou ne répond pas (repli : l'écran entier).
+/// Query the primary monitor through RANDR, falling back to the entire screen.
 pub(crate) fn primary_monitor(conn: &RustConnection, root: Window) -> Option<(i16, i16, u16, u16)> {
     let primary = conn
         .randr_get_output_primary(root)

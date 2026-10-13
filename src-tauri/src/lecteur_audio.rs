@@ -101,7 +101,7 @@ pub fn demarrer(ffmpeg: &str, source: &str, depart_ms: u64, volume: f32) -> Opti
         );
         return None;
     }
-    let taux = config.sample_rate().0;
+    let taux = config.sample_rate();
     let canaux = config.channels() as u32;
 
     // ffmpeg convertit directement au format du périphérique : ni
@@ -195,7 +195,7 @@ pub fn demarrer(ffmpeg: &str, source: &str, depart_ms: u64, volume: f32) -> Opti
             .spawn(move || {
                 let gain = Arc::clone(&volume_flux);
                 let flux = peripherique.build_output_stream(
-                    &config.into(),
+                    config.into(),
                     move |tampon: &mut [f32], _: &cpal::OutputCallbackInfo| {
                         if pause_flux.load(Ordering::Relaxed) {
                             tampon.fill(0.0);

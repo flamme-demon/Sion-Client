@@ -1,23 +1,11 @@
-//! Fenêtre PIP native des vidéos (partages et webcams), au-dessus des applis.
+//! Native always-on-top video PIP for screen shares and cameras.
 //!
-//! Complète le PIP *interne* (carte flottante dans la webview) : ici la
-//! fenêtre est une vraie fenêtre OS, `AlwaysOnTop`, sans décoration, pilotée
-//! par winit + softbuffer — même pile que l'overlay de curseurs, et pour la
-//! même raison : les images du partage sont **déjà côté Rust** quand elles
-//! sortent de libwebrtc. Elles sont converties une fois d'I420 vers BGRA puis
-//! blitées ici, sans recompression JPEG ni passage par la webview.
-//!
-//! Architecture (calquée sur `cursor_overlay.rs`) :
-//!   - un thread hôte porte l'event loop winit (X11 forcé sous Linux, sinon
-//!     Wayland ignore `WindowLevel::AlwaysOnTop`) ;
-//!   - `on_bgra_frame()` dépose la dernière image dans un état partagé puis
-//!     réveille la boucle par un `UserEvent` ;
-//!   - la boucle blitte à ~30 fps maximum (latest-wins, letterbox noir) ;
-//!   - glisser au clic gauche déplace la fenêtre, clic droit ou Échap la
-//!     ferme — pas de décoration, donc pas de bouton système.
-//!
-//! La position est mémorisée en mémoire (par session) ; le partage terminé
-//! ferme la fenêtre automatiquement.
+//! Frames arrive in Rust from libwebrtc and are converted once from I420 to BGRA,
+//! then painted by winit + softbuffer without JPEG encoding or webview transfers.
+//! A dedicated event loop uses X11 on Linux to support AlwaysOnTop.
+//! The shared state keeps the latest frame; painting is capped at about 30 fps.
+//! Left-drag moves the window; right-click or Escape closes it.
+//! Position and size are persisted, and the window closes when its last stream ends.
 
 use ab_glyph::{Font, FontRef, PxScale, ScaleFont};
 use std::collections::HashMap;
@@ -37,8 +25,7 @@ const DEFAULT_H: u32 = 270;
 const LARGE_W: u32 = 768;
 const LARGE_H: u32 = 432;
 const MARGIN: i32 = 24;
-/// Peinture bornée à ~30 fps : une vignette n'a pas besoin de suivre une
-/// source 60 fps et l'état latest-wins remplace les frames intermédiaires.
+/// Cap painting at about 30 fps; the latest frame replaces intermediate frames.
 const MIN_PAINT_INTERVAL: Duration = Duration::from_millis(33);
 
 #[derive(Clone)]
@@ -62,8 +49,8 @@ struct TileRect {
     h: u32,
 }
 
-// Même disposition que la fenêtre interne : partage en grand, rail des
-// autres flux ; sans partage, mosaïque. Les pixels restent bornés à la fenêtre.
+// Match the internal layout: large screen share with a stream rail, or a camera grid.
+// Rendered pixels stay bounded by the window size.
 fn tile_rects(count: usize, focus: Option<usize>, size: (u32, u32)) -> Vec<TileRect> {
     if count == 0 {
         return vec![];
@@ -135,28 +122,25 @@ fn tile_rects(count: usize, focus: Option<usize>, size: (u32, u32)) -> Vec<TileR
 
 #[derive(Default)]
 struct PipState {
-    /// Partage affiché (identité de l'expéditeur). `None` = fenêtre fermée.
+    /// Displayed screen-share sender; None means the window is closed.
     sender: Option<String>,
-    /// Dernière image reçue pour ce partage (gardée : une source en pause
-    /// laisse l'écran rempli au lieu de noircir, et une réouverture repart de
-    /// la dernière image au lieu d'un écran noir).
+    /// Keep the last frame during pauses and reopenings to avoid a black window.
     frames: HashMap<String, PipFrame>,
     streams: Vec<PipSource>,
     focus: Option<String>,
     generation: u64,
-    /// Dernière génération peinte par la boucle d'événements.
+    /// Last generation painted by the event loop.
     painted: u64,
-    /// Position mémorisée de la fenêtre (retrouvée à la réouverture).
+    /// Remembered window position, restored on reopening.
     last_pos: Option<(i32, i32)>,
-    /// Grande taille (double-clic) — mémorisée aussi.
+    /// Remembered expanded state, toggled by double-click.
     large: bool,
     /// Taille libre choisie par l'utilisateur (en pixels physiques).
     size: Option<(u32, u32)>,
-    /// Taille à restaurer après le double-clic d'agrandissement.
+    /// Size to restore after leaving the expanded state.
     normal_size: Option<(u32, u32)>,
-    /// Son du partage coupé ? Renseigné par `pip_native_open` (hors du fil de
-    /// l'event loop : interroger le moteur depuis ce fil retardait l'affichage
-    /// — le moteur peut être tenu par le décodage vidéo).
+    /// Screen-share mute state, initialized by pip_native_open_streams off the GUI thread.
+    /// The engine lock may be held by video decoding and must not delay window creation.
     share_audio_muted: bool,
     cursor_enabled: bool,
 }
@@ -199,11 +183,11 @@ impl PipState {
 
 #[derive(Debug)]
 enum UserEvent {
-    /// Affiche la fenêtre. Le canal optionnel confirme que la surface native
-    /// existe réellement avant que le front coupe son propre lecteur.
+    /// Show the window; the optional acknowledgement confirms that the native surface
+    /// exists before the frontend stops its player.
     Show(Option<std::sync::mpsc::SyncSender<bool>>),
     Hide,
-    /// Une nouvelle image est disponible (réveille la boucle).
+    /// A new frame is available; wake the event loop.
     Frame,
 }
 
@@ -215,34 +199,28 @@ struct PipHandle {
 
 static HANDLE: OnceLock<PipHandle> = OnceLock::new();
 static OPEN: AtomicBool = AtomicBool::new(false);
-/// Handle Tauri de l'application, posé au démarrage (`set_app_handle`) : il
-/// sert aux actions des boutons du PIP — revenir sur Sion, couper le son du
-/// partage — sans repasser par le front.
+/// Tauri handle initialized at startup for returning to Sion and toggling audio
+/// directly from the PIP buttons.
 static APP: OnceLock<tauri::AppHandle<crate::TauriRuntime>> = OnceLock::new();
 
-/// Posé par `lib.rs` (setup). Sans lui les boutons restent inertes (la
-/// fenêtre, elle, s'affiche quand même).
+/// Set by lib.rs during setup; the window can open without it, but buttons need it.
 pub fn set_app_handle(app: tauri::AppHandle<crate::TauriRuntime>) {
     let _ = APP.set(app);
 }
 
-/// Préchauffe la boucle du PIP au démarrage. L'appel est volontairement
-/// synchrone : la création d'EventLoop (jusqu'à 5 s sur certains backends)
-/// doit être payée au lancement, jamais au premier clic utilisateur.
+/// Warm up the event loop synchronously at startup. Backend creation can take
+/// up to five seconds and must finish before the first user click.
 pub fn prewarm() {
     let _ = get_or_start_handle();
 }
 
-/// Boutons dessinés dans le coin haut-droit (24 px, 4 px d'écart, marge 8).
+/// Top-right buttons: 24 px, 4 px spacing, 8 px margin.
 const BTN: u32 = 24;
 const BTN_GAP: u32 = 4;
 const BTN_MARGIN: u32 = 8;
 
-// ── Persistance de la vignette (position + taille, entre sessions) ─────────
-//
-// Les états en mémoire ne survivent pas à un redémarrage : on écrit un petit
-// JSON dans le dossier de données de l'app. Les coordonnées sont `Option`
-// pour qu'un fichier absent ou partiel ne se confonde pas avec « 0,0 ».
+// Persist window position and size as JSON in the app data directory.
+// Optional coordinates distinguish missing or partial state from position (0, 0).
 
 #[derive(serde::Serialize, serde::Deserialize, Default)]
 struct PipSaved {
@@ -303,9 +281,8 @@ fn save_saved(pos: Option<(i32, i32)>, large: bool, size: Option<(u32, u32)>) {
     }
 }
 
-/// Colle la position au coin le plus proche du moniteur si elle en est à
-/// moins de 48 px : une position restaurée retrouve son coin exact. Le glissé
-/// en cours de geste reste géré par le compositeur (KWin) — pas de bagarre.
+/// Snap restored positions within 48 px of a monitor corner.
+/// The compositor continues to own movement during a drag gesture.
 fn snap_pos_to_corner(
     pos: (i32, i32),
     size: (u32, u32),
@@ -339,7 +316,7 @@ fn snap_pos_to_corner(
     (near_x, near_y)
 }
 
-/// Coins haut-gauche des trois boutons (retour, son, pointeur).
+/// Top-left coordinates of the return, audio and pointer buttons.
 fn button_rects(w: u32, _h: u32, share_controls: bool) -> ((u32, u32), (u32, u32), (u32, u32)) {
     let mute_x = w.saturating_sub(BTN_MARGIN + BTN);
     let cursor_x = mute_x.saturating_sub(BTN_GAP + BTN);
@@ -362,7 +339,7 @@ enum PipButton {
     ToggleCursor,
 }
 
-/// Bouton sous le curseur (position en pixels physiques, comme la fenêtre).
+/// Button under the cursor, using physical window pixels.
 fn hit_button(pos: (f64, f64), w: u32, h: u32, share_controls: bool) -> Option<PipButton> {
     let (back, mute, cursor) = button_rects(w, h, share_controls);
     let inside = |(x, y): (u32, u32)| {
@@ -382,11 +359,10 @@ fn hit_button(pos: (f64, f64), w: u32, h: u32, share_controls: bool) -> Option<P
     }
 }
 
-/// La fenêtre PIP native est-elle ouverte ? (lue par le front pour l'état
-/// des boutons — l'ouverture est pilotée par `pip_native_open`.)
+/// Whether the native PIP is open; the frontend uses this for button state.
+/// pip_native_open_streams controls opening.
 pub fn is_open() -> bool {
-    // Un thread mort = plus de fenêtre : l'état ne doit pas mentir après un
-    // échec de la boucle winit.
+    // A dead event-loop thread means the window is no longer open.
     OPEN.load(Ordering::Acquire)
         && HANDLE
             .get()
@@ -398,7 +374,7 @@ fn supports_share_controls(sender: Option<&str>) -> bool {
     !sender.is_some_and(|key| key.starts_with("camera:"))
 }
 
-/// La clé du flux distingue la webcam du partage du même participant.
+/// Stream keys distinguish camera and screen share from the same participant.
 pub fn source() -> Option<String> {
     if !is_open() {
         return None;
@@ -406,7 +382,7 @@ pub fn source() -> Option<String> {
     HANDLE.get()?.state.lock().ok()?.sender.clone()
 }
 
-/// Démarre le thread de l'event loop au premier usage (idempotent).
+/// Start the event-loop thread on first use; subsequent calls reuse it.
 fn get_or_start_handle() -> Option<&'static PipHandle> {
     if let Some(h) = HANDLE.get() {
         return Some(h);
@@ -430,8 +406,7 @@ fn get_or_start_handle() -> Option<&'static PipHandle> {
     thread::Builder::new()
         .name("sion-native-pip".into())
         .spawn(move || {
-            // `with_any_thread(true)` : l'event loop doit pouvoir vivre hors
-            // du thread principal (l'app Tauri l'occupe déjà).
+            // Allow the event loop on a dedicated thread; Tauri owns the main thread.
             #[cfg(target_os = "linux")]
             use winit::platform::wayland::EventLoopBuilderExtWayland;
             #[cfg(target_os = "windows")]
@@ -444,10 +419,8 @@ fn get_or_start_handle() -> Option<&'static PipHandle> {
             {
                 EventLoopBuilderExtWayland::with_any_thread(&mut builder, true);
                 EventLoopBuilderExtX11::with_any_thread(&mut builder, true);
-                // X11 (XWayland) forcé : le backend Wayland natif de winit
-                // n'honore pas `WindowLevel::AlwaysOnTop` (pas de couche
-                // « au-dessus » pour un toplevel ordinaire). Sous XWayland,
-                // KWin/Mutter mappent ça sur `_NET_WM_STATE_ABOVE`.
+                // Force X11/XWayland: ordinary Wayland toplevels cannot honor AlwaysOnTop.
+                // KWin and Mutter map the X11 request to _NET_WM_STATE_ABOVE.
                 EventLoopBuilderExtX11::with_x11(&mut builder);
             }
             #[cfg(target_os = "windows")]
@@ -496,8 +469,9 @@ fn get_or_start_handle() -> Option<&'static PipHandle> {
     HANDLE.get()
 }
 
-/// Ouvre (ou bascule vers) la fenêtre PIP pour le partage `sender`.
-pub fn open(sender: &str) -> bool {
+/// Open the PIP for sender or switch its source (test helper).
+#[cfg(test)]
+fn open(sender: &str) -> bool {
     open_streams(
         vec![PipSource {
             sender: sender.into(),
@@ -538,8 +512,7 @@ fn open_streams(streams: Vec<PipSource>, focus: Option<String>) -> bool {
     true
 }
 
-/// État du PIP vers le front : la fenêtre peut se fermer elle-même (bouton
-/// maison, clic droit, Échap) — le bouton de la vue doit suivre.
+/// Notify the frontend when native controls close the PIP so its button state follows.
 fn emit_pip_state(open: bool) {
     if let Some(app) = APP.get() {
         use tauri::Emitter;
@@ -550,10 +523,8 @@ fn emit_pip_state(open: bool) {
     }
 }
 
-/// Relève la fenêtre principale côté X11 : `_NET_ACTIVE_WINDOW` en provenance
-/// « pager » (source = 2) — la méthode que le compositeur honore même sans
-/// focus — puis un relevé direct dans la pile. Retourne faux si l'app tourne
-/// en Wayland natif (opt-out `SION_KEEP_WAYLAND`) ou fenêtre introuvable.
+/// Raise the main X11 window using _NET_ACTIVE_WINDOW with pager source 2,
+/// then raise it in the stack. Return false for native Wayland or a missing window.
 #[cfg(target_os = "linux")]
 fn x11_activate_main_window(title_hint: &str) -> bool {
     use x11rb::connection::Connection;
@@ -582,8 +553,7 @@ fn x11_activate_main_window(title_hint: &str) -> bool {
         return false;
     }
 
-    // Parcours de l'arbre : la fenêtre principale est la seule de l'app dont
-    // le titre contient « Sion Client » (la vignette PIP a le sien).
+    // Find the main window by its Sion Client title; the PIP has a different title.
     let mut target = None;
     let mut stack = vec![root];
     while let Some(win) = stack.pop() {
@@ -622,7 +592,7 @@ fn x11_activate_main_window(title_hint: &str) -> bool {
     true
 }
 
-/// Ferme la fenêtre (le thread reste vivant pour une réouverture rapide).
+/// Close the window while keeping its thread alive for fast reopening.
 pub fn close() {
     let Some(handle) = HANDLE.get() else {
         return;
@@ -636,9 +606,8 @@ pub fn close() {
     emit_pip_state(false);
 }
 
-/// Ce partage est-il actuellement affiché dans le PIP ? Le PIP blitte du BGRA
-/// en GDI/softbuffer : quand il est ouvert sur ce partage, la pompe doit
-/// produire du BGRA pour tout le monde au lieu des plans I420 du renderer EGL.
+/// Whether this share is displayed in the PIP. Visible PIP streams require BGRA
+/// for GDI/softbuffer instead of the EGL renderer's I420 planes.
 pub fn wants_frames(sender: &str) -> bool {
     if !is_open() {
         return false;
@@ -649,8 +618,8 @@ pub fn wants_frames(sender: &str) -> bool {
         .is_some_and(|state| state.streams.iter().any(|s| s.sender == sender))
 }
 
-/// Taille de rendu utile au PIP actuellement visible. Le moteur vidéo combine
-/// cette borne avec celles des surfaces intégrées avant de convertir l'I420.
+/// Visible PIP rendering bounds, combined with embedded-surface bounds
+/// by the video engine before I420 conversion.
 pub fn preferred_frame_bounds(sender: &str) -> Option<(u32, u32)> {
     if !is_open() {
         return None;
@@ -667,7 +636,7 @@ pub fn preferred_frame_bounds(sender: &str) -> Option<(u32, u32)> {
     Some((rect.w.max(1), rect.h.max(1)))
 }
 
-/// Une image BGRA de partage vient d'arriver directement du moteur vocal.
+/// Receive a BGRA screen-share frame directly from the voice engine.
 pub fn on_bgra_frame(sender: &str, width: u32, height: u32, bgra: &[u8]) {
     let Some(handle) = HANDLE.get() else {
         return;
@@ -681,8 +650,7 @@ pub fn on_bgra_frame(sender: &str, width: u32, height: u32, bgra: &[u8]) {
     if width == 0 || height == 0 || expected > 4096 * 4096 * 4 || bgra.len() != expected {
         return;
     }
-    // Pendant l'ouverture, seule la dernière image est gardée et `paint` ne
-    // blitte que si une nouvelle génération est arrivée.
+    // Keep only the latest frame while opening and paint only a new generation.
     {
         let mut state = handle.state.lock().unwrap_or_else(|e| e.into_inner());
         if !state.streams.iter().any(|s| s.sender == sender) {
@@ -701,7 +669,7 @@ pub fn on_bgra_frame(sender: &str, width: u32, height: u32, bgra: &[u8]) {
     let _ = handle.proxy.send_event(UserEvent::Frame);
 }
 
-/// Retire seulement le flux terminé ; le dernier ferme la fenêtre.
+/// Remove an ended stream; close the window when the last stream ends.
 pub fn on_share_removed(sender: &str) {
     let Some(handle) = HANDLE.get() else {
         return;
@@ -802,51 +770,15 @@ fn sync_audio_state(app: tauri::AppHandle<crate::TauriRuntime>, sender_state: St
 // ── Commandes Tauri ─────────────────────────────────────────────────────────
 
 #[tauri::command]
-pub fn pip_native_open(
-    app: tauri::AppHandle<crate::TauriRuntime>,
-    sender: String,
-) -> Result<(), String> {
-    if sender.is_empty() {
-        return Err("identité du partage manquante".into());
-    }
-    if let Some(handle) = get_or_start_handle() {
-        let mut state = handle.state.lock().unwrap_or_else(|e| e.into_inner());
-        // Do not query the voice engine before showing the window: its mutex
-        // can be held by a video decode/publish operation for seconds. The
-        // exact mute state is resynchronised below, asynchronously.
-        state.share_audio_muted = false;
-    }
-    if open(&sender) {
-        if supports_share_controls(Some(&sender)) {
-            sync_audio_state(app, sender);
-        }
-        Ok(())
-    } else {
-        Err("impossible d'ouvrir la fenêtre PIP native".into())
-    }
-}
-
-#[tauri::command]
 pub fn pip_native_close() -> Result<(), String> {
     close();
     Ok(())
 }
 
-#[tauri::command]
-pub fn pip_native_status() -> bool {
-    is_open()
-}
-
-#[tauri::command]
-pub fn pip_native_source() -> Option<String> {
-    source()
-}
-
 // ── Rendu ───────────────────────────────────────────────────────────────────
 
-/// Ajuste l'image dans la surface (letterbox noir), écrit en 0x00RRGGBB
-/// (XRGB8888, ce qu'attend softbuffer — même convention que le repack de
-/// l'overlay de curseurs).
+/// Fit the image with black letterboxing, writing softbuffer's 0x00RRGGBB
+/// (XRGB8888) pixel format.
 #[cfg(test)]
 fn blit_fit(dst: &mut [u32], ww: u32, wh: u32, img: &image::RgbImage) {
     let (iw, ih) = img.dimensions();
@@ -877,8 +809,8 @@ fn blit_fit(dst: &mut [u32], ww: u32, wh: u32, img: &image::RgbImage) {
     }
 }
 
-/// Même ajustement, directement depuis les octets BGRA produits par libyuv.
-/// softbuffer attend 0x00RRGGBB : aucun décodeur ni allocation intermédiaire.
+/// Fit libyuv BGRA bytes directly into softbuffer's 0x00RRGGBB format
+/// without decoding or intermediate allocation.
 #[cfg(test)]
 fn blit_fit_bgra(dst: &mut [u32], ww: u32, wh: u32, bgra: &[u8], iw: u32, ih: u32) {
     dst.fill(0);
@@ -925,9 +857,8 @@ fn blit_tile_bgra(dst: &mut [u32], stride: u32, rect: TileRect, bgra: &[u8], iw:
     }
 }
 
-/// Convertit un point de la fenêtre vers les coordonnées normalisées de
-/// l'image réellement visible. Les bandes de letterbox ne font pas partie du
-/// partage et ne doivent jamais produire un faux pointeur distant.
+/// Map a window point to normalized coordinates in the visible image.
+/// Letterbox areas must not produce a remote pointer.
 fn normalise_content_point(
     point: (f64, f64),
     window: (u32, u32),
@@ -956,18 +887,17 @@ struct PipApp {
     state: Arc<Mutex<PipState>>,
     window: Option<Arc<Window>>,
     surface: Option<softbuffer::Surface<Arc<Window>, Arc<Window>>>,
-    /// Dernier décodage effectif (throttle).
+    /// Last actual paint time, used for throttling.
     last_paint: Instant,
-    /// Une image est en attente mais le throttle interdit encore de peindre.
+    /// A frame is pending until the paint throttle expires.
     pending_redraw_at: Option<Instant>,
     /// Nombre de frames peintes (diagnostic).
     painted_count: u64,
-    /// Dernière position du curseur (pixels physiques) — cible du clic.
+    /// Last physical cursor position, used for click targeting.
     cursor: (f64, f64),
-    /// Son du partage coupé ? (état local, initialisé depuis le moteur à
-    /// l'ouverture, basculé par le bouton 🔊/🔇).
+    /// Local screen-share mute state, initialized from the engine and toggled by the button.
     muted: bool,
-    /// Horodatage du dernier clic (détection du double-clic → agrandir).
+    /// Last click timestamp for double-click expansion.
     last_click: Instant,
     last_cursor_tx: Instant,
     last_cursor_activity: Instant,
@@ -992,9 +922,8 @@ impl PipApp {
         }
     }
 
-    /// Double-clic sur l'image : agrandit / réduit la vignette. La taille est
-    /// mémorisée avec la position (fichier d'état) ; si la vignette était
-    /// collée au coin bas-droit, elle y reste après le changement de taille.
+    /// Double-click expands or shrinks the PIP. Persist the size and position,
+    /// keeping the same monitor corner anchored when resizing.
     fn toggle_large(&mut self) {
         let Some(window) = self.window.as_ref() else {
             return;
@@ -1162,12 +1091,9 @@ impl PipApp {
         }
     }
 
-    /// Revient sur la fenêtre principale (dé-minimise, montre, focus) et la
-    /// relève côté X11 quand l'app y tourne (`SION_FORCE_X11=1`). En Wayland
-    /// natif (défaut), la relève inter-processus est refusée par le
-    /// compositeur : il ne reste que sa demande d'attention (l'entrée clignote)
-    /// — le PIP reste un client X11, il ne peut pas fournir le jeton
-    /// d'activation Wayland attendu. Sortie propre : xx-pip-v1, cf. `main.rs`.
+    /// Show, unminimize and focus the main window; raise it when using X11.
+    /// Native Wayland requires an activation token that the X11 PIP cannot supply,
+    /// so request attention instead. See main.rs for the xx-pip-v1 alternative.
     fn focus_main_window(&self) {
         let Some(app) = APP.get() else {
             return;
@@ -1192,10 +1118,8 @@ impl PipApp {
         }
     }
 
-    /// Bascule le son du partage affiché (même chemin que le bouton 🔊 de la
-    /// vue : le moteur reste l'unique propriétaire de l'état). Réponse
-    /// visuelle immédiate, appel moteur en tâche de fond — la boucle
-    /// d'événements ne doit jamais attendre le moteur (décodage vidéo).
+    /// Toggle audio through the engine, which owns mute state. Update the button
+    /// immediately and call the engine in the background to avoid blocking video decoding.
     fn toggle_share_audio(&mut self) {
         let Some(app) = APP.get() else {
             return;
@@ -1244,8 +1168,7 @@ impl PipApp {
         let _ = &mut w;
         let _ = &mut h;
 
-        // Position : dernière position mémorisée, sinon bas-droite du moniteur
-        // principal (convention des lecteurs PIP du système).
+        // Restore the saved position, or use the primary monitor's bottom-right corner.
         let raw_pos = pos_default.unwrap_or_else(|| {
             let mon = event_loop
                 .primary_monitor()
@@ -1262,7 +1185,7 @@ impl PipApp {
                 None => (100, 100),
             }
         });
-        // Coin d'ancrage : une position restaurée proche d'un coin s'y colle.
+        // Snap a restored position to a nearby monitor corner.
         let pos = snap_pos_to_corner(raw_pos, (w, h), event_loop);
 
         let attrs = WindowAttributes::default()
@@ -1287,8 +1210,7 @@ impl PipApp {
         Some(window)
     }
 
-    /// Décode la dernière image non peinte et blitte. Silencieux si rien de
-    /// neuf (le throttle comme la source en pause arrivent ici).
+    /// Paint the latest unpainted frame; do nothing while throttled or the source is paused.
     fn paint(&mut self) {
         let (Some(window), Some(surface)) = (self.window.as_ref(), self.surface.as_mut()) else {
             return;
@@ -1351,8 +1273,7 @@ impl PipApp {
                     state.last_pos = Some((pos.x, pos.y));
                     (state.large, (pos.x, pos.y))
                 };
-                // Persistée sur disque : la vignette retrouve sa place et sa
-                // taille au prochain lancement de l'app.
+                // Persist position and size for the next app launch.
                 let size = window.inner_size();
                 save_saved(Some(pos), large, Some((size.width, size.height)));
             }
@@ -1399,9 +1320,8 @@ impl ApplicationHandler<UserEvent> for PipApp {
                     let Some(window) = self.window.as_ref() else {
                         return false;
                     };
-                    // État du bouton 🔊 : renseigné par `pip_native_open` —
-                    // aucun appel moteur sur ce fil (il attendait le verrou du
-                    // moteur et retardait l'affichage de la fenêtre).
+                    // Use the mute state supplied by pip_native_open_streams.
+                    // Never wait for the engine lock on the event-loop thread.
                     self.muted = {
                         let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
                         state.share_audio_muted
@@ -1427,8 +1347,7 @@ impl ApplicationHandler<UserEvent> for PipApp {
                 if self.last_paint.elapsed() >= MIN_PAINT_INTERVAL {
                     window.request_redraw();
                 } else {
-                    // Trop tôt : on repassera au prochain tour — la dernière
-                    // image sera peinte, pas une vieille.
+                    // Too early to paint; the next pass will use the latest frame.
                     self.pending_redraw_at = Some(self.last_paint + MIN_PAINT_INTERVAL);
                     event_loop.set_control_flow(ControlFlow::WaitUntil(
                         self.last_paint + MIN_PAINT_INTERVAL,
@@ -1492,9 +1411,8 @@ impl ApplicationHandler<UserEvent> for PipApp {
                 button: MouseButton::Left,
                 ..
             } => {
-                // Boutons dessinés (haut-droite) : le clic agit — maison =
-                // revenir sur Sion, haut-parleur = son du partage. Ailleurs,
-                // fenêtre sans décoration → on déplace en glissant.
+                // Top-right buttons return to Sion or toggle share audio.
+                // Dragging elsewhere moves the undecorated window.
                 if let Some(size) = self.window.as_ref().map(|w| w.inner_size()) {
                     let share_controls = self
                         .state
@@ -1503,8 +1421,7 @@ impl ApplicationHandler<UserEvent> for PipApp {
                         .unwrap_or(false);
                     match hit_button(self.cursor, size.width, size.height, share_controls) {
                         Some(PipButton::BackToApp) => {
-                            // Comme le PIP de Firefox : on rend la main à
-                            // l'application et la vignette se referme.
+                            // Return focus to the app and close the PIP.
                             self.focus_main_window();
                             close();
                             return;
@@ -1528,8 +1445,7 @@ impl ApplicationHandler<UserEvent> for PipApp {
                                 }
                                 return;
                             }
-                            // Double-clic sur l'image : agrandir / réduire
-                            // (comme les lecteurs PIP du système).
+                            // Double-click the image to expand or shrink the window.
                             let now = Instant::now();
                             if now.duration_since(self.last_click) < Duration::from_millis(400) {
                                 self.last_click = now - Duration::from_secs(1);
@@ -1684,11 +1600,8 @@ fn draw_stream_label(buf: &mut [u32], w: u32, h: u32, rect: TileRect, name: &str
     }
 }
 
-// ── Boutons dessinés (retour à Sion, son du partage) ───────────────────────
-//
-// La fenêtre n'embarque pas de fonte : les affordances sont dessinées en
-// rectangles (fond assombri + glyphes blancs). Même géométrie que
-// `hit_button` — une seule source de vérité pour le dessin et le clic.
+// Draw controls as darkened rectangles with white glyphs; no font is bundled.
+// Share geometry with hit_button so drawing and click targets stay aligned.
 
 fn put(buf: &mut [u32], w: u32, h: u32, x: u32, y: u32, color: u32) {
     if x < w && y < h {
@@ -1730,7 +1643,7 @@ fn draw_button(
     glyph(buf, w, h, bx, by);
 }
 
-/// Maison — revenir sur Sion (le bouton gauche).
+/// Home glyph for returning to Sion.
 fn house_glyph(buf: &mut [u32], w: u32, h: u32, bx: u32, by: u32) {
     let white = 0x00FFFFFF;
     for i in 0..6u32 {
@@ -1743,7 +1656,7 @@ fn house_glyph(buf: &mut [u32], w: u32, h: u32, bx: u32, by: u32) {
             put(buf, w, h, bx + x, by + y, white);
         }
     }
-    // Porte : réassombrie (le fond du bouton réapparaît).
+    // Darken the door to reveal the button background.
     for y in 13..19u32 {
         for x in 10..14u32 {
             darken(buf, w, h, bx + x, by + y);
@@ -1751,7 +1664,7 @@ fn house_glyph(buf: &mut [u32], w: u32, h: u32, bx: u32, by: u32) {
     }
 }
 
-/// Haut-parleur — son du partage (barre oblique quand il est coupé).
+/// Speaker glyph with a slash when muted.
 fn speaker_glyph(buf: &mut [u32], w: u32, h: u32, bx: u32, by: u32, muted: bool) {
     let white = 0x00FFFFFF;
     for y in 9..15u32 {
@@ -1779,7 +1692,7 @@ fn speaker_glyph(buf: &mut [u32], w: u32, h: u32, bx: u32, by: u32, muted: bool)
     }
 }
 
-/// Peint les deux boutons par-dessus l'image déjà blittée.
+/// Paint controls over the displayed image.
 fn draw_controls(
     buf: &mut [u32],
     w: u32,
@@ -1815,14 +1728,13 @@ fn cursor_glyph(buf: &mut [u32], w: u32, h: u32, bx: u32, by: u32, enabled: bool
 mod tests {
     use super::*;
 
-    /// Géométrie des boutons : le dessin et le clic doivent tomber sur les
-    /// mêmes zones (source de vérité unique).
+    /// Use the same geometry for button drawing and hit testing.
     #[test]
     fn boutons_du_pip_dans_le_coin() {
         let (back, mute, cursor) = button_rects(480, 270, true);
         assert_eq!(mute, (480 - BTN_MARGIN - BTN, BTN_MARGIN));
         assert_eq!(back, (cursor.0 - BTN_GAP - BTN, BTN_MARGIN));
-        // Centres des boutons → la bonne action ; le milieu de l'image → rien.
+        // Button centers select their action; the image center selects none.
         let center =
             |(x, y): (u32, u32)| (x as f64 + BTN as f64 / 2.0, y as f64 + BTN as f64 / 2.0);
         assert_eq!(
@@ -1838,7 +1750,7 @@ mod tests {
             Some(PipButton::ToggleCursor)
         );
         assert_eq!(hit_button((240.0, 135.0), 480, 270, true), None);
-        // Hors zone (coin opposé) → aucun bouton.
+        // The opposite corner is outside all buttons.
         assert_eq!(hit_button((5.0, 5.0), 480, 270, true), None);
     }
 
@@ -1871,10 +1783,9 @@ mod tests {
         );
     }
 
-    /// Test fenêtré (opt-in) : vérifie que l'event loop winit se construit
-    /// réellement dans son thread — c'est le point de panne silencieux du
-    /// PIP natif (échec = `open` renvoie false, aucune fenêtre). Lancer avec
-    /// `SION_PIP_WINDOW_TEST=1` : une fenêtre PIP apparaît ~1,5 s.
+    /// Opt-in window test: verify that winit creates its event loop on the host thread.
+    /// Set SION_PIP_WINDOW_TEST=1 to open a PIP for about 1.5 seconds.
+    /// Event-loop failure otherwise makes open return false without a window.
     #[test]
     fn fenetre_native_souvre_et_se_ferme() {
         if std::env::var("SION_PIP_WINDOW_TEST").is_err() {
@@ -2028,11 +1939,11 @@ mod tests {
 
     #[test]
     fn blit_ajuste_en_conservant_le_ratio() {
-        // Source 4:2 dans une surface 2:2 → bandes noires à gauche/droite.
+        // Fit a 4:2 source into a 2:2 surface and check the black letterbox areas.
         let img = image::RgbImage::from_pixel(4, 2, image::Rgb([255, 0, 0]));
         let mut dst = vec![0xFFFFFFFFu32; 2 * 2];
         blit_fit(&mut dst, 2, 2, &img);
-        // 2x2 rendu centré : deux colonnes rouges, rien de blanc.
+        // The centered 2x2 image has two red columns and no white pixels.
         assert_eq!(dst[0], 0x00FF0000);
         assert_eq!(dst[1], 0x00FF0000);
         assert!(dst.iter().all(|&p| p != 0x00FFFFFF));
@@ -2048,7 +1959,7 @@ mod tests {
 
     #[test]
     fn blit_bgra_direct_conserve_les_canaux() {
-        // Deux pixels BGRA : rouge puis bleu, agrandis sans conversion JPEG.
+        // Scale red and blue BGRA pixels directly, without JPEG conversion.
         let bgra = [0, 0, 255, 255, 255, 0, 0, 255];
         let mut dst = vec![0u32; 8];
         blit_fit_bgra(&mut dst, 4, 2, &bgra, 2, 1);
@@ -2059,7 +1970,7 @@ mod tests {
 
     #[test]
     fn pointeur_pip_ignore_les_bandes_de_letterbox() {
-        // Source 2:1 dans une fenêtre carrée : image entre y=50 et y=150.
+        // A 2:1 source in a square window occupies y=50 through y=150.
         assert_eq!(
             normalise_content_point((100.0, 100.0), (200, 200), (400, 200)),
             Some((0.5, 0.5))

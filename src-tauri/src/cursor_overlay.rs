@@ -6,12 +6,11 @@ use std::time::{Duration, Instant};
 use ab_glyph::{Font, FontRef, PxScale, ScaleFont};
 use tiny_skia::{Color, FillRule, Paint, PathBuilder, Pixmap, Rect, Stroke, Transform};
 
-// Hôtes par plateforme. Sous Linux, Wayland layer-shell d'abord et X11 en
-// repli ; ailleurs (Windows, WRY), la boucle winit.
-// Windows : hôte Win32 natif. L'hôte winit ne pouvait plus démarrer depuis
-// l'alpha.2 — le PIP préchauffe la seule `EventLoop` que winit autorise par
-// processus, et l'overlay échouait en `RecreationAttempt` sans que rien ne le
-// signale à l'utilisateur. Même remède que sous Linux : pas de winit du tout.
+// Platform hosts: Wayland layer-shell with X11 fallback on Linux, Win32 on Windows.
+// The PIP owns winit's single EventLoop, so overlays need separate native hosts.
+#[cfg(target_os = "linux")]
+#[path = "cursor_overlay_layershell.rs"]
+mod layershell_host;
 #[cfg(target_os = "windows")]
 #[path = "cursor_overlay_win32.rs"]
 pub(crate) mod win32_host;
@@ -19,14 +18,11 @@ pub(crate) mod win32_host;
 #[path = "cursor_overlay_winit.rs"]
 mod winit_host;
 #[cfg(target_os = "linux")]
-#[path = "cursor_overlay_layershell.rs"]
-mod layershell_host;
-#[cfg(target_os = "linux")]
 #[path = "cursor_overlay_x11.rs"]
 pub(crate) mod x11_host;
 
-/// Embedded font for the cursor name pill — DejaVu Sans Bold (Bitstream
-/// Vera derivative, free license). ~700 KB; loaded once on first redraw.
+/// Embedded DejaVu Sans Bold font (Bitstream Vera derivative, free license).
+/// Loaded once on first redraw.
 const FONT_BYTES: &[u8] = include_bytes!("../assets/DejaVuSans-Bold.ttf");
 static FONT: OnceLock<Option<FontRef<'static>>> = OnceLock::new();
 pub(crate) fn font() -> Option<&'static FontRef<'static>> {
@@ -51,9 +47,6 @@ struct CursorEntry {
 /// One one-shot click ripple. Animates for ~600 ms then is swept.
 #[derive(Clone, Debug)]
 struct ClickEntry {
-    /// JS-side id — kept purely for debugging / log correlation.
-    #[allow(dead_code)]
-    id: String,
     identity: String,
     x: f32,
     y: f32,
@@ -70,21 +63,13 @@ struct OverlayState {
 /// Messages the Tauri commands send to the event loop thread via
 /// `EventLoopProxy::send_event`.
 #[derive(Debug)]
-#[allow(dead_code)]
 enum UserEvent {
     Show,
     Hide,
-    /// App is quitting — close the loop cleanly. Unused today; kept for
-    /// when we eventually wire a Tauri `exit` hook to tear this down.
-    Shutdown,
 }
 
-/// Envoi vers le fil qui héberge la fenêtre. Chaque hôte fournit SA fonction
-/// d'envoi : le tronc commun ne connaît donc plus **aucun** type de plateforme
-/// (ni `mpsc::Sender`, ni `winit::EventLoopProxy`). C'est ce qui avait cassé le
-/// build Windows du 14/09 : le variant winit y référençait un type dont
-/// l'import était parti avec l'hôte, et un build Linux ne compile jamais ce
-/// variant.
+/// Platform-independent sender to the window thread. Each host supplies its
+/// own callback, keeping mpsc and winit types out of shared code.
 struct HostSender {
     send: Box<dyn Fn(UserEvent) + Send + Sync>,
 }
@@ -134,36 +119,23 @@ fn get_or_start_handle() -> Option<&'static OverlayHandle> {
     HANDLE.get()
 }
 
-/// Démarre le fil qui héberge la fenêtre.
-///
-/// Linux : hôte X11 natif (`x11_host`, x11rb). C'est le point de la
-/// correction du 13/09 — winit ne tolère qu'une EventLoop par processus et
-/// celle du PIP est préchauffée au démarrage ; l'overlay ne pouvait donc plus
-/// la créer (`RecreationAttempt`). Ici, plus aucune boucle winit : juste une
-/// connexion X11 à nous.
-///
-/// Ailleurs (Windows) : boucle winit historique, inchangée.
+/// Start the platform window thread. Linux uses layer-shell or X11; Windows
+/// uses Win32. Only the remaining desktop platforms use winit.
 fn start_host_thread(
     state: Arc<Mutex<OverlayState>>,
     thread_alive: Arc<AtomicBool>,
 ) -> Option<HostSender> {
     #[cfg(target_os = "linux")]
     {
-        // Wayland d'abord. Sous KDE/Wayland, les hints X11 « tous les bureaux »
-        // sont sans effet : KWin gère ses bureaux virtuels nativement et
-        // XWayland n'en voit qu'un seul. Une surface layer-shell, elle, vit
-        // dans une couche du compositeur, indépendamment des bureaux.
+        // Prefer layer-shell: KDE manages virtual desktops outside XWayland,
+        // so X11 sticky hints cannot keep an overlay visible on every desktop.
         if let Some(tx) = layershell_host::start(Arc::clone(&state), Arc::clone(&thread_alive)) {
             return Some(HostSender::new(move |event| {
                 let _ = tx.send(event);
             }));
         }
-        // Repli : session X11 pure, ou compositeur sans `zwlr_layer_shell_v1`.
-        //
-        // Le drapeau est remis à vrai : l'hôte Wayland l'a passé à faux en
-        // s'arrêtant, et l'hôte X11 ne le relève jamais — il ne fait que le
-        // baisser à sa propre sortie. Sans ce rétablissement, un repli réussi
-        // serait quand même considéré comme un overlay mort.
+        // Fall back to X11 when layer-shell is unavailable. The failed Wayland
+        // host clears thread_alive, so restore it before starting the X11 host.
         thread_alive.store(true, Ordering::Release);
         x11_host::start(state, thread_alive).map(|tx| {
             HostSender::new(move |event| {
@@ -203,10 +175,8 @@ pub(crate) mod draw {
         }
     }
 
-    /// Couleur stable par identité (u8). Partagée avec la surface vidéo
-    /// intégrée du viewer : un même viewer garde exactement la même couleur
-    /// chez le partageur (overlay X11) et chez les autres viewers (surface
-    /// Cairo intégrée).
+    /// Stable identity-based color shared by the captured overlay and viewer
+    /// surface, so each viewer keeps the same color everywhere.
     pub(crate) fn identity_color_rgba8(identity: &str) -> (u8, u8, u8) {
         let mut h: i32 = 0;
         for c in identity.chars() {
@@ -457,30 +427,19 @@ pub(crate) mod draw {
 
 // ── Tauri commands ──────────────────────────────────────────────────────
 
-/// Index de l'écran réellement partagé, ou `-1` si inconnu.
-///
-/// L'overlay Windows couvrait tout le bureau virtuel — tous les moniteurs
-/// réunis — alors que les positions reçues sont normalisées sur le SEUL écran
-/// partagé. La flèche d'un viewer apparaissait donc décalée, et se dédoublait
-/// visuellement d'un écran à l'autre (18/09). Connaître l'écran visé permet de
-/// borner l'overlay dessus.
+/// Shared monitor index, or -1 when unknown. Cursor coordinates cover
+/// this monitor only; using the whole virtual desktop would offset them.
 static ECRAN_PARTAGE: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(-1);
 
-/// Déclare l'écran partagé, avant l'ouverture de l'overlay.
+/// Set the shared monitor before opening the overlay.
 pub fn cursor_overlay_set_shared_screen(index: Option<u64>) {
     let valeur = index.map(|v| v as i64).unwrap_or(-1);
     ECRAN_PARTAGE.store(valeur, Ordering::Release);
     log::info!("[Sion][CursorOverlay] écran partagé déclaré : {valeur}");
 }
 
-/// Rectangle de l'écran partagé tel que la capture le voit : position dans le
-/// bureau et taille en pixels.
-///
-/// Sous Wayland, c'est le PORTAIL (la fenêtre de sélection de KDE) qui choisit
-/// l'écran ; Sion n'en apprend rien, sinon par les images du flux. L'overlay
-/// layer-shell était créé sans écran désigné et KWin le posait sur l'écran
-/// actif : avec plusieurs écrans, les curseurs des viewers atterrissaient sur
-/// un autre écran que celui partagé (vu le 28/09, quatre écrans sous KDE).
+/// Captured monitor position and physical size. The Wayland portal selects
+/// the monitor; use capture geometry to place layer-shell on the same output.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct GeometrieEcran {
     pub x: i32,
@@ -491,8 +450,7 @@ pub struct GeometrieEcran {
 
 static GEOMETRIE_PARTAGEE: Mutex<Option<GeometrieEcran>> = Mutex::new(None);
 
-/// Déclare la géométrie de l'écran partagé (première image de la capture, ou
-/// changement de taille en cours de partage).
+/// Update capture geometry on the first frame or a resolution change.
 pub fn cursor_overlay_set_shared_geometry(geometrie: Option<GeometrieEcran>) {
     let mut g = match GEOMETRIE_PARTAGEE.lock() {
         Ok(g) => g,
@@ -504,7 +462,7 @@ pub fn cursor_overlay_set_shared_geometry(geometrie: Option<GeometrieEcran>) {
     }
 }
 
-/// Géométrie de l'écran partagé, si la capture l'a déjà donnée.
+/// Return capture geometry when available.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub fn cursor_overlay_shared_geometry() -> Option<GeometrieEcran> {
     match GEOMETRIE_PARTAGEE.lock() {
@@ -513,9 +471,9 @@ pub fn cursor_overlay_shared_geometry() -> Option<GeometrieEcran> {
     }
 }
 
-/// Index de l'écran partagé, si connu.
-// Lue par l'hôte Win32 de l'overlay pour borner le dessin au moniteur partagé.
-// Sous Linux le layer-shell se borne autrement, d'où l'exemption ciblée.
+/// Return the shared monitor index when known.
+// Win32 needs this index to select the shared monitor. Linux layer-shell
+// uses capture geometry instead, hence the platform-specific lint exemption.
 #[cfg_attr(not(windows), allow(dead_code))]
 pub fn cursor_overlay_shared_screen() -> Option<u64> {
     let v = ECRAN_PARTAGE.load(Ordering::Acquire);
@@ -525,9 +483,7 @@ pub fn cursor_overlay_shared_screen() -> Option<u64> {
 #[tauri::command]
 pub fn cursor_overlay_open() -> bool {
     let Some(handle) = get_or_start_handle() else {
-        // Ce retour était MUET : sous Windows l'hôte échouait à démarrer depuis
-        // l'alpha.2 et l'utilisateur voyait simplement « pas de curseurs »,
-        // sans la moindre ligne de journal côté Rust pour l'expliquer.
+        // Log host initialization failure instead of silently hiding the overlay.
         log::warn!("[Sion][CursorOverlay] hôte indisponible — overlay non ouvert");
         return false;
     };
@@ -543,7 +499,7 @@ pub fn cursor_overlay_open() -> bool {
 #[tauri::command]
 pub fn cursor_overlay_close() {
     OVERLAY_OPEN.store(false, Ordering::Release);
-    // Le prochain partage désignera de nouveau son écran.
+    // The next share will select its monitor again.
     cursor_overlay_set_shared_geometry(None);
     let Some(handle) = HANDLE.get() else {
         return;
@@ -594,12 +550,11 @@ pub fn cursor_overlay_clear(identity: String) {
     if let Ok(mut state) = handle.state.lock() {
         state.cursors.remove(&identity);
     }
-    // Kick un redraw : sans ça, la suppression resterait peinte si la
-    // boucle dort (curseurs figés, cf. `RedrawRequested` conditionné).
+    // Request a redraw so removal is visible even while the event loop sleeps.
     let _ = handle.proxy.send(UserEvent::Show);
 }
 
-pub fn cursor_overlay_push_click(id: String, identity: String, x: f32, y: f32, expires_at_ms: u64) {
+pub fn cursor_overlay_push_click(identity: String, x: f32, y: f32, expires_at_ms: u64) {
     if !cursor_overlay_is_open() {
         return;
     }
@@ -610,7 +565,6 @@ pub fn cursor_overlay_push_click(id: String, identity: String, x: f32, y: f32, e
         let now = Instant::now();
         let ttl = Duration::from_millis(expires_at_ms.saturating_sub(now_ms()));
         state.clicks.push(ClickEntry {
-            id,
             identity,
             x,
             y,
@@ -628,10 +582,8 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-/// Diagnostic (`SION_OVERLAY_OPEN=1`) : ouvre l'overlay au démarrage et y
-/// pousse un curseur et un clic factices. Sert à vérifier la fenêtre, le blit
-/// SHM et le rendu sans attendre qu'un viewer bouge sa souris (mise en place
-/// lors de la réécriture de l'hôte X11, 13/09).
+/// SION_OVERLAY_OPEN=1 opens a diagnostic overlay with a synthetic cursor
+/// and click, allowing window, SHM and rendering checks without a remote viewer.
 pub fn maybe_autotest_open() {
     if std::env::var_os("SION_OVERLAY_OPEN").is_none() {
         return;
@@ -642,20 +594,12 @@ pub fn maybe_autotest_open() {
     }
     let deadline = now_ms() + 120_000;
     cursor_overlay_push("autotest".into(), "autotest".into(), 0.35, 0.35, deadline);
-    cursor_overlay_push_click(
-        "autotest-clic".into(),
-        "autotest".into(),
-        0.55,
-        0.55,
-        deadline,
-    );
+    cursor_overlay_push_click("autotest".into(), 0.55, 0.55, deadline);
     log::info!("[Sion][CursorOverlay] autotest : overlay ouvert (curseur + clic factices)");
 }
 
-/// Recopie RGBA (tiny-skia, premultiplié) → u32 BGRA (softbuffer), en
-/// parallèle sur les cœurs disponibles. Math strictement identique à la
-/// boucle scalaire d'origine (`(a<<24)|(r<<16)|(g<<8)|b`), sans vérifications
-/// de bornes (`chunks_exact`) : ~4-6× plus rapide en profil dev.
+/// Convert premultiplied RGBA to BGRA in parallel. chunks_exact removes
+/// bounds checks while preserving the scalar (a<<24)|(r<<16)|(g<<8)|b result.
 fn repack_rgba_to_bgra_parallel(dst: &mut [u32], src: &[u8]) {
     let total = dst.len().min(src.len() / 4);
     if total == 0 {
@@ -691,14 +635,14 @@ mod tests {
 
     #[test]
     fn repack_parallel_identique_au_scalaire() {
-        // Inclut dimensions non multiples du nombre de threads.
+        // Include dimensions that are not divisible by the thread count.
         let mut src = vec![0u8; 10007 * 4];
         for (i, b) in src.iter_mut().enumerate() {
             *b = (i.wrapping_mul(2654435761).wrapping_add(11) % 251) as u8;
         }
         let mut par = vec![0u32; 10007];
         repack_rgba_to_bgra_parallel(&mut par, &src);
-        // Référence scalaire (l'ancien code, octet par octet).
+        // Scalar reference implementation.
         for (i, d) in par.iter().enumerate() {
             let off = i * 4;
             let expected = ((src[off + 3] as u32) << 24)
@@ -707,7 +651,7 @@ mod tests {
                 | (src[off + 2] as u32);
             assert_eq!(*d, expected, "pixel {}", i);
         }
-        // Tranches vides : no-op sans panique.
+        // Empty input must be a no-op.
         let mut empty: Vec<u32> = Vec::new();
         repack_rgba_to_bgra_parallel(&mut empty, &[]);
         repack_rgba_to_bgra_parallel(&mut vec![0u32; 4], &[1, 2, 3]);

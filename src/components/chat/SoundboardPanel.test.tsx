@@ -5,6 +5,7 @@ import { SoundboardPanel } from "./SoundboardPanel";
 import { PanneauLateral } from "../layout/PanneauLateral";
 import { useSettingsStore } from "../../stores/useSettingsStore";
 import { useLayoutStore } from "../../stores/useLayoutStore";
+import { useAppStore } from "../../stores/useAppStore";
 
 const services = vi.hoisted(() => ({ deleteSound: vi.fn(), playSoundLocal: vi.fn(), invalidateSoundCache: vi.fn() }));
 
@@ -27,6 +28,7 @@ vi.mock("../../services/soundboardService", () => ({
 }));
 const vue = montage();
 beforeEach(() => {
+  useAppStore.setState({ connectedVoiceChannel: "!vocal" });
   useSettingsStore.setState({ soundboardView: { mode: "all", category: null }, soundboardPlayCounts: { son1: 2 }, hiddenCategories: [], soundboardEnabled: true });
   services.deleteSound.mockReset().mockResolvedValue(undefined);
   services.playSoundLocal.mockReset();

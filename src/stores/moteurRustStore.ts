@@ -10,6 +10,7 @@
 import type { MatrixState } from "./useMatrixStore";
 import type { Channel } from "../types/matrix";
 import type { EtatConnexion, EtatVerification, FilSalon } from "../services/matrixCore";
+import { fusionnerEchos } from "./echosMessages";
 
 type Set = (partiel: Partial<MatrixState> | ((s: MatrixState) => Partial<MatrixState>)) => void;
 type Get = () => MatrixState;
@@ -85,7 +86,16 @@ export async function demarrerMoteurRust(set: Set, get: Get): Promise<void> {
       notifierNouveaux(fil, avant, get, APP_SESSION_START_TS);
     }
     const epinglesChanges = cache.definirEpingles(fil.salon, fil.epingles);
-    const fusionne = conserverInchanges(avant, fil.messages);
+    for (const echo of avant.filter((m) => m.localEcho)) {
+      if (fil.messages.some((m) => m.senderId === echo.senderId
+        && ((m.transactionId && m.transactionId === echo.transactionId) || m.eventId === echo.eventId))) {
+        const duree = Date.now() - (echo.ts ?? Date.now());
+        void import("@tauri-apps/plugin-log").then(({ info }) => info(
+          `[Sion][envoi] retour synchro salon=${fil.salon} après ${duree} ms`,
+        )).catch(() => {});
+      }
+    }
+    const fusionne = conserverInchanges(avant, fusionnerEchos(avant, fil.messages));
     set((s) => {
       const messages = { ...s.messages, [fil.salon]: fusionne };
       return {

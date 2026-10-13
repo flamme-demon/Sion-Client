@@ -196,12 +196,35 @@ pub(crate) enum Televerse {
     Chiffre(Value),
 }
 
-/// Dimensions et durée, quand l'appelant les connaît (vidéo préparée).
+/// Dimensions, durée et légende du média envoyé.
 #[derive(Clone, Debug, Default)]
 pub struct InfosMedia {
     pub largeur: Option<u32>,
     pub hauteur: Option<u32>,
     pub duree_ms: Option<u64>,
+    pub legende: Option<String>,
+    pub miniature: Option<MiniatureMedia>,
+}
+
+/// Image extraite côté expéditeur, indépendante du fichier vidéo.
+#[derive(Clone, Debug)]
+pub struct MiniatureMedia {
+    pub octets: Vec<u8>,
+    pub largeur: u32,
+    pub hauteur: u32,
+}
+
+/// Le chiffrement de la miniature suit celui du fichier principal.
+pub(crate) fn avec_miniature(contenu: &mut Value, source: Televerse, miniature: &MiniatureMedia) {
+    let info = &mut contenu["info"];
+    match source {
+        Televerse::Clair(url) => info["thumbnail_url"] = url.into(),
+        Televerse::Chiffre(fichier) => info["thumbnail_file"] = fichier,
+    }
+    info["thumbnail_info"] = json!({
+        "mimetype": "image/jpeg", "size": miniature.octets.len(),
+        "w": miniature.largeur, "h": miniature.hauteur,
+    });
 }
 
 /// `sendFileMessage` / `sendImageUrl`.
@@ -221,6 +244,10 @@ pub(crate) fn fichier(corps: &str, mime: &str, taille: u64, source: Televerse, i
         info["duration"] = d.into();
     }
     let mut c = json!({ "msgtype": msgtype, "body": corps, "info": info });
+    if let Some(legende) = infos.legende.as_deref().filter(|texte| !texte.trim().is_empty()) {
+        c["filename"] = corps.into();
+        c["body"] = legende.into();
+    }
     match source {
         Televerse::Clair(url) => c["url"] = url.into(),
         Televerse::Chiffre(fichier) => c["file"] = fichier,
@@ -334,11 +361,42 @@ mod tests {
     fn fichier_clair_ou_chiffre() {
         let c = fichier("son.mp3", "audio/mpeg", 42, Televerse::Clair("mxc://hs/a".into()), &InfosMedia::default());
         assert_eq!(c, json!({ "msgtype": "m.audio", "body": "son.mp3", "url": "mxc://hs/a", "info": { "mimetype": "audio/mpeg", "size": 42 } }));
-        let infos = InfosMedia { largeur: Some(640), hauteur: Some(360), duree_ms: Some(1_500) };
+        let infos = InfosMedia { largeur: Some(640), hauteur: Some(360), duree_ms: Some(1_500), ..Default::default() };
         let v = fichier("v.webm", "video/webm", 9, Televerse::Chiffre(json!({ "url": "mxc://hs/c" })), &infos);
         assert_eq!((v["msgtype"].as_str(), v["file"]["url"].as_str()), (Some("m.video"), Some("mxc://hs/c")));
         assert_eq!(v["info"], json!({ "mimetype": "video/webm", "size": 9, "w": 640, "h": 360, "duration": 1_500 }));
         assert!(v.get("url").is_none());
         assert_eq!(fichier("x", "application/pdf", 1, Televerse::Clair("mxc://hs/x".into()), &InfosMedia::default())["msgtype"], "m.file");
+    }
+
+    #[test]
+    fn miniature_video_claire_et_chiffree_garde_les_sources_separees() {
+        let miniature = MiniatureMedia { octets: vec![255, 216, 255], largeur: 480, hauteur: 270 };
+        let infos = InfosMedia::default();
+        let mut clair = fichier("clip.webm", "video/webm", 19_749_104, Televerse::Clair("mxc://hs/video".into()), &infos);
+        avec_miniature(&mut clair, Televerse::Clair("mxc://hs/jpeg".into()), &miniature);
+        assert_eq!(clair["url"], "mxc://hs/video");
+        assert_eq!(clair["info"]["thumbnail_url"], "mxc://hs/jpeg");
+        assert_eq!(clair["info"]["thumbnail_info"], json!({"mimetype": "image/jpeg", "size": 3, "w": 480, "h": 270}));
+        let video = json!({"url": "mxc://hs/video-chiffre", "key": {"k": "cle-video"}});
+        let jpeg = json!({"url": "mxc://hs/jpeg-chiffre", "key": {"k": "cle-jpeg"}});
+        let mut chiffre = fichier("clip.webm", "video/webm", 19_749_104, Televerse::Chiffre(video.clone()), &infos);
+        avec_miniature(&mut chiffre, Televerse::Chiffre(jpeg.clone()), &miniature);
+        assert_eq!(chiffre["file"], video);
+        assert_eq!(chiffre["info"]["thumbnail_file"], jpeg);
+        assert!(chiffre.get("url").is_none());
+        assert!(chiffre["info"].get("thumbnail_url").is_none());
+    }
+
+    #[test]
+    fn legende_d_image_claire_et_chiffree_dans_le_meme_evenement() {
+        let infos = InfosMedia { legende: Some("Pour avoir la bêta !".into()), ..Default::default() };
+        for source in [Televerse::Clair("mxc://hs/photo".into()), Televerse::Chiffre(json!({"url": "mxc://hs/photo"}))] {
+            let contenu = fichier("photo.png", "image/png", 42, source, &infos);
+            assert_eq!(contenu["filename"], "photo.png");
+            assert_eq!(contenu["body"], "Pour avoir la bêta !");
+            assert_eq!(contenu["msgtype"], "m.image");
+            assert!(contenu.get("url").is_some() || contenu.get("file").is_some());
+        }
     }
 }

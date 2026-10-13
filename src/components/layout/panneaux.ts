@@ -1,17 +1,16 @@
 import { useBibliothequeActive } from "../../hooks/useBibliothequeActive";
 /**
- * Panneaux de la dock : composants (chargés à la demande) et titres. Partagés
- * par la dock du bureau et la feuille du téléphone (`MobilePanelSheet`).
+ * Lazy-loaded dock panels and titles shared by the desktop dock
+ * and MobilePanelSheet.
  */
 import { lazy, createElement, type ComponentType } from "react";
 import { useLayoutStore, type PanneauId } from "../../stores/useLayoutStore";
+import { useAppStore } from "../../stores/useAppStore";
+import { estPanneauVisible } from "../../utils/panneauxVisibles";
 export { PANNEAU_COMPTEURS } from "./panneauxCompteurs";
 
-// Blocs lourds chargés à la demande (perf mémoire, 2026-09-12) : le soundboard
-// embarquait dans le chunk de démarrage tout son sous-graphe (panneau vocal,
-// modal d'upload, trimballeur, hotkeys) alors qu'il n'est peint que si le
-// bloc est docké ET le salon soundboard présent. Idem membres et
-// transcription. Le chunk de boot ne garde que la coquille de la dock.
+// Load heavy panels on demand. Soundboard, members and transcription
+// should not bring their dependency subtrees into the initial app chunk.
 const MemberPanel = lazy(() =>
   import("../chat/MemberPanel").then((m) => ({ default: m.MemberPanel })),
 );
@@ -44,13 +43,9 @@ export const PANNEAU_CORPS: Record<PanneauId, ComponentType> = {
   pinned: PinnedPanel,
 };
 
-/** Panneau actif, partagé avec le retour d'Android. */
-export function panneauxOuverts(): PanneauId[] {
-  return useLayoutStore.getState().panneaux;
-}
-
 export function fermerFeuilleMobile(): boolean {
-  if (!useLayoutStore.getState().panneau) return false;
+  const courant = useLayoutStore.getState().panneau;
+  if (!courant || !estPanneauVisible(courant, !!useAppStore.getState().connectedVoiceChannel)) return false;
   useLayoutStore.getState().fermerPanneau();
   return true;
 }

@@ -86,7 +86,7 @@ fn jouer_bloquant(samples: Vec<i16>, gain: f32) -> Result<(), String> {
     let config = peripherique
         .default_output_config()
         .map_err(|e| format!("configuration de sortie illisible : {e}"))?;
-    let taux = config.sample_rate().0;
+    let taux = config.sample_rate();
     let canaux = config.channels() as usize;
 
     let mono: Vec<f32> = samples
@@ -112,7 +112,7 @@ fn jouer_bloquant(samples: Vec<i16>, gain: f32) -> Result<(), String> {
 
     let flux = peripherique
         .build_output_stream(
-            &config.into(),
+            config.into(),
             move |tampon: &mut [f32], _: &cpal::OutputCallbackInfo| {
                 for place in tampon.iter_mut() {
                     *place = entrelace.get(lu).copied().unwrap_or(0.0);

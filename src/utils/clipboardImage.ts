@@ -1,15 +1,30 @@
 /**
- * Image du presse-papiers lue côté Rust.
- *
- * WebKitGTK n'expose pas les images dans `ClipboardEvent.clipboardData.items`
- * (contrairement à Chromium/CEF) : le Ctrl+V d'une capture d'écran ou d'un
- * fichier image ne peut donc pas passer par le DOM. Le HTML5 `paste` reste
- * prioritaire ; ce fallback n'est appelé que lorsque l'événement ne contient
- * pas de fichier.
- *
- * Rust renvoie les octets d'origine (PNG/JPEG/WebP/GIF) via l'IPC binaire :
- * aucun décodage ni ré-encodage, donc taille réelle et latence minimale.
+ * Read clipboard images through Rust when HTML5 paste exposes no file.
+ * WebKitGTK omits image clipboard items, unlike Chromium. Rust returns original
+ * PNG/JPEG/WebP/GIF bytes via binary IPC without decoding or re-encoding.
  */
+import { readDroppedFile } from "./droppedFile";
+
+/**
+ * File managers copy paths rather than image pixels. Preserve names and formats
+ * and prepare every attachment; screenshots use the bitmap fallback below.
+ */
+export async function readClipboardFiles(): Promise<File[]> {
+  const files: File[] = [];
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const paths = await invoke<string[]>("read_clipboard_files");
+    for (const path of paths) {
+      const file = await readDroppedFile(path);
+      if (file) files.push(file);
+    }
+  } catch {
+    // Try image fallback for an older binary or a clipboard without files.
+  }
+  if (files.length) return files;
+  const image = await readClipboardImageFile();
+  return image ? [image] : [];
+}
 
 function detectMime(bytes: Uint8Array): string {
   if (
@@ -37,7 +52,7 @@ function detectMime(bytes: Uint8Array): string {
   return "image/png";
 }
 
-export async function readClipboardImageFile(): Promise<File | null> {
+async function readClipboardImageFile(): Promise<File | null> {
   try {
     const { invoke } = await import("@tauri-apps/api/core");
     const buffer = await invoke<ArrayBuffer>("read_clipboard_image");

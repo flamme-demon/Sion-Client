@@ -1,31 +1,12 @@
-//! Hôte Win32 natif de l'overlay curseurs — fenêtre en couches + `UpdateLayeredWindow`.
+//! Native Win32 cursor overlay using a layered window and UpdateLayeredWindow.
 //!
-//! **Pourquoi il remplace l'hôte winit.** winit n'autorise qu'UNE `EventLoop`
-//! par processus. Le PIP préchauffe la sienne au démarrage de l'application
-//! (`pip_window::prewarm`), donc l'overlay ne pouvait plus jamais créer la
-//! sienne : son journal disait `winit EventLoop build failed: RecreationAttempt`
-//! et `cursor_overlay_open` rendait `false` sans un mot. L'overlay des curseurs
-//! n'a donc jamais fonctionné sous Windows depuis l'alpha.2 — constaté le 17/09
-//! sur une machine réelle, réglage « Voir les curseurs des viewers » pourtant
-//! coché.
+//! The PIP owns winit's only EventLoop, so this overlay creates its own Win32
+//! window and message pump. Layered alpha preserves smooth cursor edges;
+//! WS_EX_TRANSPARENT passes clicks through, while TOPMOST and NOACTIVATE
+//! keep the overlay visible without stealing focus or creating a taskbar entry.
 //!
-//! C'est exactement le problème qui avait été résolu sous Linux en écrivant
-//! `cursor_overlay_x11.rs`. Même remède ici : plus aucune boucle winit, une
-//! fenêtre Win32 et sa propre pompe de messages.
-//!
-//! **Ce que fait cet hôte**
-//!   - fenêtre `WS_POPUP` couvrant le bureau virtuel entier (tous les écrans),
-//!     en `WS_EX_LAYERED` pour la transparence par pixel, `WS_EX_TRANSPARENT`
-//!     pour laisser passer les clics, `WS_EX_TOPMOST` pour rester au-dessus et
-//!     `WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW` pour ne jamais voler le focus ni
-//!     apparaître dans la barre des tâches ;
-//!   - présentation par `UpdateLayeredWindow` : la transparence par pixel évite
-//!     la couleur-clé, qui trahirait les bords adoucis des curseurs ;
-//!   - même politique de redraw que les autres hôtes — ≈30 Hz seulement quand
-//!     des clics s'animent, un réveil à la prochaine expiration sinon.
-//!
-//! Toute la peinture vient du module parent (`super::draw`) : cet hôte ne fait
-//! que la fenêtre et le blit.
+//! The parent module draws the pixels. This host handles the window and blit,
+//! redrawing around 30 Hz during click animation and sleeping until expiry otherwise.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
@@ -37,8 +18,8 @@ use tiny_skia::Pixmap;
 use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, POINT, SIZE, WPARAM};
 use windows::Win32::Graphics::Gdi::{
     CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetDC, ReleaseDC, SelectObject,
-    AC_SRC_ALPHA, AC_SRC_OVER, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, BLENDFUNCTION,
-    DIB_RGB_COLORS, HBITMAP, HDC, HGDIOBJ,
+    AC_SRC_ALPHA, AC_SRC_OVER, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, BLENDFUNCTION, DIB_RGB_COLORS,
+    HBITMAP, HDC, HGDIOBJ,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -48,16 +29,16 @@ use windows::Win32::UI::WindowsAndMessaging::{
     SW_HIDE, SW_SHOWNOACTIVATE, ULW_ALPHA, WNDCLASSEXW, WNDCLASS_STYLES, WS_EX_LAYERED,
     WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
 };
-use windows_core::w;
+use windows_core::{w, BOOL};
 
 use super::{OverlayState, UserEvent};
 
-/// Cadence d'animation des ondes de clic, identique aux autres hôtes.
+/// Click animation interval, shared with the other hosts.
 const ANIMATE_STEP: Duration = Duration::from_millis(33);
-/// Plafond d'attente : la pompe de messages doit tourner même sans commande.
+/// Maximum wait before pumping window messages.
 const POLL_CAP: Duration = Duration::from_millis(100);
 
-/// Démarre le fil Win32. `None` si la fenêtre n'a pas pu être créée.
+/// Start the Win32 thread; return None if window creation fails.
 pub(super) fn start(
     state: Arc<Mutex<OverlayState>>,
     thread_alive: Arc<AtomicBool>,
@@ -68,8 +49,8 @@ pub(super) fn start(
     thread::Builder::new()
         .name("sion-cursor-overlay".into())
         .spawn(move || {
-            // La fenêtre DOIT naître sur ce fil : une pompe de messages ne sert
-            // que les fenêtres créées par le fil qui la fait tourner.
+            // Create the window on this thread: its message pump services only
+            // windows owned by the same thread.
             let mut host = match Host::new() {
                 Ok(h) => h,
                 Err(err) => {
@@ -92,9 +73,8 @@ pub(super) fn start(
     }
 }
 
-/// Le seul message traité : tout le reste va au traitement par défaut. La
-/// fenêtre ne reçoit aucune entrée (`WS_EX_TRANSPARENT`) et ne se repeint
-/// jamais toute seule (`UpdateLayeredWindow` fournit son contenu).
+/// Delegate messages to the default procedure. The click-through window
+/// draws through UpdateLayeredWindow instead of handling paint requests.
 unsafe extern "system" fn overlay_window_proc(
     hwnd: HWND,
     message: u32,
@@ -118,7 +98,7 @@ fn register_class() -> Result<(), String> {
                 ..Default::default()
             };
             if unsafe { RegisterClassExW(&class) } == 0 {
-                Err(windows_core::Error::from_win32().to_string())
+                Err(windows_core::Error::from_thread().to_string())
             } else {
                 Ok(())
             }
@@ -126,17 +106,9 @@ fn register_class() -> Result<(), String> {
         .clone()
 }
 
-/// Géométrie de l'overlay : l'ÉCRAN PARTAGÉ quand on le connaît, le bureau
-/// virtuel sinon.
-///
-/// L'overlay couvrait auparavant tous les moniteurs réunis. Or les positions
-/// reçues sont normalisées sur le seul écran partagé : les étaler sur
-/// l'ensemble décalait la flèche et la faisait apparaître au mauvais endroit
-/// sur les écrans non partagés (18/09). Le suivi des bureaux virtuels, lui, ne
-/// dépend pas de la taille de la fenêtre — il reste acquis.
-///
-/// Le repli sur le bureau virtuel couvre le cas où l'écran partagé n'est pas
-/// déclaré : mieux vaut un curseur mal placé que pas de curseur du tout.
+/// Use the shared monitor's geometry, falling back to the virtual desktop
+/// when unknown. Coordinates are normalized within the shared monitor,
+/// so spanning all monitors would place remote cursors incorrectly.
 fn virtual_screen() -> (i32, i32, i32, i32) {
     if let Some(index) = crate::cursor_overlay::cursor_overlay_shared_screen() {
         if let Some(rect) = moniteur_par_index(index) {
@@ -156,10 +128,9 @@ fn virtual_screen() -> (i32, i32, i32, i32) {
     }
 }
 
-/// Rectangle du n-ième moniteur, dans l'ordre d'énumération de Windows —
-/// celui-là même que suit libwebrtc pour numéroter ses sources d'écran.
+/// Return the nth monitor in Windows enumeration order, matching libwebrtc.
 fn moniteur_par_index(index: u64) -> Option<(i32, i32, i32, i32)> {
-    use windows::Win32::Foundation::{BOOL, LPARAM, RECT};
+    use windows::Win32::Foundation::{LPARAM, RECT};
     use windows::Win32::Graphics::Gdi::{
         EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFO,
     };
@@ -223,12 +194,11 @@ pub(crate) struct Surface {
 }
 
 impl Surface {
-    /// Crée le DC mémoire et sa section DIB 32 bits descendante. Le stride vaut
-    /// exactement `largeur * 4`, d'où l'absence de calcul de pas au blit.
+    /// Create a memory DC and top-down 32-bit DIB. Its stride is exactly width * 4.
     pub(crate) fn new(largeur: i32, hauteur: i32) -> Result<Self, String> {
         unsafe {
             let ecran = GetDC(None);
-            let dc = CreateCompatibleDC(ecran);
+            let dc = CreateCompatibleDC(Some(ecran));
             ReleaseDC(None, ecran);
             if dc.is_invalid() {
                 return Err("DC mémoire indisponible".into());
@@ -237,7 +207,7 @@ impl Surface {
                 bmiHeader: BITMAPINFOHEADER {
                     biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
                     biWidth: largeur,
-                    // Négatif = descendante, comme le pixmap de tiny-skia.
+                    // Negative height selects top-down rows, matching tiny-skia.
                     biHeight: -hauteur,
                     biPlanes: 1,
                     biBitCount: 32,
@@ -247,9 +217,9 @@ impl Surface {
                 ..Default::default()
             };
             let mut pixels: *mut core::ffi::c_void = std::ptr::null_mut();
-            let bitmap = CreateDIBSection(dc, &info, DIB_RGB_COLORS, &mut pixels, None, 0)
+            let bitmap = CreateDIBSection(Some(dc), &info, DIB_RGB_COLORS, &mut pixels, None, 0)
                 .map_err(|err| err.to_string())?;
-            let ancien = SelectObject(dc, bitmap);
+            let ancien = SelectObject(dc, bitmap.into());
             Ok(Self {
                 dc,
                 bitmap,
@@ -266,7 +236,7 @@ impl Drop for Surface {
     fn drop(&mut self) {
         unsafe {
             SelectObject(self.dc, self.ancien);
-            let _ = DeleteObject(self.bitmap);
+            let _ = DeleteObject(self.bitmap.into());
             let _ = DeleteDC(self.dc);
         }
     }
@@ -296,7 +266,9 @@ impl Host {
 
     fn show(&mut self) -> Result<(), String> {
         if let Some(hwnd) = self.hwnd {
-            unsafe { let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE); }
+            unsafe {
+                let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+            }
             self.need_redraw = true;
             return Ok(());
         }
@@ -304,7 +276,10 @@ impl Host {
         let module = unsafe { GetModuleHandleW(None) }.map_err(|err| err.to_string())?;
         let hwnd = unsafe {
             CreateWindowExW(
-                WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOPMOST | WS_EX_NOACTIVATE
+                WS_EX_LAYERED
+                    | WS_EX_TRANSPARENT
+                    | WS_EX_TOPMOST
+                    | WS_EX_NOACTIVATE
                     | WS_EX_TOOLWINDOW,
                 w!("SION_CURSOR_OVERLAY"),
                 w!("Sion cursor overlay"),
@@ -315,7 +290,7 @@ impl Host {
                 hauteur,
                 None,
                 None,
-                HINSTANCE(module.0),
+                Some(HINSTANCE(module.0)),
                 None,
             )
         }
@@ -325,7 +300,9 @@ impl Host {
         self.pixmap = Pixmap::new(largeur as u32, hauteur as u32);
         self.origine = (x, y);
         self.hwnd = Some(hwnd);
-        unsafe { let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE); }
+        unsafe {
+            let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+        }
         self.need_redraw = true;
         log::info!(
             "[Sion][CursorOverlay] fenêtre Win32 créée {}x{} à ({},{})",
@@ -344,8 +321,8 @@ impl Host {
                 let _ = DestroyWindow(hwnd);
             }
         }
-        // La surface tient un bitmap GDI : la libérer avec la fenêtre évite
-        // d'accumuler des objets à chaque cycle partage/arrêt.
+        // Release the GDI bitmap with the window to avoid accumulating handles
+        // across repeated share/stop cycles.
         self.surface = None;
         self.pixmap = None;
         self.redraw_at = None;
@@ -385,8 +362,7 @@ impl Host {
             (!s.clicks.is_empty(), prochain)
         };
 
-        // tiny-skia rend du RGBA prémultiplié, GDI attend du BGRA prémultiplié :
-        // seuls les canaux rouge et bleu s'échangent, l'alpha est déjà correct.
+        // Swap red and blue between tiny-skia RGBA and GDI BGRA; both are premultiplied.
         let octets = (surface.largeur as usize) * (surface.hauteur as usize) * 4;
         unsafe {
             let dst = std::slice::from_raw_parts_mut(surface.pixels, octets);
@@ -420,7 +396,7 @@ impl Host {
                 None,
                 Some(&position),
                 Some(&taille),
-                surface.dc,
+                Some(surface.dc),
                 Some(&source),
                 COLORREF(0),
                 Some(&melange),
@@ -438,8 +414,7 @@ impl Host {
         };
     }
 
-    /// Vide la file de messages de CE fil. Sans elle, Windows considère la
-    /// fenêtre comme ne répondant plus et peut la griser.
+    /// Drain this thread's message queue so Windows keeps the window responsive.
     fn pomper_messages(&self) {
         let mut msg = MSG::default();
         unsafe {
@@ -470,10 +445,6 @@ impl Host {
                     }
                 }
                 Ok(UserEvent::Hide) => self.hide(),
-                Ok(UserEvent::Shutdown) => {
-                    self.hide();
-                    return;
-                }
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => {
                     self.hide();

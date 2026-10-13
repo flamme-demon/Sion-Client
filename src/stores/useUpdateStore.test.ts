@@ -30,11 +30,13 @@ describe("update lifecycle", () => {
     await store.getState().install();
     expect(mocks.invoke).toHaveBeenLastCalledWith("update_install", { tag: update.tag });
   });
-  it("blocks installation during a voice call", async () => {
+  it("installs on explicit request during a voice call", async () => {
     const { useUpdateStore: store } = await import("./useUpdateStore");
     store.setState({ update, stagedPath: "/cache/package.bin", status: "ready" });
     mocks.app.connectedVoiceChannel = "!call:example.com";
-    await store.getState().install(); expect(mocks.invoke).not.toHaveBeenCalled();
+    await store.getState().install();
+    expect(mocks.invoke).toHaveBeenCalledExactlyOnceWith("update_install", { tag: update.tag });
+    expect(store.getState().status).toBe("installing");
   });
   it("clears an experimental package after opting out, even offline", async () => {
     const { useUpdateStore: store } = await import("./useUpdateStore");

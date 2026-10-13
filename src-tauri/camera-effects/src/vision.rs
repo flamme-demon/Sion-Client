@@ -8,6 +8,7 @@ use std::{
 use tract_onnx::prelude::*;
 
 type Model = Arc<TypedRunnableModel>;
+pub const PERSON_SIZE: usize = 256;
 #[derive(Clone, Debug)]
 pub struct Face {
     pub rect: [f32; 4],
@@ -15,19 +16,14 @@ pub struct Face {
 }
 #[derive(Clone, Default)]
 pub struct Analysis {
-    pub mask: Option<Arc<Vec<f32>>>,
     pub face: Option<Face>,
     pub face_analyzed: bool,
     pub finished: Option<Instant>,
     pub elapsed_ms: f32,
     pub error: Option<String>,
 }
-pub struct Request {
-    pub person: Option<Vec<f32>>,
-    pub face: Option<Vec<f32>>,
-}
 struct State {
-    next: Option<Request>,
+    next: Option<Vec<f32>>,
     stop: bool,
 }
 pub struct Worker {
@@ -39,13 +35,13 @@ pub struct Worker {
 fn model(bytes: &[u8], size: usize) -> TractResult<(Model, Vec<String>)> {
     let onnx = tract_onnx::onnx();
     let mut proto = onnx.proto_model_for_read(&mut Cursor::new(bytes))?;
-    // YuNet est convolutionnel. Ses annotations 640p figées doivent être
-    // recalculées pour l'analyse 320p, sans modifier les poids du modèle.
-    if size == 320 {
+    // Recalculer les annotations : batch symbolique du modèle Selfie et
+    // dimensions 640p de YuNet. Les poids restent inchangés.
+    {
         let graph = proto
             .graph
             .as_mut()
-            .ok_or_else(|| anyhow!("Graphe YuNet absent"))?;
+            .ok_or_else(|| anyhow!("Graphe du modèle absent"))?;
         graph.value_info.clear();
         for value in graph.input.iter_mut().chain(graph.output.iter_mut()) {
             if let Some(tract_onnx::pb::type_proto::Value::TensorType(tensor)) =
@@ -70,33 +66,46 @@ fn run(model: &Model, input: Vec<f32>, size: usize) -> TractResult<TVec<TValue>>
         Tensor::from_shape(&[1, 3, size, size], &input)?.into()
     ))
 }
-fn mask(model: &Model, input: Vec<f32>, previous: Option<&[f32]>) -> TractResult<Vec<f32>> {
-    let output = run(model, input, 192)?;
+fn mask(model: &Model, input: Vec<f32>) -> TractResult<Vec<f32>> {
+    let output = run(model, input, PERSON_SIZE)?;
     let values = output[0].to_plain_array_view::<f32>()?;
     ensure!(
-        values.shape() == [1, 2, 192, 192],
+        values.shape() == [1, 1, PERSON_SIZE, PERSON_SIZE],
         "Format du modèle de détourage inattendu"
     );
     let data = values
         .as_slice()
         .ok_or_else(|| anyhow!("Masque non contigu"))?;
-    let mut result = Vec::with_capacity(192 * 192);
-    for i in 0..192 * 192 {
-        let (a, b) = (data[i], data[i + 192 * 192]);
-        let p = if (0.0..=1.0).contains(&a) && (0.0..=1.0).contains(&b) {
-            b / (a + b).max(0.0001)
-        } else {
-            1.0 / (1.0 + (a - b).exp())
-        };
-        let p = ((p - 0.2) / 0.6).clamp(0.0, 1.0);
-        let p = p * p * (3.0 - 2.0 * p);
-        result.push(
-            previous
-                .and_then(|v| v.get(i))
-                .map_or(p, |old| p * 0.75 + old * 0.25),
-        );
+    ensure!(data.iter().all(|p| p.is_finite()), "Masque invalide");
+    Ok(data
+        .iter()
+        .map(|p| {
+            // Transition courte autour de la décision personne/fond. Aucun
+            // ancien masque ne doit laisser le fond net après un mouvement.
+            let p = ((p - 0.45) / 0.1).clamp(0.0, 1.0);
+            p * p * (3.0 - 2.0 * p)
+        })
+        .collect())
+}
+
+pub struct PersonSegmenter {
+    model: Result<Model, String>,
+}
+impl PersonSegmenter {
+    pub fn new() -> Self {
+        Self {
+            model: model(
+                include_bytes!("../../resources/camera/person.onnx"),
+                PERSON_SIZE,
+            )
+            .map(|(model, _)| model)
+            .map_err(|error| format!("{error:#}")),
+        }
     }
-    Ok(result)
+    pub fn segment(&self, input: Vec<f32>) -> TractResult<Vec<f32>> {
+        let model = self.model.as_ref().map_err(|error| anyhow!("{error}"))?;
+        mask(model, input)
+    }
 }
 fn face(model: &Model, names: &[String], input: Vec<f32>) -> TractResult<Option<Face>> {
     let output = run(model, input, 320)?;
@@ -165,9 +174,8 @@ impl Worker {
         let result = Arc::new(Mutex::new(Analysis::default()));
         let (q, out) = (queue.clone(), result.clone());
         let thread = std::thread::Builder::new()
-            .name("sion-camera-vision".into())
+            .name("sion-camera-face".into())
             .spawn(move || {
-                let mut person_model: Option<Model> = None;
                 let mut face_model: Option<(Model, Vec<String>)> = None;
                 loop {
                     let request = {
@@ -182,44 +190,21 @@ impl Worker {
                         state.next.take().unwrap()
                     };
                     let started = Instant::now();
-                    let mut analysis = out.lock().unwrap_or_else(|e| e.into_inner()).clone();
                     let process = || -> TractResult<Analysis> {
-                        if let Some(input) = request.person {
-                            if person_model.is_none() {
-                                person_model = Some(
-                                    model(
-                                        include_bytes!("../../resources/camera/person.onnx"),
-                                        192,
-                                    )?
-                                    .0,
-                                );
-                            }
-                            analysis.mask = Some(Arc::new(mask(
-                                person_model.as_ref().unwrap(),
-                                input,
-                                analysis.mask.as_deref().map(|v| v.as_slice()),
-                            )?));
-                        } else {
-                            analysis.mask = None;
+                        if face_model.is_none() {
+                            face_model = Some(model(
+                                include_bytes!("../../resources/camera/face.onnx"),
+                                320,
+                            )?);
                         }
-                        if let Some(input) = request.face {
-                            if face_model.is_none() {
-                                face_model = Some(model(
-                                    include_bytes!("../../resources/camera/face.onnx"),
-                                    320,
-                                )?);
-                            }
-                            let (model, names) = face_model.as_ref().unwrap();
-                            analysis.face = face(model, names, input)?;
-                            analysis.face_analyzed = true;
-                        } else {
-                            analysis.face = None;
-                            analysis.face_analyzed = false;
-                        }
-                        analysis.finished = Some(Instant::now());
-                        analysis.elapsed_ms = started.elapsed().as_secs_f32() * 1000.0;
-                        analysis.error = None;
-                        Ok(analysis)
+                        let (model, names) = face_model.as_ref().unwrap();
+                        Ok(Analysis {
+                            face: face(model, names, request)?,
+                            face_analyzed: true,
+                            finished: Some(Instant::now()),
+                            elapsed_ms: started.elapsed().as_secs_f32() * 1000.0,
+                            error: None,
+                        })
                     };
                     match process() {
                         Ok(analysis) => *out.lock().unwrap_or_else(|e| e.into_inner()) = analysis,
@@ -242,7 +227,7 @@ impl Worker {
             thread,
         }
     }
-    pub fn submit(&self, request: Request) {
+    pub fn submit(&self, request: Vec<f32>) {
         let (lock, wake) = &*self.queue;
         lock.lock().unwrap_or_else(|e| e.into_inner()).next = Some(request);
         wake.notify_one();

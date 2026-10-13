@@ -1,5 +1,12 @@
 # Passage à matrix-rust-sdk — plan de l'étape 2
 
+## Update — 2026-10-13
+
+The 1.x JS-to-Rust session/key-store migration has been retired. Supported
+upgrades start at 2.0.0-beta.6. The migration references below describe the
+historical rollout; current native sign-in and resume use the Rust stores directly.
+The browser/development Matrix JS runtime remains separate and available.
+
 *Document de conception, ouvert le 26/09/2026. À tenir à jour : il doit
 permettre de reprendre le travail sans rien savoir de la discussion qui l'a
 précédé. L'étape 1 (prototype) est faite ; ce document détaille l'étape 2 et
@@ -327,8 +334,15 @@ Fait :
 - `emission.rs` — envoi par `send_raw` (matrix-sdk chiffre d'office dans un
   salon chiffré), suppression, épinglage par l'état `m.room.pinned_events`,
   fichier téléversé chiffré si le salon l'est, GIF téléchargé par le cœur,
-  taille maximale d'envoi. Chaque envoi rend l'identifiant serveur : pas
-  d'écho local `~…`, donc rien à porter de `resolveServerEventId`.
+  taille maximale d'envoi. Chaque envoi rend l'identifiant serveur.
+  Depuis le 12/10, textes et réponses s'affichent immédiatement dans le store
+  avec un écho `~sion-…` et un indicateur d'envoi. La transaction est transmise
+  au SDK et restituée par `unsigned.transaction_id` : le retour de synchro
+  remplace l'écho sans doublon, avant ou après l'accusé HTTP. Les publications
+  intermédiaires gardent les échos non confirmés ; un échec retire son écho et
+  garde le brouillon. Un texte sans `@` ne relit plus les membres avant envoi.
+  Les journaux `[Sion][envoi]` mesurent préparation, accusé et retour de synchro
+  sans enregistrer le contenu du message.
 - `membres.rs` — noms des membres calculés comme matrix-js-sdk
   (`shouldDisambiguate`) : matrix-sdk jugeait ambigu tout nom contenant un
   caractère invisible (« pierre 🏳️‍⚧️ » et son ZWJ).

@@ -34,6 +34,7 @@
 #include "livekit/encoded_video_frame_buffer.h"
 #include "livekit/objc_video_factory.h"
 #include "livekit/passthrough_video_encoder.h"
+#include "livekit/unique_video_formats.h"
 #include "livekit/webrtc.h"
 #include "media/base/media_constants.h"
 #include "media/engine/simulcast_encoder_adapter.h"
@@ -414,7 +415,7 @@ VideoEncoderFactory::InternalFactory::GetSupportedFormats() const {
       }
     }
   }
-  return formats;
+  return UniqueVideoFormats(std::move(formats));
 }
 
 std::vector<webrtc::SdpVideoFormat>

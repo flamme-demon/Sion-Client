@@ -1,7 +1,6 @@
 import { create } from "zustand";
 import { checkForUpdate, type UpdateInfo } from "../services/updateService";
 import { useSettingsStore } from "./useSettingsStore";
-import { useAppStore } from "./useAppStore";
 import { openExternalUrl } from "../utils/openExternal";
 
 export type UpdateStatus = "idle" | "checking" | "available" | "downloading" | "ready" | "installing" | "permission" | "error";
@@ -79,7 +78,7 @@ export const useUpdateStore = create<UpdateState>((set, get) => ({
   },
   install: async () => {
     const { update, stagedPath, status } = get();
-    if (!update || !stagedPath || busy(status) || useAppStore.getState().connectedVoiceChannel) return;
+    if (!update || !stagedPath || busy(status)) return;
     if (update.channel !== "stable" && !useSettingsStore.getState().experimentalUpdates) return;
     set({ status: "installing", error: null });
     try {

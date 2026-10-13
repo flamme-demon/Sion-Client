@@ -31,7 +31,7 @@ export function DepartEspace({ espaceId, action, onAnnuler }: {
         selection.filter((p) => p.partageAvec.length).map((p) => p.salon.id));
     } catch (e) {
       if (e instanceof EchecDepartEspace) {
-        throw new Error(t(e.message, { rooms: e.salons.map((c) => c.name).join(", ") }));
+        throw new Error(t(e.message, { rooms: e.salons.map((c) => c.name).join(", ") }), { cause: e });
       }
       throw e;
     }

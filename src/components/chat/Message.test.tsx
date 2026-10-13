@@ -11,7 +11,9 @@ const serveur = vi.hoisted(() => ({
   pouvoir: 0, redact: 50, natif: true, epingles: [] as string[],
   supprimer: vi.fn(), epingler: vi.fn(), reagir: vi.fn(), retirerReaction: vi.fn(),
   dechiffrer: vi.fn(),
+  affiche: vi.fn(),
 }));
+vi.mock("../../services/voiceNativeService", () => ({ afficheLecteurVideo: serveur.affiche }));
 vi.mock("../../utils/decryptMedia", () => ({ createDecryptedObjectUrl: serveur.dechiffrer }));
 vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 vi.mock("../../i18n", () => ({ default: { t: (key: string) => key, changeLanguage: vi.fn() } }));
@@ -57,10 +59,62 @@ const choisir = async (label: string) => {
   await act(async () => button.click());
 };
 const boutonReaction = () => vue.container.querySelector<HTMLButtonElement>('[aria-label="chat.react"]')!;
+
+const video = (thumbnailUrl?: string): ChatMessage => ({ ...message, text: "", msgtype: "m.video", attachments: [{
+  id: "$video", name: "clip.webm", mimeType: "video/webm", size: 19_749_104,
+  url: "https://sion.test/video", thumbnailUrl, width: 1920, height: 1080,
+}] });
+function imagesVisibles() {
+  vi.stubGlobal("IntersectionObserver", class {
+    callback: (entrees: { isIntersecting: boolean }[]) => void;
+    constructor(callback: (entrees: { isIntersecting: boolean }[]) => void) { this.callback = callback; }
+    observe() { this.callback([{ isIntersecting: true }]); }
+    disconnect() {}
+  });
+}
+
+it("affiche la miniature jointe à une vidéo sans charger le fichier vidéo", async () => {
+  imagesVisibles();
+  const charger = vi.fn();
+  vi.stubGlobal("fetch", charger);
+  await vue.render(<Message message={video("https://sion.test/preview.jpg")} showHeader={false} isFirst />);
+  expect(vue.container.querySelector('img[alt="clip.webm"]')?.getAttribute("src")).toBe("https://sion.test/preview.jpg");
+  expect(serveur.affiche).not.toHaveBeenCalled();
+  expect(charger).not.toHaveBeenCalled();
+});
+
+it("une miniature arrivée après la carte remplace l'extraction encore en attente", async () => {
+  imagesVisibles();
+  let terminer!: (s: string) => void;
+  serveur.affiche.mockReturnValue(new Promise((resolve) => { terminer = resolve; }));
+  await vue.render(<Message message={video()} showHeader={false} isFirst />);
+  expect(serveur.affiche).toHaveBeenCalledOnce();
+  await vue.render(<Message message={video("https://sion.test/preview.jpg")} showHeader={false} isFirst />);
+  await act(async () => terminer("data:image/jpeg;base64,ancienne"));
+  expect(vue.container.querySelector('img[alt="clip.webm"]')?.getAttribute("src")).toBe("https://sion.test/preview.jpg");
+});
+
+it("une miniature indisponible retrouve l'extraction locale des anciennes vidéos", async () => {
+  imagesVisibles();
+  serveur.affiche.mockResolvedValue("data:image/jpeg;base64,locale");
+  await vue.render(<Message message={video("https://sion.test/preview.jpg")} showHeader={false} isFirst />);
+  await act(async () => vue.container.querySelector('img[alt="clip.webm"]')!.dispatchEvent(new Event("error")));
+  expect(serveur.affiche).toHaveBeenCalledExactlyOnceWith("https://sion.test/video");
+  expect(vue.container.querySelector('img[alt="clip.webm"]')?.getAttribute("src")).toBe("data:image/jpeg;base64,locale");
+});
 const selecteurReaction = () => document.querySelector<HTMLDivElement>(".sion-reactions-picker");
 const ouvrirReactions = async () => {
   await act(async () => { boutonReaction().dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true })); });
 };
+
+it("montre l'envoi en cours et attend un ID serveur avant de proposer des actions", async () => {
+  await vue.render(<Message message={{ ...message, id: "~transaction", eventId: undefined, senderId: "@moi:sion.test", sending: true }} showHeader={false} isFirst />);
+  expect(bulle().getAttribute("aria-busy")).toBe("true");
+  expect(vue.container.querySelector('[role="status"]')?.getAttribute("aria-label")).toBe("chat.sending");
+  expect(vue.container.querySelector('[aria-label="chat.reply"]')).toBeNull();
+  await ouvrir();
+  expect(menu()).toBeNull();
+});
 
 it("seuls Réagir et Répondre restent visibles et fonctionnent", async () => {
   serveur.pouvoir = 100;
@@ -222,6 +276,15 @@ it("un appui long ouvre les actions sur téléphone", async () => {
 const image = (id: string): ChatMessage => ({
   ...message, id, eventId: id, text: "", time: "12:03",
   attachments: [{ id, name: `${id}.png`, mimeType: "image/png", size: 12, url: `https://media.invalid/${id}` }],
+});
+
+it("affiche la légende après l’image dans une seule bulle", async () => {
+  await vue.render(<Message message={{ ...image("$photo"), text: "Pour avoir la bêta !" }} showHeader={false} isFirst />);
+  expect(vue.container.querySelectorAll(".sion-message-bulle")).toHaveLength(1);
+  const photo = bulle().querySelector('[role="button"]')!;
+  const legende = bulle().querySelector(".sion-legende-media")!;
+  expect(legende.textContent).toBe("Pour avoir la bêta !");
+  expect(photo.compareDocumentPosition(legende) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 });
 
 it("chaque image en mosaïque conserve sa réponse et ses réactions", async () => {

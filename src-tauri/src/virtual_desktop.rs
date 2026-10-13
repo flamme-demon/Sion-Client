@@ -72,7 +72,7 @@ fn boucle(hwnd_brut: isize, arret: Arc<AtomicBool>) {
         if arret.load(Ordering::Relaxed) {
             break;
         }
-        if !unsafe { IsWindow(hwnd) }.as_bool() {
+        if !unsafe { IsWindow(Some(hwnd)) }.as_bool() {
             // Fenêtre détruite : plus rien à suivre.
             return;
         }

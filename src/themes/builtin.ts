@@ -1,7 +1,6 @@
 import type { Theme, ThemeTokenName } from "./types";
 
-/** Sion Dark — le thème historique, valeurs EXACTES de `index.css` : c'est
- *  aussi le jeu de base sur lequel les thèmes partiels sont fusionnés. */
+/** Sion Dark matches the original index.css values and supplies defaults for partial themes. */
 export const SION_DARK_TOKENS: Record<ThemeTokenName, string> = {
   "color-surface": "#111318",
   "color-surface-container-lowest": "#0d0e13",
@@ -55,10 +54,11 @@ export const SION_DARK: Theme = {
   tokens: SION_DARK_TOKENS,
 };
 
-/** Sion Light — pendant clair du thème historique. Palette volontairement
- *  froide et peu éblouissante : fonds bleu-gris, accent Sion plus soutenu et
- *  couleurs sémantiques assombries pour conserver leur contraste sur blanc. */
-export const SION_LIGHT_TOKENS: Record<ThemeTokenName, string> = {
+/**
+ * Sion Light uses cool blue-gray backgrounds, a stronger accent
+ * and darker semantic colors to preserve contrast on white.
+ */
+const SION_LIGHT_TOKENS: Record<ThemeTokenName, string> = {
   "color-surface": "#f8f9ff",
   "color-surface-container-lowest": "#ffffff",
   "color-surface-container-low": "#f2f3f9",
@@ -111,9 +111,11 @@ export const SION_LIGHT: Theme = {
   tokens: SION_LIGHT_TOKENS,
 };
 
-/** AMOLED — noirs purs (écrans OLED) : surfaces à #000 et conteneurs très
- *  sombres, accents identiques à Sion Dark (contraste déjà calibré). */
-export const SION_AMOLED: Theme = {
+/**
+ * AMOLED uses pure-black surfaces and very dark containers,
+ * with the same contrast-calibrated accents as Sion Dark.
+ */
+const SION_AMOLED: Theme = {
   id: "sion-amoled",
   name: "Sion AMOLED",
   format: 1,

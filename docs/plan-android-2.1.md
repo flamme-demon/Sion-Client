@@ -1,5 +1,11 @@
 # Plan Android 2.1 — remettre Sion sur téléphone
 
+## Update — 2026-10-13
+
+The 1.x session/key-store migration has been retired with 2.0.0-beta.6 as the
+minimum upgrade source. The A0 migration details below describe the historical
+rollout; current Android sessions resume directly from the native Rust stores.
+
 Document de travail du 28/09/2026. La 2.0.0 sort pour ordinateurs seulement
 (décision du 24/09, `docs/roadmap-2.0.0.md` §6) ; ce plan décrit le retour
 d'Android en 2.1 : architecture, design téléphone, fonctions gardées ou

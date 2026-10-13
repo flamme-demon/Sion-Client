@@ -1,9 +1,9 @@
 import { useEffect } from "react";
 import { create } from "zustand";
-import { onVoiceNativePip, pipNativeClose, pipNativeOpen, pipNativeSources, pipNativeOpenStreams, type NativePipStream } from "../services/voiceNativeService";
+import { onVoiceNativePip, pipNativeClose, pipNativeSources, pipNativeOpenStreams, type NativePipStream } from "../services/voiceNativeService";
 
-// Une fenêtre système et un abonnement partagés par les webcams et les
-// partages. Aucune donnée vidéo ne transite par ce store.
+// Cameras and shares use one system window and subscription.
+// This store contains no video data.
 const usePipState = create<{ sender: string | null; sources: string[]; busy: boolean; error: boolean }>(() => ({ sender: null, sources: [], busy: false, error: false }));
 let watchers = 0;
 let generation = 0;
@@ -30,18 +30,6 @@ function watch() {
   return () => {
     if (--watchers === 0) { generation++; unlisten?.(); unlisten = null; }
   };
-}
-
-export async function openNativePip(sender: string): Promise<boolean> {
-  if (usePipState.getState().busy) return false;
-  usePipState.setState({ busy: true, error: false });
-  const before = revision;
-  try {
-    const opened = await pipNativeOpen(sender);
-    if (opened && revision === before) usePipState.setState({ sender, sources: [sender] });
-    usePipState.setState({ error: !opened });
-    return opened;
-  } finally { usePipState.setState({ busy: false }); }
 }
 
 export async function openNativeVideoPip(streams: NativePipStream[], focus: string | null): Promise<boolean> {

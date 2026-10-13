@@ -10,6 +10,7 @@ import { ConfirmationSuppressionBoard } from "./ConfirmationSuppressionBoard";
 // des aperçus : des WebP animés, que la vue web anime sans GStreamer, là où
 // une balise vidéo échouerait selon la machine.
 import { lazy, Suspense, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import { useSettingsStore } from "../../stores/useSettingsStore";
 import {
@@ -70,6 +71,7 @@ const FOND: React.CSSProperties = {
   display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000,
 };
 const CARTE: React.CSSProperties = {
+  boxSizing: 'border-box',
   maxWidth: 'calc(100vw - 32px)', maxHeight: 'calc(100vh - 32px)', overflowY: 'auto',
   display: 'flex', flexDirection: 'column', gap: 12, padding: 20, borderRadius: 16,
   background: 'var(--color-surface-container-high)', color: 'var(--color-on-surface)',
@@ -185,6 +187,7 @@ function ChampCategorie({ valeur, onChange, categories }: { valeur: string; onCh
 
 function MemeEditModal({ meme, categories, onClose, onModifie }: { meme: MemeEntry; categories: string[]; onClose: () => void; onModifie: () => void }) {
   const { t } = useTranslation();
+  const titreId = useId();
   const [nom, setNom] = useState(meme.label);
   const [emoji, setEmoji] = useState(meme.emoji ?? "");
   const [categorie, setCategorie] = useState(meme.category);
@@ -205,10 +208,10 @@ function MemeEditModal({ meme, categories, onClose, onModifie }: { meme: MemeEnt
     }
   };
 
-  return (
-    <div style={FOND}>
-      <div style={{ ...CARTE, width: 420 }}>
-        <div className="sion-titre" style={{ fontSize: 16, fontWeight: 700 }}>{t("memeboard.editTitle")}</div>
+  return createPortal(
+    <div style={FOND} onClick={(e) => e.stopPropagation()}>
+      <div style={{ ...CARTE, width: 420 }} role="dialog" aria-modal="true" aria-labelledby={titreId}>
+        <div id={titreId} className="sion-titre" style={{ fontSize: 16, fontWeight: 700 }}>{t("memeboard.editTitle")}</div>
         <ChampsNomEmoji nom={nom} onNom={setNom} emoji={emoji} onEmoji={setEmoji} />
         <ChampCategorie valeur={categorie} onChange={setCategorie} categories={categories} />
         {erreur && <div style={{ fontSize: 12, color: 'var(--color-error)' }}>{erreur}</div>}
@@ -219,7 +222,8 @@ function MemeEditModal({ meme, categories, onClose, onModifie }: { meme: MemeEnt
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 
@@ -650,6 +654,7 @@ export function MemeboardPanel() {
  *  essai sur son propre écran, puis l'envoi. */
 function MemeImportModal({ categories, categorieInitiale, onClose, onEnvoye }: { categories: string[]; categorieInitiale: string; onClose: () => void; onEnvoye: () => void }) {
   const { t } = useTranslation();
+  const titreId = useId();
   const [fichier, setFichier] = useState<File | null>(null);
   const [source, setSource] = useState<string | null>(null);
   const [analyse, setAnalyse] = useState<MemeAnalyse | null>(null);
@@ -736,10 +741,10 @@ function MemeImportModal({ categories, categorieInitiale, onClose, onEnvoye }: {
 
   const pret = !!analyse && occupe === null;
 
-  return (
-    <div style={FOND}>
-      <div style={{ ...CARTE, width: 560 }}>
-        <div className="sion-titre" style={{ fontSize: 16, fontWeight: 700 }}>{t("memeboard.importTitle")}</div>
+  return createPortal(
+    <div style={FOND} onClick={(e) => e.stopPropagation()}>
+      <div style={{ ...CARTE, width: 560 }} role="dialog" aria-modal={!lien} aria-labelledby={titreId}>
+        <div id={titreId} className="sion-titre" style={{ fontSize: 16, fontWeight: 700 }}>{t("memeboard.importTitle")}</div>
         <div style={{ fontSize: 12, color: 'var(--color-on-surface-variant)' }}>{t("memeboard.limits")}</div>
 
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', minWidth: 0 }}>
@@ -806,6 +811,7 @@ function MemeImportModal({ categories, categorieInitiale, onClose, onEnvoye }: {
           </Suspense>
         </div>
       )}
-    </div>
+    </div>,
+    document.body,
   );
 }

@@ -21,6 +21,7 @@
 #include "api/video_codecs/av1_profile.h"
 #include "api/video_codecs/sdp_video_format.h"
 #include "livekit/objc_video_factory.h"
+#include "livekit/unique_video_formats.h"
 #include "media/base/media_constants.h"
 #include "modules/video_coding/codecs/h264/include/h264.h"
 #include "modules/video_coding/codecs/vp8/include/vp8.h"
@@ -120,7 +121,7 @@ std::vector<webrtc::SdpVideoFormat> VideoDecoderFactory::GetSupportedFormats()
       webrtc::SdpVideoFormat::AV1Profile0(),
       webrtc::LibaomAv1EncoderSupportedScalabilityModes()));
 #endif
-  return formats;
+  return UniqueVideoFormats(std::move(formats));
 }
 
 VideoDecoderFactory::CodecSupport VideoDecoderFactory::QueryCodecSupport(

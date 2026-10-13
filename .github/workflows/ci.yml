@@ -8,13 +8,13 @@ name: CI
 on:
   push:
     branches: [main]
-    # La documentation seule ne relance pas les tests.
+    # Documentation-only changes do not rerun tests.
     paths-ignore: ['**.md', 'docs/**']
   pull_request:
     branches: [main]
     paths-ignore: ['**.md', 'docs/**']
 
-# Un nouveau push annule les tests encore en cours du précédent.
+# A new push cancels the previous run's unfinished tests.
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -25,9 +25,13 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '26'
+
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: '1.3.9'
+          bun-version: '1.4.0'
 
       - name: Install JS dependencies
         run: bun install --frozen-lockfile
@@ -42,6 +46,9 @@ jobs:
       - name: Lint
         run: bun run lint
 
+      - name: Unused code and dependencies
+        run: bun run code:check
+
       - name: Unit tests (vitest)
         run: bun run test
 
@@ -51,7 +58,7 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Install system dependencies
-        # WRY (WebKitGTK) + audio native + fenêtre overlay (winit X11/Wayland).
+        # WRY (WebKitGTK), native audio and X11/Wayland overlay windows.
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -63,10 +70,10 @@ jobs:
             libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
             libxkbcommon-dev libwayland-dev
 
-      - name: Install clang 21 (libc++ hermétique de libwebrtc)
-        # Le webrtc-sys vendored exige clang >= 21 : le libc++ hermétique
-        # embarqué dans libwebrtc.a utilise des builtins récents. Ubuntu 24.04
-        # n'a que clang 18 → dépôt LLVM officiel.
+      - name: Install clang 21 (libwebrtc hermetic libc++)
+        # Vendored webrtc-sys requires clang >= 21 for recent builtins in
+        # libwebrtc.a's hermetic libc++. Ubuntu 24.04 ships clang 18,
+        # so install from the official LLVM repository.
         run: |
           wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
             | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc > /dev/null
@@ -98,11 +105,11 @@ jobs:
           CC: clang-21
           CXX: clang++-21
 
-      - name: Rust unit tests — cœur Matrix (sion-matrix)
-        # Hors `default-members` : sans `-p`, ses tests ne tourneraient pas.
+      - name: Rust unit tests — Matrix core (sion-matrix)
+        # Outside default-members; select it explicitly to run its tests.
         working-directory: src-tauri
         run: cargo test -j4 -p sion-matrix
 
-      - name: Rust unit tests — effets webcam
+      - name: Rust unit tests — camera effects
         working-directory: src-tauri
         run: cargo test -j4 -p sion-camera-effects

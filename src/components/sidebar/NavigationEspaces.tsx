@@ -17,6 +17,7 @@ import { partagerInvitation } from "../../services/partageInvitation";
 import { gestesMenuContextuel, ouvertALInstant, STYLE_SANS_SELECTION } from "../../utils/menuContextuel";
 import { MenuMessage } from "../chat/MenuMessage";
 import "./NavigationEspaces.css";
+import { ImageAvatar } from "./ImageAvatar";
 
 /** Les mêmes espaces sur desktop (rail) et mobile (onglets). */
 export function NavigationEspaces({ rail = false, horizontal = false, mobile = false }: { rail?: boolean; horizontal?: boolean; mobile?: boolean }) {
@@ -137,7 +138,7 @@ export function NavigationEspaces({ rail = false, horizontal = false, mobile = f
       const r = e.currentTarget.getBoundingClientRect();
       setMenu({ espace: espace.id, x: r.right, y: r.top });
     }}>
-    {espace.icon ? <span className="sion-espace-logo"><img src={espace.icon} alt="" draggable={false} /></span> : <span aria-hidden="true">{espace.name.slice(0, 2).toUpperCase()}</span>}
+    {espace.icon ? <span className="sion-espace-logo"><ImageAvatar src={espace.icon} alt="" draggable={false} loading="eager" fallback={<span aria-hidden="true">{espace.name.slice(0, 2).toUpperCase()}</span>} /></span> : <span aria-hidden="true">{espace.name.slice(0, 2).toUpperCase()}</span>}
     {espace.membership === "invite" ? <span className="sion-rail-compteur">!</span> : compteur(unreadEspaces[espace.id] ?? 0)}
   </button>);
   const ajouter = <button className={`${classe} sion-espace-ajouter`} type="button" aria-label={t("spaces.add")} title={t("spaces.add")}

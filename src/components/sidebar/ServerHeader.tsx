@@ -3,6 +3,7 @@ import { useState, useRef, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { ServerIcon, LogoutIcon, SettingsIcon } from "../icons";
 import { UserAvatar } from "./UserAvatar";
+import { ImageAvatar } from "./ImageAvatar";
 import { useAppStore } from "../../stores/useAppStore";
 import { useAuthStore } from "../../stores/useAuthStore";
 import { useAdminStore } from "../../stores/useAdminStore";
@@ -89,7 +90,7 @@ export function ServerHeader({ compact = false }: { compact?: boolean }) {
             color: 'var(--color-on-primary-container)',
           }}
         >
-          {espace?.icon ? <img src={espace.icon} className="sion-espace-avatar" alt="" /> : espace ? espace.name.slice(0, 2).toUpperCase() : "S"}
+          {espace?.icon ? <ImageAvatar src={espace.icon} className="sion-espace-avatar" alt="" loading="eager" fallback={espace.name.slice(0, 2).toUpperCase()} /> : espace ? espace.name.slice(0, 2).toUpperCase() : "S"}
         </button>
       ) : (
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 0 }}>
@@ -106,7 +107,7 @@ export function ServerHeader({ compact = false }: { compact?: boolean }) {
           fontWeight: 600,
           color: 'var(--color-on-primary-container)',
         }}>
-          {espace?.icon ? <img src={espace.icon} className="sion-espace-avatar" alt="" /> : espace ? espace.name.slice(0, 2).toUpperCase() : "S"}
+          {espace?.icon ? <ImageAvatar src={espace.icon} className="sion-espace-avatar" alt="" loading="eager" fallback={espace.name.slice(0, 2).toUpperCase()} /> : espace ? espace.name.slice(0, 2).toUpperCase() : "S"}
         </div>
         <div style={{ minWidth: 0 }}>
           <button type="button" onClick={() => espace && useEspacesStore.getState().ouvrir("gerer")} className="sion-titre" style={{ padding: 0, border: 0, background: "none", cursor: espace ? "pointer" : "default", fontWeight: 600, fontSize: 15, color: 'var(--color-on-surface)', letterSpacing: '0.01em', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>

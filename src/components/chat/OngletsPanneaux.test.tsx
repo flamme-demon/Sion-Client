@@ -2,9 +2,14 @@ import { montage } from "../../test/interface";
 import { beforeEach, expect, it, vi } from "vitest";
 import { OngletsPanneaux } from "./OngletsPanneaux";
 import { useLayoutStore } from "../../stores/useLayoutStore";
+import { useAppStore } from "../../stores/useAppStore";
+import { act } from "react";
 vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 const vue = montage();
-beforeEach(() => useLayoutStore.setState({ panneau: null, panneaux: [] }));
+beforeEach(() => {
+  useLayoutStore.setState({ panneau: null, panneaux: [] });
+  useAppStore.setState({ connectedVoiceChannel: "!vocal", connectingVoiceChannel: null });
+});
 it("un clic ouvre le panneau, un second le ferme et l'état est accessible", async () => {
   await vue.render(<OngletsPanneaux salonVocal />);
   await vue.click('[aria-label="soundboard.title"]');
@@ -27,4 +32,14 @@ it("soundboard et memeboard restent activées ensemble", async () => {
   for (const id of ["soundboard", "memeboard"]) expect(vue.container.querySelector(`[aria-label="${id}.title"]`)?.getAttribute("aria-pressed")).toBe("true");
   await vue.click('[aria-label="soundboard.title"]');
   expect(useLayoutStore.getState().panneaux).toEqual(["memeboard"]);
+});
+
+it("les accès aux boards suivent la connexion réelle, même dans un salon qui propose du vocal", async () => {
+  useAppStore.setState({ connectedVoiceChannel: null, connectingVoiceChannel: "!vocal" });
+  await vue.render(<OngletsPanneaux salonVocal />);
+  for (const id of ["soundboard", "memeboard"]) expect(vue.container.querySelector(`[aria-label="${id}.title"]`)).toBeNull();
+  await act(async () => useAppStore.getState().setConnectedVoice("!vocal"));
+  for (const id of ["soundboard", "memeboard"]) expect(vue.container.querySelector(`[aria-label="${id}.title"]`)).not.toBeNull();
+  await act(async () => useAppStore.getState().disconnectVoice());
+  for (const id of ["soundboard", "memeboard"]) expect(vue.container.querySelector(`[aria-label="${id}.title"]`)).toBeNull();
 });

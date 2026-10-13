@@ -17,7 +17,7 @@ use std::{
     sync::{Arc, Mutex, RwLock},
     time::{Duration, Instant},
 };
-use vision::{Analysis, Face, Request, Worker};
+use vision::{Analysis, Face, PersonSegmenter, Worker, PERSON_SIZE};
 
 #[derive(Clone, Copy, Default, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -291,6 +291,7 @@ impl Matte {
 }
 pub struct Processor {
     control: Arc<Control>,
+    segmenter: Option<PersonSegmenter>,
     worker: Option<Worker>,
     submitted: Instant,
     started: Instant,
@@ -309,6 +310,7 @@ impl Processor {
         };
         Self {
             control,
+            segmenter: None,
             worker: None,
             submitted: Instant::now() - Duration::from_secs(1),
             started: Instant::now(),
@@ -322,6 +324,7 @@ impl Processor {
     pub fn enabled(&mut self) -> bool {
         let enabled = self.control.settings().enabled();
         if !enabled {
+            self.segmenter = None;
             self.worker = None;
             self.matte = None;
             self.face = None;
@@ -354,8 +357,24 @@ impl Processor {
         } else {
             imageops::resize(&input, ow, oh, FilterType::Triangle)
         };
+        let mut mask = None;
+        let mut segmentation_ms = 0.0;
+        let mut segmentation_error = None;
+        if settings.person() {
+            // Détourer cette image avant de la publier. Réutiliser un masque
+            // d'une autre image révèle le fond derrière une main en mouvement.
+            let started = Instant::now();
+            let segmenter = self.segmenter.get_or_insert_with(PersonSegmenter::new);
+            match segmenter.segment(tensor_input(&image, PERSON_SIZE, true)) {
+                Ok(pixels) => mask = Some(Arc::new(pixels)),
+                Err(error) => segmentation_error = Some(format!("Effets webcam : {error}")),
+            }
+            segmentation_ms = started.elapsed().as_secs_f32() * 1000.0;
+        } else {
+            self.segmenter = None;
+        }
         let mut analysis = Analysis::default();
-        if settings.person() || settings.face() {
+        if settings.face() {
             let worker = self.worker.get_or_insert_with(Worker::new);
             analysis = worker
                 .result
@@ -365,10 +384,7 @@ impl Processor {
             let interval =
                 Duration::from_millis((analysis.elapsed_ms * 1.25).max(100.0).min(600.0) as u64);
             if self.submitted.elapsed() >= interval && analysis.error.is_none() {
-                worker.submit(Request {
-                    person: settings.person().then(|| tensor_input(&image, 192, true)),
-                    face: settings.face().then(|| tensor_input(&image, 320, false)),
-                });
+                worker.submit(tensor_input(&image, 320, false));
                 self.submitted = Instant::now();
             }
             if analysis
@@ -402,7 +418,7 @@ impl Processor {
         let ms = self.started.elapsed().as_millis() as u64;
         if settings.person() {
             let crop_key = crop.map(|value| (value * 2048.0).round() as u32);
-            if let Some(mask) = &analysis.mask {
+            if let Some(mask) = &mask {
                 if !self
                     .matte
                     .as_ref()
@@ -430,8 +446,8 @@ impl Processor {
             let color = accent(&settings.accent);
             for y in 0..oh {
                 for x in 0..ow {
-                    // Le même masque sert à plusieurs images : son
-                    // interpolation et le contour sont calculés une fois.
+                    // L'interpolation et le contour sont calculés une fois
+                    // pour cette image, avant le mélange de ses pixels.
                     let [a, edge] = self
                         .matte
                         .as_ref()
@@ -502,11 +518,11 @@ impl Processor {
             .status
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        status.ready = (!settings.person() || analysis.mask.is_some())
-            && (!settings.face() || analysis.face_analyzed);
-        status.error = analysis.error;
-        status.analysis_ms = analysis.elapsed_ms;
-        status.render_ms = start.elapsed().as_secs_f32() * 1000.0;
+        status.ready =
+            (!settings.person() || mask.is_some()) && (!settings.face() || analysis.face_analyzed);
+        status.error = segmentation_error.or(analysis.error);
+        status.analysis_ms = segmentation_ms + analysis.elapsed_ms;
+        status.render_ms = (start.elapsed().as_secs_f32() * 1000.0 - segmentation_ms).max(0.0);
         output
     }
 }
@@ -517,7 +533,7 @@ fn tensor_input(image: &RgbaImage, side: usize, person: bool) -> Vec<f32> {
     for (i, p) in small.pixels().enumerate() {
         for c in 0..3 {
             values[c * side * side + i] = if person {
-                p[c] as f32 / 127.5 - 1.0
+                p[c] as f32 / 255.0
             } else {
                 p[2 - c] as f32
             };
@@ -594,13 +610,17 @@ fn sample_pixel(image: &RgbaImage, x: f32, y: f32) -> [u8; 4] {
         .0
 }
 fn sample_mask(mask: &[f32], x: f32, y: f32) -> f32 {
-    let (x, y) = (x.clamp(0.0, 1.0) * 191.0, y.clamp(0.0, 1.0) * 191.0);
+    let last = PERSON_SIZE - 1;
+    let (x, y) = (
+        x.clamp(0.0, 1.0) * last as f32,
+        y.clamp(0.0, 1.0) * last as f32,
+    );
     let (ix, iy) = (x as usize, y as usize);
     let (a, b) = (x - ix as f32, y - iy as f32);
-    let index = iy * 192 + ix;
-    let right = iy * 192 + (ix + 1).min(191);
-    let down = (iy + 1).min(191) * 192 + ix;
-    let diagonal = (iy + 1).min(191) * 192 + (ix + 1).min(191);
+    let index = iy * PERSON_SIZE + ix;
+    let right = iy * PERSON_SIZE + (ix + 1).min(last);
+    let down = (iy + 1).min(last) * PERSON_SIZE + ix;
+    let diagonal = (iy + 1).min(last) * PERSON_SIZE + (ix + 1).min(last);
     (mask[index] * (1.0 - a) + mask[right] * a) * (1.0 - b)
         + (mask[down] * (1.0 - a) + mask[diagonal] * a) * b
 }

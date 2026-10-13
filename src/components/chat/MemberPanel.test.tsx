@@ -1,11 +1,13 @@
 import { montage } from "../../test/interface";
-import { act } from "react";
+import { act, useState } from "react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { UserEvent } from "matrix-js-sdk";
 import { MemberPanel } from "./MemberPanel";
 import { useAppStore } from "../../stores/useAppStore";
 import { useMatrixStore } from "../../stores/useMatrixStore";
 import { useLiveKitStore } from "../../stores/useLiveKitStore";
+import { useEspacesStore } from "../../stores/useEspacesStore";
+import { RechercheEntetePanneau } from "../layout/RechercheEntetePanneau";
 import type { Channel, MatrixPresence, VoiceChannelUser } from "../../types/matrix";
 
 const serveur = vi.hoisted(() => ({
@@ -45,6 +47,7 @@ beforeEach(() => {
   useAppStore.setState({ activeChannel: "!salon", userContextMenu: null, connectedVoiceChannel: null });
   useMatrixStore.setState({ channels: [], pinnedVersion: 0, connectionStatus: "connected" });
   useLiveKitStore.setState({ connected: false, participants: [] });
+  useEspacesStore.setState({ espaceActif: null, hierarchies: {} });
 });
 afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
 
@@ -59,6 +62,15 @@ const vocal = (id: string, deafened = false, muted = false): VoiceChannelUser =>
 const salonVocal = (id: string, voiceUsers: VoiceChannelUser[]): Channel => ({
   id, name: id, hasVoice: true, voiceUsers, createdAt: 0, lastActivity: 0,
 });
+
+const chercher = async (texte: string) => {
+  const champ = vue.container.querySelector<HTMLInputElement>('input[type="search"]')!;
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(champ, texte);
+    champ.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+};
+const membresVisibles = () => Array.from(vue.container.querySelectorAll(".sion-membre-nom")).map((e) => e.textContent);
 
 it("affiche la présence hors vocal et l'actualise depuis les événements Matrix", async () => {
   await vue.render(<MemberPanel />);
@@ -184,4 +196,81 @@ it("le vocal et les AFK ont un point vert, leur indicateur et le nom de leurs sa
   expect(groupe("voice").querySelector(".sion-membre-onde--parle")).not.toBeNull();
   await act(async () => useLiveKitStore.setState({ participants: useLiveKitStore.getState().participants.map((p) => ({ ...p, isMuted: true })) }));
   expect(groupe("voice").querySelector(".sion-membre-onde--parle")).toBeNull();
+});
+
+it("retrouve un membre hors de la fenêtre visible par son pseudo ou son identifiant et conserve ses actions", async () => {
+  serveur.membres = [
+    ...Array.from({ length: 700 }, (_, i) => ({ userId: `@membre${i}:hs`, displayName: `Membre ${i}`, avatarUrl: null })),
+    { userId: "@narkow:manjaro.org", displayName: "Zoé Narkow", avatarUrl: null, presence: "offline" },
+  ];
+  await vue.render(<MemberPanel />);
+  expect(membresVisibles()).not.toContain("Zoé Narkow");
+  await chercher("  ZOE NARKOW  ");
+  expect(membresVisibles()).toEqual(["Zoé Narkow"]);
+  expect(groupe("offline").firstElementChild?.textContent).toBe("members.groups.offline — 1");
+  await chercher("@NARKOW:MANJARO.ORG");
+  expect(membresVisibles()).toEqual(["Zoé Narkow"]);
+  await act(async () => vue.container.querySelector(".sion-membre")!.dispatchEvent(
+    new MouseEvent("contextmenu", { bubbles: true, clientX: 180, clientY: 120 })));
+  expect(useAppStore.getState().userContextMenu).toEqual({ userId: "@narkow:manjaro.org", userName: "Zoé Narkow", x: 180, y: 120 });
+});
+
+it("annonce une recherche vide et permet de retrouver la liste par le bouton ou Échap", async () => {
+  await vue.render(<div onKeyDown={() => useAppStore.setState({ activeChannel: undefined })}><MemberPanel /></div>);
+  await chercher("introuvable");
+  expect(membresVisibles()).toEqual([]);
+  expect(vue.container.querySelector('[role="status"]')?.textContent).toBe("members.noResults");
+  await vue.click('button[aria-label="members.clearSearch"]');
+  expect(membresVisibles()).toEqual(["Alice", "Bob"]);
+  const champ = vue.container.querySelector<HTMLInputElement>('input[type="search"]')!;
+  expect(document.activeElement).toBe(champ);
+  await chercher("BOB");
+  expect(membresVisibles()).toEqual(["Bob"]);
+  await act(async () => champ.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+  expect(membresVisibles()).toEqual(["Alice", "Bob"]);
+  expect(champ.value).toBe("");
+  expect(useAppStore.getState().activeChannel).toBe("!salon");
+  await act(async () => champ.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+  expect(useAppStore.getState().activeChannel).toBeUndefined();
+});
+
+it("garde le filtre dans un même espace et le réinitialise en changeant de liste de membres", async () => {
+  useEspacesStore.setState({ espaceActif: "!manjaro" });
+  await vue.render(<MemberPanel />);
+  await chercher("alice");
+  await act(async () => useAppStore.setState({ activeChannel: "!autre-salon-manjaro" }));
+  expect(membresVisibles()).toEqual(["Alice"]);
+  await act(async () => useEspacesStore.setState({ espaceActif: "!autre-espace" }));
+  expect(membresVisibles()).toEqual(["Alice", "Bob"]);
+  expect(vue.container.querySelector<HTMLInputElement>('input[type="search"]')?.value).toBe("");
+  await act(async () => useEspacesStore.setState({ espaceActif: "!manjaro" }));
+  expect(membresVisibles()).toEqual(["Alice", "Bob"]);
+});
+
+it("la recherche dans l'en-tête garde son filtre, son clavier et revient dans le corps sur le côté", async () => {
+  function Panneau({ horizontal }: { horizontal: boolean }) {
+    const [entete, setEntete] = useState<HTMLDivElement | null>(null);
+    return <div onKeyDown={() => useAppStore.setState({ activeChannel: undefined })}>
+      <header>{horizontal && <div ref={setEntete} />}</header>
+      <RechercheEntetePanneau.Provider value={horizontal ? entete : null}><MemberPanel /></RechercheEntetePanneau.Provider>
+    </div>;
+  }
+  await vue.render(<Panneau horizontal />);
+  expect(vue.container.querySelectorAll('input[type="search"]')).toHaveLength(1);
+  expect(vue.container.querySelector('header input[type="search"]')).not.toBeNull();
+  expect(vue.container.querySelector('.sion-membres input[type="search"]')).toBeNull();
+  await chercher("bob");
+  expect(membresVisibles()).toEqual(["Bob"]);
+  await act(async () => vue.container.querySelector("input")!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+  expect(useAppStore.getState().activeChannel).toBe("!salon");
+  expect(membresVisibles()).toEqual(["Alice", "Bob"]);
+  await chercher("alice");
+  await vue.render(<Panneau horizontal={false} />);
+  expect(vue.container.querySelectorAll('input[type="search"]')).toHaveLength(1);
+  expect(vue.container.querySelector('header input[type="search"]')).toBeNull();
+  expect(vue.container.querySelector<HTMLInputElement>('.sion-membres input[type="search"]')?.value).toBe("alice");
+  expect(membresVisibles()).toEqual(["Alice"]);
+  await vue.click('button[aria-label="members.clearSearch"]');
+  expect(membresVisibles()).toEqual(["Alice", "Bob"]);
+  expect(document.activeElement).toBe(vue.container.querySelector("input"));
 });

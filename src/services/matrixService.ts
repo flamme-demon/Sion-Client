@@ -1101,9 +1101,9 @@ export async function republishCallMember(): Promise<number> {
   return roomIds.length;
 }
 
-export async function sendTextMessage(roomId: string, body: string) {
+export async function sendTextMessage(roomId: string, body: string, transaction?: string) {
   if (moteurRust()) {
-    return { event_id: await core.envoyerTexte(roomId, body) };
+    return { event_id: await core.envoyerTexte(roomId, body, transaction) };
   }
   if (!matrixClient) throw new Error("Matrix client not initialized");
   const room = matrixClient.getRoom(roomId);
@@ -1217,10 +1217,10 @@ export async function redactMessage(roomId: string, eventId: string) {
   }
 }
 
-export async function sendFileMessage(roomId: string, file: File) {
+export async function sendFileMessage(roomId: string, file: File, legende?: string) {
   if (moteurRust()) {
     let sortant = file;
-    const infos: { largeur?: number; hauteur?: number; dureeMs?: number } = {};
+    const infos: { largeur?: number; hauteur?: number; dureeMs?: number; legende?: string; miniature?: File } = { legende };
     if (file.type.startsWith("video/")) {
       const { prepareVideoForSend } = await import("./videoPrepare");
       const prepare = await prepareVideoForSend(file);
@@ -1230,6 +1230,7 @@ export async function sendFileMessage(roomId: string, file: File) {
         infos.hauteur = prepare.height;
       }
       if (prepare.durationMs > 0) infos.dureeMs = prepare.durationMs;
+      infos.miniature = prepare.thumbnail;
     }
     return { event_id: await core.envoyerFichier(roomId, sortant, infos) };
   }
@@ -1269,7 +1270,8 @@ export async function sendFileMessage(roomId: string, file: File) {
 
   const content: Record<string, unknown> = {
     msgtype,
-    body: outgoing.name,
+    body: legende?.trim() ? legende : outgoing.name,
+    ...(legende?.trim() ? { filename: outgoing.name } : {}),
     url: contentUri,
     info: {
       mimetype: outgoing.type,
@@ -1650,9 +1652,9 @@ export function getRedactPowerLevel(roomId: string): number {
   return pl?.getContent?.().redact ?? 50;
 }
 
-export function getRoomMembers(roomId: string): { userId: string; displayName: string; avatarUrl: string | null; presence?: MatrixPresence }[] {
+export function getRoomMembers(roomId: string): { userId: string; displayName: string; avatarUrl: string | null; presence?: MatrixPresence; powerLevel?: number }[] {
   if (moteurRust()) {
-    return (cacheRust.detailsSalon(roomId)?.membres ?? []).map((m) => ({ userId: m.userId, displayName: m.displayName, avatarUrl: m.avatarUrl, presence: m.presence }));
+    return (cacheRust.detailsSalon(roomId)?.membres ?? []).map((m) => ({ userId: m.userId, displayName: m.displayName, avatarUrl: m.avatarUrl, presence: m.presence, powerLevel: m.powerLevel }));
   }
   if (!matrixClient) return [];
   const room = matrixClient.getRoom(roomId);
@@ -1669,6 +1671,7 @@ export function getRoomMembers(roomId: string): { userId: string; displayName: s
       displayName: m.name || m.userId,
       avatarUrl: m.getAvatarUrl(matrixClient!.getHomeserverUrl(), 64, 64, "crop", false, false) || null,
       presence,
+      powerLevel: m.powerLevel,
     };
   });
 }
@@ -2517,10 +2520,9 @@ export async function markRoomAsRead(roomId: string): Promise<void> {
   }
 }
 
-export async function sendReply(roomId: string, inReplyToEventId: string, body: string): Promise<void> {
+export async function sendReply(roomId: string, inReplyToEventId: string, body: string, transaction?: string): Promise<{ event_id: string }> {
   if (moteurRust()) {
-    await core.repondre(roomId, inReplyToEventId, body);
-    return;
+    return { event_id: await core.repondre(roomId, inReplyToEventId, body, transaction) };
   }
   if (!matrixClient) throw new Error("Matrix client not initialized");
   inReplyToEventId = requireServerEventId(roomId, inReplyToEventId);
@@ -2540,7 +2542,7 @@ export async function sendReply(roomId: string, inReplyToEventId: string, body: 
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  await matrixClient.sendEvent(roomId, "m.room.message" as any, content);
+  return matrixClient.sendEvent(roomId, "m.room.message" as any, content);
 }
 
 /**

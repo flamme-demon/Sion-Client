@@ -50,7 +50,7 @@ fn enregistrer_classe() -> Result<(), String> {
             ..Default::default()
         };
         if unsafe { RegisterClassExW(&classe) } == 0 {
-            Err(windows_core::Error::from_win32().to_string())
+            Err(windows_core::Error::from_thread().to_string())
         } else {
             Ok(())
         }
@@ -111,7 +111,7 @@ impl FenetreWin32 {
                 hauteur as i32,
                 None,
                 None,
-                HINSTANCE(module.0),
+                Some(HINSTANCE(module.0)),
                 None,
             )
         }
@@ -169,7 +169,7 @@ impl FenetreWin32 {
                 None,
                 Some(&self.position),
                 Some(&taille),
-                self.surface.dc,
+                Some(self.surface.dc),
                 Some(&source),
                 COLORREF(0),
                 Some(&melange),

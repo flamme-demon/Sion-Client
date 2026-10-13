@@ -5,10 +5,14 @@ export interface GroupeMessages {
   messages: ChatMessage[];
 }
 
-function imageSeule(message: ChatMessage): boolean {
+function imageSansContexte(message: ChatMessage): boolean {
   return !!message.senderId && !!message.eventId && Number.isFinite(message.ts)
-    && !message.text.trim() && !message.formattedBody && !message.replyTo && !message.poll && !message.edited
+    && !message.replyTo && !message.poll && !message.edited
     && message.attachments?.length === 1 && message.attachments[0].mimeType.startsWith("image/");
+}
+
+function imageSeule(message: ChatMessage): boolean {
+  return imageSansContexte(message) && !message.text.trim() && !message.formattedBody;
 }
 
 function memeJour(a: number, b: number): boolean {
@@ -16,7 +20,8 @@ function memeJour(a: number, b: number): boolean {
 }
 
 /** Regroupement visuel seulement : les événements et leurs références restent
- * intacts. Aucun marqueur propre à Sion n'est nécessaire aux clients tiers. */
+ * intacts. Une image légendée commence un album, suivi d'images sans légende.
+ * Aucun marqueur propre à Sion n'est nécessaire aux clients tiers. */
 export function groupesImages(messages: readonly ChatMessage[], debutNonLus = -1): GroupeMessages[] {
   const groupes: GroupeMessages[] = [];
   for (let i = 0; i < messages.length; i++) {
@@ -29,7 +34,7 @@ export function groupesImages(messages: readonly ChatMessage[], debutNonLus = -1
       && message.ts - precedente.ts <= 60_000 && message.ts - premiere.ts <= 180_000
       && memeJour(premiere.ts, message.ts);
     if (groupe && groupe.messages.length < 10 && i !== debutNonLus && rapprochee
-      && imageSeule(message) && imageSeule(precedente!) && message.senderId === premiere?.senderId) {
+      && imageSeule(message) && imageSansContexte(precedente!) && message.senderId === premiere?.senderId) {
       groupe.messages.push(message);
     } else {
       groupes.push({ debut: i, messages: [message] });

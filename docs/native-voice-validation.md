@@ -132,12 +132,34 @@ Vérifications supplémentaires en appel réel : changer chaque traitement penda
 la parole, essayer les intensités 0/50/100 %, puis mute/unmute, changement de
 micro, partage avec son et reconnexion. Les préférences doivent rester actives.
 Le changement de microphone redémarre l'ADM et republie une piste locale. Sur
-Linux, le flux `recStream` WebRTC est déplacé explicitement vers la source
-PipeWire choisie avant et après cette publication, car l'ADM peut annoncer un
-succès tout en restant attaché à l'ancienne source. Le log `contrôle micro`
+Linux, le flux `recStream` WebRTC est raccordé explicitement à la source
+choisie après cette publication, y compris pour le périphérique par défaut.
+L'ADM et `pactl move-source-output` peuvent annoncer un succès alors que le
+flux reste détaché (`source=UINT32_MAX`) : Sion attend trois confirmations
+consécutives du raccordement. Si le gestionnaire PipeWire ne crée pas le lien,
+Sion raccorde les ports audio de la source choisie à son propre `recStream`,
+identifié par le PID, puis vérifie encore la source effective. Les autres
+clients, les liens existants et les nœuds remplacés ne sont pas modifiés.
+Ces liens disparaissent avec les ports de capture ; un échec partiel annule
+les seuls liens créés par Sion. Une bascule non vérifiée renvoie une erreur et
+tente de rétablir le périphérique précédent, comme le choix gardé dans les réglages.
+La commande de bascule s'exécute hors du thread d'interface et conserve le
+moteur dans son holder pendant l'opération. Le log `contrôle micro`
 confirme ensuite que les trames APM continuent d'arriver. Vérifier que le nouvel
 appareil alimente immédiatement l'indicateur de parole et les autres
 participants, sans devoir quitter le salon.
+
+Régression du 12/10 : webcam C920 → périphérique par défaut HyperX. La
+publication réussissait, mais WirePlumber échouait à activer le lien et la
+capture restait suspendue. Le raccordement direct a rétabli la voix chez
+Narkow. Les tests de `linux_microphone` reproduisent le faux succès de
+PulseAudio, le lien différé, le remplacement du flux pendant la publication,
+l'isolation par PID, les nœuds périmés, les liens existants, les canaux
+incompatibles et l'annulation d'une réparation partielle.
+`python3 build-scripts/test-linux-microphone.py` exécute ces tests et trois
+cycles de raccordement → destruction sur un démon PipeWire isolé avec des
+nœuds audio synthétiques. Le test vérifie que chaque lien est actif puis
+disparaît avec la capture. Aucun périphérique audio réel n'est ouvert.
 Tester l'écho avec haut-parleurs et soundboard : pendant un appel natif, les
 clips sont maintenant mixés avant l'analyse de rendu WebRTC et font donc partie
 de la référence AEC. Vérifier sur chaque plateforme que la sortie choisie est
@@ -251,6 +273,11 @@ Deux régressions du passage à WebKitGTK, corrigées :
   (RGBA→PNG, sans resize) si aucune image encodée n'est exposée ; feature
   `wayland-data-control` activée. `src/utils/clipboardImage.ts` détecte le
   type par signature et construit le `File`.
+  Les images copiées depuis l'explorateur passent par `read_clipboard_files`
+  (`arboard`, URI Linux / CF_HDROP Windows) puis `read_dropped_file` : les
+  noms, formats et sélections multiples sont conservés. Les chemins des
+  fichiers ne sont pas collés comme texte quand le presse-papiers expose
+  une liste d'URI locales ; le collage de texte et de captures reste disponible.
 
 ### Nettoyage des restes de l'ancien moteur
 

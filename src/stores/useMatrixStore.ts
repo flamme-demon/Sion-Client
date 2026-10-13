@@ -18,6 +18,7 @@ import { findAdminRoom } from "../services/adminCommandService";
 import { noteServerTimestamp, serverNow, publishClockSkew } from "../services/serverClock";
 import { plateformeMobile } from "../utils/plateforme";
 import { heureMessage } from "../utils/heure";
+import { confirmerEcho } from "./echosMessages";
 
 export type VerificationStep =
   | "idle"           // No verification in progress
@@ -77,13 +78,62 @@ export interface MatrixState {
   cancelVerification: () => void;
   sendMessage: (channelId: string, text: string) => Promise<void>;
   sendReply: (channelId: string, inReplyToEventId: string, text: string) => Promise<void>;
-  sendFile: (channelId: string, file: File) => Promise<void>;
+  sendFile: (channelId: string, file: File, legende?: string) => Promise<void>;
   editMessage: (channelId: string, eventId: string, newText: string) => Promise<void>;
   deleteMessage: (channelId: string, eventId: string) => Promise<void>;
   setChannels: (channels: Channel[]) => void;
   setConnectionStatus: (status: MatrixState["connectionStatus"]) => void;
   dismissVerification: () => void;
   reset: () => void;
+}
+
+async function envoyerAvecEcho(
+  get: () => MatrixState,
+  set: (miseAJour: (s: MatrixState) => Partial<MatrixState>) => void,
+  salon: string,
+  text: string,
+  envoyer: (transaction: string) => Promise<{ event_id: string }>,
+  cible?: string,
+): Promise<void> {
+  const transaction = `sion-${crypto.randomUUID()}`;
+  const senderId = get().currentUserId;
+  if (!senderId) throw new Error("Matrix client not initialized");
+  const messages = get().messages[salon] ?? [];
+  const precedent = messages.find((m) => m.senderId === senderId);
+  const profil = matrixService.getRoomMemberInfo(salon, senderId);
+  const reponse = cible ? messages.find((m) => m.eventId === cible) : undefined;
+  const ts = Date.now();
+  const echo: ChatMessage = {
+    id: `~${transaction}`, transactionId: transaction, localEcho: true, sending: true,
+    senderId, user: profil.displayName === senderId ? precedent?.user ?? senderId.slice(1).split(":")[0] : profil.displayName,
+    avatarUrl: profil.avatarUrl ?? precedent?.avatarUrl, role: precedent?.role ?? "user",
+    ts, time: heureMessage(ts), text, msgtype: "m.text",
+    ...(cible ? { replyTo: { eventId: cible, senderId: reponse?.senderId, user: reponse?.user, text: reponse?.text, msgtype: reponse?.msgtype, attachmentName: reponse?.attachments?.[0]?.name } } : {}),
+  };
+  set((s) => ({ messages: { ...s.messages, [salon]: [...(s.messages[salon] ?? []), echo] } }));
+  const debut = performance.now();
+  try {
+    const { event_id } = await envoyer(transaction);
+    set((s) => {
+      const avant = s.messages[salon];
+      if (!avant) return s;
+      const apres = confirmerEcho(avant, transaction, event_id);
+      return avant === apres ? s : { messages: { ...s.messages, [salon]: apres } };
+    });
+    const duree = Math.round(performance.now() - debut);
+    void import("@tauri-apps/plugin-log").then(({ info }) => info(
+      `[Sion][envoi] accusé salon=${salon} événement=${event_id} après ${duree} ms`,
+    )).catch(() => {});
+  } catch (err) {
+    // La synchro peut confirmer l'envoi alors que la réponse HTTP échoue.
+    if (get().messages[salon]?.some((m) => !m.localEcho && m.transactionId === transaction && m.senderId === senderId)) return;
+    set((s) => {
+      const avant = s.messages[salon];
+      if (!avant?.some((m) => m.transactionId === transaction && m.localEcho)) return s;
+      return { messages: { ...s.messages, [salon]: avant.filter((m) => m.transactionId !== transaction || !m.localEcho) } };
+    });
+    throw err;
+  }
 }
 
 // Internal references for the active verification flow
@@ -1520,16 +1570,16 @@ export const useMatrixStore = create<MatrixState>((set, get) => ({
               }]).catch(() => {});
 
               onAction((notification) => {
-                const extra = notification.extra as Record<string, string> | undefined;
+                const extra = notification.notification?.extra as Record<string, string> | undefined;
                 if (!extra) return;
-                const actionId = (notification as unknown as Record<string, string>).actionId;
-                if (actionId === "open" || !actionId) {
+                const actionId = notification.actionId;
+                if (actionId === "open" || actionId === "tap" || !actionId) {
                   // Navigate to the room/message
                   useAppStore.getState().setActiveChannel(extra.roomId, false);
                   if (extra.eventId) useAppStore.getState().setScrollToMessageId(extra.eventId);
                 }
                 if (actionId === "reply") {
-                  const inputValue = (notification as unknown as Record<string, string>).inputValue;
+                  const inputValue = notification.inputValue;
                   if (inputValue && extra.roomId) {
                     import("../services/matrixService").then((ms) => {
                       ms.sendReply(extra.roomId, extra.eventId, inputValue).catch(console.error);
@@ -2310,24 +2360,28 @@ export const useMatrixStore = create<MatrixState>((set, get) => ({
   },
 
   sendMessage: async (channelId, text) => {
+    if (moteurRust()) return envoyerAvecEcho(get, set, channelId, text, (transaction) => matrixService.sendTextMessage(channelId, text, transaction));
     try {
       await matrixService.sendTextMessage(channelId, text);
     } catch (err) {
       console.error("[Sion] Failed to send message:", err);
+      throw err;
     }
   },
 
   sendReply: async (channelId, inReplyToEventId, text) => {
+    if (moteurRust()) return envoyerAvecEcho(get, set, channelId, text, (transaction) => matrixService.sendReply(channelId, inReplyToEventId, text, transaction), inReplyToEventId);
     try {
       await matrixService.sendReply(channelId, inReplyToEventId, text);
     } catch (err) {
       console.error("[Sion] Failed to send reply:", err);
+      throw err;
     }
   },
 
-  sendFile: async (channelId, file) => {
+  sendFile: async (channelId, file, legende) => {
     try {
-      await matrixService.sendFileMessage(channelId, file);
+      await matrixService.sendFileMessage(channelId, file, legende);
     } catch (err) {
       console.error("[Sion] Failed to send file:", err);
       // L'erreur remonte : une vidéo qui n'a pas pu être préparée (ffmpeg

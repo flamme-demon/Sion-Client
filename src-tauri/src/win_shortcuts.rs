@@ -142,7 +142,7 @@ fn code_to_vk(code: &str) -> Option<u32> {
         return Some(vk);
     }
     let sc = code_to_scancode(code)?;
-    let vk = unsafe { MapVirtualKeyExW(sc as u32, MAPVK_VSC_TO_VK_EX, GetKeyboardLayout(0)) };
+    let vk = unsafe { MapVirtualKeyExW(sc as u32, MAPVK_VSC_TO_VK_EX, Some(GetKeyboardLayout(0))) };
     if vk == 0 {
         None
     } else {

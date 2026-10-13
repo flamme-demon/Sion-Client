@@ -99,6 +99,11 @@ it("n'écrit aucun état lorsqu'un simple membre essaie de créer un salon", asy
   await expect(creerSalonDansEspace("!A", "Test", false, true)).rejects.toThrow("spaces.permissionDenied");
   expect(mock.creerSalon).not.toHaveBeenCalled();
 });
+it.each([false, true])("passes encryption to the Rust core for the selected space (voice: %s)", async (vocal) => {
+  await creerSalonDansEspace("!A", "Private meeting", vocal, false, true);
+  expect(mock.creerSalon).toHaveBeenCalledWith("Private meeting", vocal, false, true, "!A", false);
+  expect(mock.envoyer).toHaveBeenCalledWith("!A", "m.space.child", "!nouveau", { via: ["sionchat.fr"], suggested: false });
+});
 it("conserve le routage d'un Espace externe au moment de le rejoindre", async () => {
   mock.rejoindre.mockResolvedValue("!Opaque"); mock.hierarchy.mockResolvedValue({ rooms: [] });
   await rejoindreEspace("https://matrix.to/#/!Opaque?via=remote.example");

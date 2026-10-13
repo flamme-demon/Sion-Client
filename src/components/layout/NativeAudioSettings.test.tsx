@@ -87,6 +87,20 @@ it("conserve le choix précédent et affiche l'échec si le moteur refuse", asyn
   expect(container.querySelector('[role="alert"]')).not.toBeNull();
 });
 
+it("attend le raccordement vérifié avant de mémoriser le retour au micro par défaut", async () => {
+  useSettingsStore.setState({ nativeAudioInputDevice: "native-mic" });
+  let confirmed!: () => void;
+  native.switchDevice.mockReturnValue(new Promise<void>((resolve) => { confirmed = resolve; }));
+  await render();
+  await select(0, "");
+  expect(native.switchDevice).toHaveBeenCalledWith("input", "");
+  expect(useSettingsStore.getState().nativeAudioInputDevice).toBe("native-mic");
+  expect(container.querySelector("select")?.disabled).toBe(true);
+  await act(async () => { confirmed(); });
+  expect(useSettingsStore.getState().nativeAudioInputDevice).toBe("");
+  expect(container.querySelector("select")?.disabled).toBe(false);
+});
+
 it("mémorise le choix hors appel sans démarrer de capture", async () => {
   useAppStore.setState({ connectedVoiceChannel: null });
   await render();

@@ -10,7 +10,7 @@ import { useSettingsStore } from "../../stores/useSettingsStore";
 import { useIsMobile } from "../../hooks/useIsMobile";
 import * as matrixService from "../../services/matrixService";
 import { EMOJI_DATA } from "../../utils/emojiData";
-import { readClipboardImageFile } from "../../utils/clipboardImage";
+import { readClipboardFiles } from "../../utils/clipboardImage";
 import { EmojiGridPanel } from "./EmojiGridPanel";
 import { LargeMessageModal } from "./LargeMessageModal";
 import { jEcris, jArrete } from "../../services/frappe";
@@ -44,6 +44,8 @@ export function ChatInput() {
   // Conversion d'une vidéo avant envoi : la progression seule. ffmpeg est
   // livré avec l'application, il n'y a plus d'absence à réparer.
   const [convertPct, setConvertPct] = useState<number | null>(null);
+  const [sending, setSending] = useState(false);
+  const envoiEnCours = useRef(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const mesureRef = useRef<HTMLDivElement>(null);
   const activeChannel = useAppStore((s) => s.activeChannel);
@@ -57,7 +59,6 @@ export function ChatInput() {
   const fileError = useAppStore((s) => s.fileError);
   const kickMessage = useAppStore((s) => s.kickMessage);
   const dismissKick = useAppStore((s) => s.dismissKick);
-  const clearPendingFiles = useAppStore((s) => s.clearPendingFiles);
   const editingMessage = useAppStore((s) => s.editingMessage);
   const clearEditingMessage = useAppStore((s) => s.clearEditingMessage);
   const replyingTo = useAppStore((s) => s.replyingTo);
@@ -211,6 +212,7 @@ export function ChatInput() {
   }, [replyingTo]);
 
   const handleSend = async () => {
+    if (envoiEnCours.current) return;
     if (!inputText.trim() && pendingFiles.length === 0) return;
 
     // Edit mode
@@ -240,7 +242,9 @@ export function ChatInput() {
   // Performs the actual send (pending files + text) and resets the input.
   // `asFile` ships the text as a .txt attachment instead of a chat message —
   // used when the user confirms the oversized-message modal.
-  const performSend = async (asFile: boolean) => {
+  const performSendContent = async (asFile: boolean) => {
+    const trimmed = inputText.trim();
+    const avecLegende = !!trimmed && pendingFiles.length > 0 && !asFile && !replyingTo;
     // Send files first. Une vidéo est ré-encodée par l'expéditeur avant
     // téléversement : on suit la progression et on garde les pièces jointes en
     // attente si ça échoue, pour que l'utilisateur puisse réessayer.
@@ -256,9 +260,13 @@ export function ChatInput() {
       } catch { /* hors Tauri : pas de progression, l'envoi marche quand même */ }
     }
     try {
-      for (const pf of pendingFiles) {
+      for (const [index, pf] of pendingFiles.entries()) {
         if (pf.file.type.startsWith("video/")) setConvertPct(0);
-        await sendFile(activeChannel, pf.file);
+        if (avecLegende && index === 0) await sendFile(activeChannel, pf.file, inputText);
+        else await sendFile(activeChannel, pf.file);
+        // Un texte envoyé après les fichiers peut encore échouer : les
+        // pièces déjà transmises ne doivent pas repartir à la reprise.
+        useAppStore.getState().removePendingFile(pf.id);
         setConvertPct(null);
       }
     } catch (err) {
@@ -268,7 +276,6 @@ export function ChatInput() {
     } finally {
       unlisten?.();
     }
-    const trimmed = inputText.trim();
     if (trimmed) {
       // Add to history
       messageHistory.current = [...messageHistory.current.slice(-49), trimmed];
@@ -278,15 +285,33 @@ export function ChatInput() {
         if (replyingTo) clearReplyingTo();
       } else if (replyingTo) {
         await sendReply(activeChannel, replyingTo.eventId, inputText);
-        clearReplyingTo();
-      } else {
+        if (useAppStore.getState().replyingTo === replyingTo) clearReplyingTo();
+      } else if (!avecLegende) {
         await sendMessage(activeChannel, inputText);
       }
     }
-    clearPendingFiles();
-    setInputText("");
+    if (useAppStore.getState().activeChannel !== activeChannel) return;
+    // Un fichier ajouté pendant l'attente appartient au prochain brouillon.
+    for (const pf of pendingFiles) useAppStore.getState().removePendingFile(pf.id);
+    // Une réponse lente ne doit pas effacer le texte saisi entre-temps.
+    setInputText((courant) => courant === inputText ? "" : courant);
     jArrete();
     setHistoryIndex(-1);
+  };
+
+  const performSend = async (asFile: boolean) => {
+    if (envoiEnCours.current) return;
+    envoiEnCours.current = true;
+    setSending(true);
+    try {
+      await performSendContent(asFile);
+    } catch (err) {
+      // Le brouillon reste présent pour réessayer ; l'écho raté est retiré.
+      useAppStore.getState().setFileError(String(err));
+    } finally {
+      envoiEnCours.current = false;
+      setSending(false);
+    }
   };
 
   // Le miroir CSS reprend une seule ligne quand le brouillon est vidé.
@@ -371,14 +396,20 @@ export function ChatInput() {
         }
       }
     }
-    if (added) return;
-    // WebKitGTK n'expose pas les images du presse-papiers dans `items` :
-    // on lit l'image côté natif (arboard). S'il y a aussi du texte, on le
-    // laisse se coller normalement.
+    if (added) {
+      e.preventDefault();
+      return;
+    }
+    // Les fichiers copiés dans l'explorateur et les captures peuvent être
+    // absents de `items`. Les URI de fichiers ne sont pas du texte à envoyer.
+    const uris = e.clipboardData.getData("text/uri-list");
+    const hasFileUris = uris.split(/\r?\n/).some((uri) => uri.startsWith("file://"));
     const hasText = e.clipboardData.getData("text/plain").length > 0;
-    if (!hasText) e.preventDefault();
-    void readClipboardImageFile().then((file) => {
-      if (file) addPendingFile(file);
+    if (!hasText || hasFileUris) e.preventDefault();
+    void readClipboardFiles().then((files) => {
+      // Une lecture native peut finir après un changement de salon.
+      if (useAppStore.getState().activeChannel !== activeChannel) return;
+      for (const file of files) void addPendingFile(file);
     });
   };
 
@@ -489,7 +520,7 @@ export function ChatInput() {
   const hasContent = inputText.trim().length > 0 || pendingFiles.length > 0;
 
   const boutonEnvoi = <button type="button" className={isMobile ? undefined : "sion-envoyer"} onClick={handleSend}
-    aria-label={t("chat.send")} disabled={!canSend || (!isMobile && !hasContent)}
+    aria-label={t("chat.send")} disabled={sending || !canSend || (!isMobile && !hasContent)}
     style={isMobile ? { border: 'none', cursor: canSend ? 'pointer' : 'not-allowed', padding: 10, display: 'flex', flexShrink: 0, borderRadius: '50%', background: hasContent && canSend ? 'var(--color-primary)' : 'transparent', color: hasContent && canSend ? 'var(--color-on-primary)' : 'var(--color-outline)', opacity: hasContent && canSend ? 1 : 0.4 } : undefined}>
     <SendIcon />
   </button>;

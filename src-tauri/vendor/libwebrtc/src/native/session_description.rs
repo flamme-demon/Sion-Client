@@ -55,7 +55,11 @@ impl SessionDescription {
         sdp: &str,
         sdp_type: SdpType,
     ) -> Result<session_description::SessionDescription, SdpParseError> {
-        let res = sys_jsep::ffi::create_session_description(sdp_type.into(), sdp.to_owned());
+        // Normalize before creating the description so the locally accepted
+        // SDP and the offer sent to LiveKit carry the same corrected hints.
+        let sdp = super::video_sdp::normalize_video_start_bitrate(sdp)
+            .unwrap_or_else(|| sdp.to_owned());
+        let res = sys_jsep::ffi::create_session_description(sdp_type.into(), sdp);
         match res {
             Ok(sys_handle) => Ok(session_description::SessionDescription {
                 handle: SessionDescription { sys_handle },

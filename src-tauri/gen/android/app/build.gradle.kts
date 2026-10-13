@@ -1,4 +1,5 @@
 import java.util.Properties
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
     id("com.android.application")
@@ -48,11 +49,11 @@ val cleSignature: Map<String, String>? = System.getenv("SION_KEYSTORE_FILE")?.le
 }
 
 android {
-    compileSdk = 36
+    compileSdk = 37
     // NDK de build-android.sh et de la CI (release.yml) : sans lui, AGP ne
     // savait pas stripper la bibliothèque native (« Unable to strip ») et
     // la publiait avec ses 51 Mo de symboles.
-    ndkVersion = "27.2.12479018"
+    ndkVersion = "30.0.16248370"
     namespace = "com.sion.client"
 
     signingConfigs {
@@ -115,12 +116,18 @@ android {
             )
         }
     }
-    kotlinOptions {
-        jvmTarget = "1.8"
-    }
     buildFeatures {
         buildConfig = true
+        resValues = true
     }
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_11
+        targetCompatibility = JavaVersion.VERSION_11
+    }
+}
+
+kotlin {
+    compilerOptions { jvmTarget.set(JvmTarget.JVM_11) }
 }
 
 rust {
@@ -148,12 +155,12 @@ androidComponents {
 }
 
 dependencies {
-    implementation("androidx.webkit:webkit:1.14.0")
-    implementation("androidx.appcompat:appcompat:1.7.1")
-    implementation("androidx.activity:activity-ktx:1.10.1")
-    implementation("com.google.android.material:material:1.12.0")
-    implementation("androidx.media:media:1.7.0")
-    implementation("androidx.work:work-runtime-ktx:2.10.0")
+    implementation("androidx.webkit:webkit:1.17.1")
+    implementation("androidx.appcompat:appcompat:1.8.0")
+    implementation("androidx.activity:activity-ktx:1.13.0")
+    implementation("com.google.android.material:material:1.14.0")
+    implementation("androidx.media:media:1.8.0")
+    implementation("androidx.work:work-runtime-ktx:2.12.0")
     // Classes Java de WebRTC (micro, haut-parleur) : tirées de l'archive
     // libwebrtc précompilée par build-scripts/build-android.sh.
     implementation(files("libs/libwebrtc.jar"))

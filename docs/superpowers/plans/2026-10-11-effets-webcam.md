@@ -20,21 +20,24 @@ Aucun modèle ne tourne dans la webview et aucune image n'est envoyée à un
 service d'effets. Sans effet, le chemin I420 direct est conservé.
 
 Avec des effets, le côté le plus long est limité à 640 pixels. Le rendu
-se fait à chaque image ; l'analyse de la silhouette (192 × 192) et du
-visage (320 × 320) tourne sur un thread séparé avec une seule requête
-en attente. Sa cadence s'adapte à son coût, entre 100 et 600 ms. La
-silhouette et le recadrage sont lissés ; un visage perdu masque les
-accessoires. Désactiver les effets ou arrêter la capture libère le thread
-et les modèles.
+et le détourage de la silhouette (256 × 256) se font pour chaque image publiée,
+sur le thread de traitement de la caméra. Le masque est appliqué à l'image
+qui l'a produit, sans mélange avec un masque précédent. La capture conserve
+une seule image récente en attente si le traitement prend plus de temps.
+L'analyse du visage (320 × 320) tourne séparément avec une seule requête en
+attente et une cadence adaptée à son coût, entre 100 et 600 ms. Le recadrage
+est lissé ; un visage perdu masque les accessoires. Désactiver les effets
+ou arrêter la capture libère les threads et les modèles.
 
-Pendant le chargement du détourage, le fond de remplacement couvre toute
-l'image et la publication initiale attend que le traitement soit prêt.
-Une erreur de modèle est signalée par le moteur de caméra. Un fond invalide
-ne remplace pas la configuration qui fonctionnait.
+La première image attend son détourage avant de revenir au moteur de
+publication. Si le détourage échoue, le fond de remplacement couvre toute
+l'image et le traitement signale une erreur. Un fond invalide ne remplace
+pas la configuration qui fonctionnait.
 
-Les modèles OpenCV Zoo PPHumanSeg et YuNet sont embarqués (environ 6 Mo)
+Les modèles MediaPipe Selfie Segmentation (export ONNX Community) et
+OpenCV Zoo YuNet sont embarqués (environ 0,7 Mo)
 et exécutés par Tract. Les poids restent inchangés ; les annotations de
-dimensions de YuNet sont recalculées pour une entrée 320 × 320. Sources,
+dimensions sont recalculées pour une image (320 × 320 pour YuNet). Sources,
 empreintes SHA-256 et licences sont dans
 [`camera-NOTICES.txt`](../../../src-tauri/resources/camera-NOTICES.txt),
 également distribué avec l'application.
@@ -82,7 +85,7 @@ le buffer est recyclé. Le temps de traitement, la cadence et les images
 
 Le côté de 640 pixels est obtenu en réduisant les plans I420 avec libyuv
 avant la conversion RGBA. L'interpolation du masque et son contour sont
-réutilisés tant que l'analyse, le cadrage et les dimensions ne changent pas.
+calculés ensemble, puis réutilisés pour mélanger les pixels de cette image.
 La sortie conserve la même résolution qu'avant cette optimisation.
 
 Sous Linux, les formats, tailles et intervalles sont interrogés avec les
@@ -96,6 +99,24 @@ desktop. La sonde V4L2 trouve le MJPEG 1280 × 720 à 30 im/s sur la webcam
 de développement, sans modifier la capture. Un test 640 × 360 avec flou,
 contour et lumière donne 7,82 ms de rendu médian et 17,12 ms au p90 ; ce
 test utilise une image synthétique et ne mesure pas la réception distante.
+
+## Détourage en mouvement
+
+Le modèle PPHumanSeg a été remplacé par MediaPipe Selfie Segmentation
+(256 × 256, RGB dans [0, 1], export ONNX float32 de la révision indiquée
+dans les notices). Le masque de chaque image est calculé avant son rendu.
+Le délai minimal de 100 ms et le mélange avec 25 % de l'ancien masque sont
+supprimés pour la silhouette. Les accessoires gardent leur analyse du visage
+séparée, afin de ne pas retarder le flou.
+
+Validation locale : 14 tests Rust, dont les deux modèles, la préparation RGB,
+le traitement de la première image et le renouvellement du masque pour deux
+images successives. Sur la même image publique, 20 inférences après 5 passes
+de chauffe donnent 130,7 ms de médiane pour PPHumanSeg et 43,1 ms pour Selfie
+Segmentation. Le traitement complet du flou donne environ 70 ms par image
+pendant cet essai. Ces mesures sur CPU ne sont pas une mesure de cadence en
+appel ; le suivi des mains doit être comparé en direct après redémarrage.
+
 ## Accès aux effets sur la vidéo
 
 Le bouton « Effets » est placé en bas à droite de la vignette locale, de la

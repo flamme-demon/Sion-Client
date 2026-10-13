@@ -1,7 +1,7 @@
 export type UserRole = "admin" | "mod" | "user";
 export type MatrixPresence = "online" | "offline" | "unavailable";
 
-export interface MatrixUser {
+interface MatrixUser {
   id: string;
   name: string;
   role: UserRole;
@@ -14,7 +14,7 @@ export interface VoiceDevice {
   id: string;
   muted: boolean;
   deafened: boolean;
-  /** `sion_platform` : téléphone (android, ios). */
+  /** sion_platform identifies mobile devices (android, ios). */
   mobile: boolean;
 }
 
@@ -26,13 +26,14 @@ export interface VoiceChannelUser extends MatrixUser {
   connectionQuality?: "excellent" | "good" | "poor" | "lost" | "unknown";
   /** Emoji displayed during an active soundboard trigger; undefined when idle. */
   playingSoundEmoji?: string;
-  /** Chacun de ses appareils en appel (un call.member par appareil) : on
-   *  peut y être depuis le PC et le téléphone, micro coupé sur l'un et
-   *  ouvert sur l'autre. */
+  /**
+   * One call.member per device: the same user can join from desktop and phone
+   * with different microphone states.
+   */
   devices?: VoiceDevice[];
-  /** Tous les appareils de l'utilisateur en appel sont des téléphones. */
+  /** All this user's devices in the call are phones. */
   mobileOnly?: boolean;
-  /** Ligne d'un appel en cours (un appareil) : c'est un téléphone. */
+  /** This call entry represents a phone device. */
   mobile?: boolean;
 }
 
@@ -48,12 +49,12 @@ export interface Channel {
   isDM?: boolean;
   dmUserId?: string;
   isSoundboard?: boolean;
-  /** Espace Matrix (m.room.create.type = m.space), masqué du chat. */
+  /** Matrix space (m.room.create.type=m.space), hidden from chat. */
   isSpace?: boolean;
-  /** Relations m.space.child valides : IDs des salons de cet Espace. */
+  /** Valid m.space.child room IDs belonging to this space. */
   spaceChildren?: string[];
   commonRoomIds?: string[];
-  /** Bibliothèque sons/memes désignée par l'Espace. */
+  /** Sound/meme library designated by the space. */
   boardRoomId?: string;
   membership?: "join" | "invite";
 }
@@ -63,12 +64,12 @@ export interface FileAttachment {
   name: string;
   size: number;
   mimeType: string;
-  /** URL HTTP directe (non-chiffré) ou URL HTTP du contenu chiffré (si encryptedFile présent) */
+  /** Direct HTTP media URL; points to encrypted content when encryptedFile is present. */
   url: string;
   thumbnailUrl?: string;
   width?: number;
   height?: number;
-  /** Présent si le fichier est chiffré E2EE — nécessite décryption avant affichage */
+  /** Present for E2EE media; decrypt before displaying. */
   encryptedFile?: {
     url: string;
     key: { alg: string; key_ops: string[]; kty: string; k: string; ext: boolean };
@@ -82,6 +83,11 @@ export interface ChatMessage {
   id: number | string;
   /** Matrix event ID */
   eventId?: string;
+  /** Matrix transaction ID matching local echo to the server response. */
+  transactionId?: string;
+  /** Echo from this app launch, retained until sync returns it. */
+  localEcho?: boolean;
+  sending?: boolean;
   /** Matrix user ID (e.g., @user:server.com) */
   senderId?: string;
   /** Display name for the user */
@@ -119,26 +125,4 @@ export interface PollData {
   ended: boolean;
   /** Optional auto-close deadline (epoch ms). Clients close the poll locally past this. */
   endsTs?: number;
-}
-
-export interface ServerData {
-  name: string;
-  channels: Channel[];
-}
-
-export interface AdminSection {
-  id: string;
-  label: string;
-  items: AdminItem[];
-}
-
-export interface AdminItem {
-  label: string;
-  value: string;
-  color?: string;
-}
-
-export interface AdminAction {
-  label: string;
-  icon: string;
 }

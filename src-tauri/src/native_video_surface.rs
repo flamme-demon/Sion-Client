@@ -3103,14 +3103,14 @@ mod imp {
     use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU64, Ordering};
     use std::sync::{Arc, Mutex, OnceLock};
     use tauri::Emitter;
-    use windows::Win32::Foundation::{BOOL, HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
+    use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
     use windows::Win32::Graphics::Gdi::{
         BeginPaint, EndPaint, InvalidateRect, PatBlt, SetStretchBltMode, StretchDIBits, BITMAPINFO,
         BITMAPINFOHEADER, BI_RGB, BLACKNESS, COLORONCOLOR, DIB_RGB_COLORS, PAINTSTRUCT, SRCCOPY,
     };
     use windows::Win32::Graphics::Gdi::{
         BitBlt, CombineRgn, CreateCompatibleBitmap, CreateCompatibleDC, CreateRectRgn, DeleteDC,
-        DeleteObject, SelectObject, SetWindowRgn, HRGN, RGN_DIFF,
+        DeleteObject, SelectObject, SetWindowRgn, RGN_DIFF,
     };
     use windows::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture};
@@ -3122,7 +3122,7 @@ mod imp {
         WM_LBUTTONDOWN, WM_PAINT, WNDCLASSEXW, WS_CHILD, WS_CLIPSIBLINGS,
         WS_VISIBLE, CS_DBLCLKS, WM_CAPTURECHANGED, WM_LBUTTONDBLCLK, WM_LBUTTONUP, WM_MOUSEMOVE,
     };
-    use windows_core::w;
+    use windows_core::{w, BOOL};
 
     /// Le chemin planaire est propre au renderer EGL de Wayland. Ici la
     /// présentation passe par `StretchDIBits`, qui ne sait peindre que du
@@ -3333,7 +3333,7 @@ mod imp {
         }
         for hwnd in hwnds {
             unsafe {
-                let _ = InvalidateRect(HWND(hwnd as _), None, BOOL(0));
+                let _ = InvalidateRect(Some(HWND(hwnd as _)), None, false);
             }
         }
     }
@@ -3403,13 +3403,13 @@ mod imp {
             ];
             let stylo = CreatePen(PS_SOLID, 1, blanc);
             let brosse = CreateSolidBrush(couleur);
-            let ancien_stylo = SelectObject(hdc, stylo);
-            let ancienne_brosse = SelectObject(hdc, brosse);
+            let ancien_stylo = SelectObject(hdc, stylo.into());
+            let ancienne_brosse = SelectObject(hdc, brosse.into());
             let _ = Polygon(hdc, &points);
             SelectObject(hdc, ancien_stylo);
             SelectObject(hdc, ancienne_brosse);
-            let _ = DeleteObject(stylo);
-            let _ = DeleteObject(brosse);
+            let _ = DeleteObject(stylo.into());
+            let _ = DeleteObject(brosse.into());
 
             if !nom.is_empty() {
                 let texte: Vec<u16> = nom.encode_utf16().collect();
@@ -3424,7 +3424,7 @@ mod imp {
                 };
                 let brosse_fond = CreateSolidBrush(couleur);
                 FillRect(hdc, &fond, brosse_fond);
-                let _ = DeleteObject(brosse_fond);
+                let _ = DeleteObject(brosse_fond.into());
                 SetTextColor(hdc, blanc);
                 let _ = TextOutW(hdc, px + 16, py + 14, &texte);
             }
@@ -3532,7 +3532,7 @@ mod imp {
                 };
                 let atom = unsafe { RegisterClassExW(&class) };
                 if atom == 0 {
-                    Err(windows_core::Error::from_win32().to_string())
+                    Err(windows_core::Error::from_thread().to_string())
                 } else {
                     Ok(())
                 }
@@ -3562,9 +3562,9 @@ mod imp {
                 0,
                 1,
                 1,
-                parent,
+                Some(parent),
                 None,
-                HINSTANCE(module.0),
+                Some(HINSTANCE(module.0)),
                 Some(context_ptr),
             )
         }
@@ -3611,20 +3611,20 @@ mod imp {
         unsafe {
             if trous.is_empty() {
                 // Plus de région : la fenêtre redevient un rectangle plein.
-                let _ = SetWindowRgn(hwnd, HRGN::default(), BOOL(1));
+                let _ = SetWindowRgn(hwnd, None, true);
             } else {
                 // Une région plus grande que toute fenêtre : c'est la
                 // fenêtre elle-même qui la borne.
                 let region = CreateRectRgn(0, 0, 16384, 16384);
                 for &(gauche, haut, droite, bas) in &trous {
                     let trou = CreateRectRgn(gauche, haut, droite, bas);
-                    let _ = CombineRgn(region, region, trou, RGN_DIFF);
-                    let _ = DeleteObject(trou);
+                    let _ = CombineRgn(Some(region), Some(region), Some(trou), RGN_DIFF);
+                    let _ = DeleteObject(trou.into());
                 }
                 // Posée, la région appartient au système ; refusée, elle
                 // reste à nous.
-                if SetWindowRgn(hwnd, region, BOOL(1)) == 0 {
-                    let _ = DeleteObject(region);
+                if SetWindowRgn(hwnd, Some(region), true) == 0 {
+                    let _ = DeleteObject(region.into());
                 }
             }
         }
@@ -3778,7 +3778,7 @@ mod imp {
             let _ = unsafe {
                 SetWindowPos(
                     HWND(window.hwnd as _),
-                    HWND_TOP,
+                    Some(HWND_TOP),
                     x,
                     y,
                     width,
@@ -3911,10 +3911,10 @@ mod imp {
             }
             // Taille changée : on jette l'ancien avant d'en refaire un.
             let _ = DeleteDC(HDC(dc as *mut _));
-            let _ = DeleteObject(HBITMAP(bmp as *mut _));
+            let _ = DeleteObject(HBITMAP(bmp as *mut _).into());
             tampons.remove(&cle);
         }
-        let memoire = CreateCompatibleDC(hdc_ecran);
+        let memoire = CreateCompatibleDC(Some(hdc_ecran));
         if memoire.is_invalid() {
             return (hdc_ecran, None);
         }
@@ -3925,7 +3925,7 @@ mod imp {
         }
         // Le bitmap reste sélectionné dans le DC pour toute sa vie : c'est ce
         // qui permet de ne plus rien allouer aux peintures suivantes.
-        SelectObject(memoire, bitmap);
+        SelectObject(memoire, bitmap.into());
         tampons.insert(
             cle,
             (memoire.0 as isize, bitmap.0 as isize, width, height),
@@ -3943,7 +3943,7 @@ mod imp {
             .remove(&(hwnd.0 as isize))
         {
             let _ = DeleteDC(HDC(dc as *mut _));
-            let _ = DeleteObject(HBITMAP(bmp as *mut _));
+            let _ = DeleteObject(HBITMAP(bmp as *mut _).into());
         }
         rects_video()
             .lock()
@@ -4335,7 +4335,7 @@ mod imp {
             }
         }
         if bitmap.is_some() {
-            let _ = BitBlt(hdc_ecran, 0, 0, width, height, hdc, 0, 0, SRCCOPY);
+            let _ = BitBlt(hdc_ecran, 0, 0, width, height, Some(hdc), 0, 0, SRCCOPY);
         }
         EndPaint(hwnd, &paint);
     }
@@ -4392,7 +4392,7 @@ mod imp {
             .collect::<Vec<_>>();
         for hwnd in hwnds {
             unsafe {
-                let _ = InvalidateRect(HWND(hwnd as _), None, BOOL(0));
+                let _ = InvalidateRect(Some(HWND(hwnd as _)), None, false);
             }
         }
         recycled
@@ -4460,7 +4460,7 @@ mod imp {
                 SetWindowLongPtrW(hwnd, GWL_STYLE, style | WS_CLIPSIBLINGS.0 as isize);
                 let _ = SetWindowPos(
                     hwnd,
-                    HWND(std::ptr::null_mut()),
+                    None,
                     0,
                     0,
                     0,
@@ -4476,7 +4476,7 @@ mod imp {
         }
 
         unsafe {
-            let _ = EnumChildWindows(parent, Some(visiter), LPARAM(0));
+            let _ = EnumChildWindows(Some(parent), Some(visiter), LPARAM(0));
         }
     }
 }

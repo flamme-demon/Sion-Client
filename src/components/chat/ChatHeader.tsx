@@ -316,7 +316,7 @@ export function ChatHeader() {
               <UsersIcon />
             </button>
           )}
-          {channels.some((c) => c.isSoundboard) && (
+          {connectedVoice && (
             <button
               onClick={() => basculerPanneau("soundboard")}
               style={{
@@ -337,7 +337,7 @@ export function ChatHeader() {
               <SoundboardIcon />
             </button>
           )}
-          {channels.some((c) => c.isSoundboard) && (
+          {connectedVoice && (
             <button
               onClick={() => basculerPanneau("memeboard")}
               style={{
@@ -431,8 +431,8 @@ export function ChatHeader() {
                 fontFamily: 'inherit',
                 letterSpacing: '0.02em',
                 transition: 'all 200ms',
-                background: isScreenSharing ? 'var(--color-error-container)' : 'var(--color-primary-container)',
-                color: isScreenSharing ? 'var(--color-error)' : 'var(--color-on-primary-container)',
+                background: isScreenSharing ? 'var(--color-error-container)' : 'transparent',
+                color: isScreenSharing ? 'var(--color-error)' : 'var(--color-on-surface-variant)',
               }}
             >
               <ScreenIcon />

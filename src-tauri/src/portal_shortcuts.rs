@@ -120,14 +120,14 @@ async fn run_session(
     }
 
     let portal = GlobalShortcuts::new().await?;
-    let session = portal.create_session().await?;
+    let session = portal.create_session(Default::default()).await?;
 
     // Subscribe before binding so no early activation is missed.
     let activated = portal.receive_activated().await?;
 
     // The response resolves once the user confirms the compositor's dialog
     // (KDE only shows it for shortcut ids it has never seen before).
-    let bind_request = portal.bind_shortcuts(&session, &shortcuts, None).await?;
+    let bind_request = portal.bind_shortcuts(&session, &shortcuts, None, Default::default()).await?;
     match bind_request.response() {
         Ok(resp) => {
             for sc in resp.shortcuts() {
