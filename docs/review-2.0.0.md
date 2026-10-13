@@ -27,6 +27,16 @@ session migration, encrypted room creation and the approved updater design.
   closing the session prevents heartbeat installation.
 - The pre-push hook's early-exit grep could break its input pipe on a large
   change and incorrectly skip native tests. It now consumes the full file list.
+- Android release lint crashed when analyzing Tauri's applied Kotlin dependency
+  script. The generated dependency calls are applied as Groovy, preserving
+  automatic plugin discovery and all lint checks. Local
+  `:app:lintVitalAnalyzeUniversalRelease` passes with AGP 9.4.1. The failure
+  matches the [upstream K2 script analysis fix](https://android.googlesource.com/platform/tools/base/+/44330ad8b855e38930c70ca44f65e781dd95d1ab).
+- The Linux workflow still tried to install a GStreamer AV1 plugin for the
+  retired desktop web player. Desktop chat and memes already use bundled
+  ffmpeg with libdav1d. Removed that obsolete installation and packaging path;
+  the release gate now encodes an AV1 sample and decodes it with the exact
+  ffmpeg binary extracted from the AppImage.
 
 ## Local validation
 
@@ -46,6 +56,13 @@ session migration, encrypted room creation and the approved updater design.
   their attribution/license notices are present.
 - Package, Cargo and Tauri versions agree on `2.0.0`. Android's final version
   code is greater than the beta version codes.
+- First preflight: Linux and Windows packaging/signing pass. Both updater
+  signatures verify with the public key shipped in the client. The extracted
+  AppImage contains the correct VAD weights; the NSIS installer contains the
+  model and notices at the flattened paths supported by runtime lookup.
+- The AV1 sample decodes successfully with libdav1d from the shipped Linux
+  ffmpeg. The final cloud build is rerun with the Android lint correction and
+  the Linux decoder check before publication.
 
 ## Native ownership and practical limits
 

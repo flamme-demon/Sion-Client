@@ -59,15 +59,6 @@ jobs:
             libpango-1.0-0 libcairo2 libatk-bridge2.0-0 libatk1.0-0 \
             libgtk-3-0t64 libfuse2t64
 
-          # Decodeur AV1 pour le moteur web, installe a part et SANS bloquer :
-          # `apt-get install` echoue en bloc si un seul paquet manque, et le nom
-          # du paquet qui fournit `dav1ddec` varie selon la version d'Ubuntu.
-          # `build-appimage.sh` l'embarque s'il le trouve ; sinon l'AppImage part
-          # sans lui et l'application convertit l'AV1, comme avant.
-          sudo apt-get install -y gstreamer1.0-plugins-rs \
-            || sudo apt-get install -y gstreamer1.0-dav1d \
-            || echo "::warning::greffon dav1d introuvable — l'AV1 sera converti chez l'utilisateur"
-
       # NOTE `libva-dev` ci-dessus : VAAPI couvre Intel et AMD, soit la
       # grande majorité des machines Linux. Sans lui, webrtc-sys compile
       # « without hardware accelerated video codecs » et la demande explicite
@@ -168,6 +159,12 @@ jobs:
           BIN=squashfs-root/usr/bin/sion-client
           test -s squashfs-root/usr/lib/sion-client/resources/silero-vad-v6.2-F32.gguf
           test -s squashfs-root/usr/lib/sion-client/resources/transcription-NOTICES.txt
+          # Desktop chat and memes use bundled ffmpeg. Prove AV1 decoding
+          # on that exact binary, rather than requiring the retired web player.
+          FFMPEG="$PWD/squashfs-root/usr/lib/sion-client/resources/ffmpeg"
+          "$FFMPEG" -v error -f lavfi -i color=c=black:s=64x64:d=0.2:r=10 \
+            -c:v libaom-av1 -cpu-used 8 -y "$RUNNER_TEMP/sion-av1.ivf"
+          "$FFMPEG" -v error -c:v libdav1d -i "$RUNNER_TEMP/sion-av1.ivf" -f null -
           COUNT=$(strings -a "$BIN" | grep -ciE "NvEncoderCuda|nvEncodeAPI|libnvidia-encode|NvDecoder" || true)
           echo "marqueurs NVIDIA dans le binaire : $COUNT (attendu ≥ 5)"
           if [ "$COUNT" -lt 5 ]; then

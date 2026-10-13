@@ -170,4 +170,17 @@ dependencies {
     androidTestImplementation("androidx.test.espresso:espresso-core:3.5.0")
 }
 
-apply(from = "tauri.build.gradle.kts")
+// AGP's K2 lint crashes on applied Kotlin scripts outside its source roots.
+// Tauri generates only dependency calls and a Kotlin configuration alias;
+// applying the same calls as Groovy keeps plugin discovery and lint enabled.
+// https://android.googlesource.com/platform/tools/base/+/44330ad8b855e38930c70ca44f65e781dd95d1ab
+val tauriScript = file("tauri.build.gradle.kts").readText()
+val kotlinAlias = "val implementation = configurations.getByName(\"implementation\")"
+require(tauriScript.contains(kotlinAlias)) { "Tauri's generated dependency script format changed" }
+val tauriGroovyScript = layout.buildDirectory.file("generated/tauri/tauri.build.gradle").get().asFile
+tauriGroovyScript.parentFile.mkdirs()
+val groovyDependencies = tauriScript.replace(kotlinAlias, "")
+if (!tauriGroovyScript.exists() || tauriGroovyScript.readText() != groovyDependencies) {
+    tauriGroovyScript.writeText(groovyDependencies)
+}
+apply(from = tauriGroovyScript)
