@@ -36,10 +36,12 @@ while read -r _local_ref local_oid _remote_ref remote_oid; do
   saw_range=1
 
   files="$(git diff --name-only "$range" 2>/dev/null || true)"
-  if echo "$files" | grep -qE '^src-tauri/.*\.rs$|^src-tauri/Cargo\.(toml|lock)$|^src-tauri/\.cargo/'; then
+  # Read the complete list: grep -q can close the pipe early and make echo
+  # fail under pipefail, incorrectly skipping Rust tests on large changes.
+  if echo "$files" | grep -E '^src-tauri/.*\.rs$|^src-tauri/Cargo\.(toml|lock)$|^src-tauri/\.cargo/' > /dev/null; then
     rust_changed=1
   fi
-  if echo "$files" | grep -qE '\.(ts|tsx)$'; then
+  if echo "$files" | grep -E '\.(ts|tsx)$' > /dev/null; then
     js_changed=1
   fi
 done

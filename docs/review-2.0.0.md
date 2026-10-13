@@ -25,6 +25,8 @@ session migration, encrypted room creation and the approved updater design.
 - A voice lifecycle test counted all framework timers and occasionally failed
   under load. It now waits for an explicit status-read barrier and checks that
   closing the session prevents heartbeat installation.
+- The pre-push hook's early-exit grep could break its input pipe on a large
+  change and incorrectly skip native tests. It now consumes the full file list.
 
 ## Local validation
 
