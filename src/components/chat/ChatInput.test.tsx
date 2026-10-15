@@ -24,13 +24,15 @@ const vue = montage();
 const envoyer = vi.fn().mockResolvedValue(undefined);
 const joindre = vi.fn();
 const envoyerFichier = vi.fn().mockResolvedValue(undefined);
+const editer = vi.fn().mockResolvedValue(undefined);
 beforeEach(() => {
   contexte.mobile = false; contexte.autorise = true; contexte.android = false; envoyer.mockReset().mockResolvedValue(undefined); joindre.mockClear();
   contexte.lirePressePapiers.mockReset().mockResolvedValue([]);
   envoyerFichier.mockClear();
+  editer.mockReset().mockResolvedValue(undefined);
   vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => window.setTimeout(() => cb(0), 0));
   useAppStore.setState({ activeChannel: "!salon", pendingFiles: [], editingMessage: null, replyingTo: null, kickMessage: null, fileError: null, addPendingFile: joindre });
-  useMatrixStore.setState({ channels: [], sendMessage: envoyer, sendFile: envoyerFichier });
+  useMatrixStore.setState({ channels: [], sendMessage: envoyer, sendFile: envoyerFichier, editMessage: editer });
 });
 async function saisir(texte: string) {
   const input = vue.container.querySelector("textarea")!;
@@ -40,6 +42,30 @@ async function saisir(texte: string) {
     input.dispatchEvent(new Event("input", { bubbles: true }));
   });
 }
+it("keeps a caption edit and its draft when the original message cannot be read", async () => {
+  editer.mockRejectedValue(new Error("Message original indéchiffrable"));
+  useAppStore.setState({ editingMessage: { eventId: "$photo", text: "old caption" } });
+  await vue.render(<ChatInput />);
+  await saisir("Quel fumier ce chat !");
+  await vue.click('[aria-label="chat.send"]');
+  expect(editer).toHaveBeenCalledWith("!salon", "$photo", "Quel fumier ce chat !");
+  expect(vue.container.querySelector("textarea")!.value).toBe("Quel fumier ce chat !");
+  expect(useAppStore.getState().editingMessage?.eventId).toBe("$photo");
+  expect(useAppStore.getState().fileError).toBe("Message original indéchiffrable");
+});
+it("does not send duplicate edits while loading the original attachment", async () => {
+  let finish!: () => void;
+  editer.mockImplementation(() => new Promise<void>((done) => { finish = done; }));
+  useAppStore.setState({ editingMessage: { eventId: "$photo", text: "caption" } });
+  await vue.render(<ChatInput />);
+  await vue.click('[aria-label="chat.send"]');
+  await act(async () => {
+    vue.container.querySelector("textarea")!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+  });
+  expect(editer).toHaveBeenCalledOnce();
+  await act(async () => finish());
+  expect(useAppStore.getState().editingMessage).toBeNull();
+});
 it("la saisie précède la rangée d'actions sur deux lignes", async () => {
   await vue.render(<ChatInput />);
   const textarea = vue.container.querySelector("textarea")!;

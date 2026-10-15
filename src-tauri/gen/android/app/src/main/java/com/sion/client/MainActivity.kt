@@ -8,7 +8,9 @@ import android.content.IntentFilter
 import android.os.Build
 import android.os.Bundle
 import android.webkit.WebView
+import android.view.KeyEvent
 import androidx.activity.enableEdgeToEdge
+import androidx.core.content.ContextCompat
 import org.json.JSONObject
 
 class MainActivity : TauriActivity() {
@@ -22,6 +24,7 @@ class MainActivity : TauriActivity() {
   }
 
   private var voiceActionReceiver: BroadcastReceiver? = null
+  private var voiceAudioReceiver: BroadcastReceiver? = null
   private var cachedWebView: WebView? = null
   private var mediaChromeClient: MediaWebChromeClient? = null
   /** Appels à rejouer dans la page dès qu'elle est prête (toucher d'une
@@ -115,11 +118,20 @@ class MainActivity : TauriActivity() {
     }
 
     val filter = IntentFilter("com.sion.client.VOICE_ACTION")
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-      registerReceiver(voiceActionReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
-    } else {
-      registerReceiver(voiceActionReceiver, filter)
+    ContextCompat.registerReceiver(this, voiceActionReceiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
+    voiceAudioReceiver = object : BroadcastReceiver() {
+      override fun onReceive(context: Context?, intent: Intent?) {
+        val state = intent?.getStringExtra("state") ?: return
+        cachedWebView?.evaluateJavascript("window.dispatchEvent(new CustomEvent('sion-voice-audio', {detail: $state}))", null)
+      }
     }
+    val audioFilter = IntentFilter("com.sion.client.VOICE_AUDIO")
+    ContextCompat.registerReceiver(this, voiceAudioReceiver, audioFilter, ContextCompat.RECEIVER_NOT_EXPORTED)
+  }
+
+  override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+    if (VoiceCallService.headsetButton(event)) return true
+    return super.dispatchKeyEvent(event)
   }
 
   // Plus de court-circuit de onPause/onStop pendant un appel : il gardait le
@@ -265,6 +277,8 @@ class MainActivity : TauriActivity() {
   }
 
   override fun onDestroy() {
+    voiceAudioReceiver?.let { unregisterReceiver(it) }
+    voiceAudioReceiver = null
     CameraBridge.pause()
     mediaChromeClient?.onHideCustomView()
     vivante = false

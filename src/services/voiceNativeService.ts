@@ -11,6 +11,7 @@ import { appareilDeIdentite } from "../utils/identiteVocale";
 export type VoiceNativeState = "disconnected" | "connecting" | "connected" | "reconnecting";
 
 export interface VoiceNativeStatus {
+  android_control?: boolean;
   state: VoiceNativeState;
   room_name: string | null;
   muted: boolean;

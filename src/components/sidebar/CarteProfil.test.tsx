@@ -50,3 +50,19 @@ it("en rail hors appel, micro et casque restent accessibles sans raccrocher", as
   expect(vue.container.querySelector('[aria-label="controls.deafen"]')).not.toBeNull();
   expect(vue.container.querySelector('[aria-label="voice.disconnect"]')).toBeNull();
 });
+
+it("keeps Android route selection available in the wide and compact layouts", async () => {
+  Object.assign(window, { __SION__: {
+    voiceAudioState: () => JSON.stringify({ running: true, selected: "auto", active: "1", devices: [{ id: "1", type: "speaker", name: "Phone" }] }),
+    chooseVoiceAudio: vi.fn(() => true), setHeadsetButtonAction: vi.fn(),
+  } });
+  try {
+    useAppStore.setState({ connectedVoiceChannel: "!salon" });
+    for (const compact of [false, true]) {
+      await vue.render(<CarteProfil compact={compact} />);
+      await vue.click('[aria-label="voiceAudio.choose"]');
+      expect(document.querySelector('[role="dialog"][aria-label="voiceAudio.choose"]')).not.toBeNull();
+      await act(async () => window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" })));
+    }
+  } finally { delete (window as unknown as { __SION__?: unknown }).__SION__; }
+});

@@ -10,12 +10,26 @@ export interface UrlMediaInfo {
 }
 
 /** Probe a URL for duration + title without downloading the media stream. */
-export async function probeUrlMedia(url: string): Promise<UrlMediaInfo> {
+async function invokeProbe(command: string, url: string, signal?: AbortSignal): Promise<string> {
   const { invoke } = await import("@tauri-apps/api/core");
-  const raw = await invoke<string>("probe_url_media", {
-    url,
-    ytdlpPath: useSettingsStore.getState().ytdlpPath || undefined,
-  });
+  if (signal?.aborted) throw new DOMException("Analyse annulée", "AbortError");
+  const requestId = crypto.randomUUID();
+  const cancel = () => { void invoke("cancel_ytdlp_probe", { requestId }).catch(() => {}); };
+  signal?.addEventListener("abort", cancel, { once: true });
+  try {
+    const raw = await invoke<string>(command, {
+      url, requestId,
+      ytdlpPath: useSettingsStore.getState().ytdlpPath || undefined,
+    });
+    if (signal?.aborted) throw new DOMException("Analyse annulée", "AbortError");
+    return raw;
+  } finally {
+    signal?.removeEventListener("abort", cancel);
+  }
+}
+
+export async function probeUrlMedia(url: string, signal?: AbortSignal): Promise<UrlMediaInfo> {
+  const raw = await invokeProbe("probe_url_media", url, signal);
   const j = JSON.parse(raw);
   return { duration: Number(j.duration) || 0, title: String(j.title || "") };
 }
@@ -70,12 +84,8 @@ export interface UrlFormatsInfo {
 }
 
 /** Probe a video URL for duration, title and available resolutions (no download). */
-export async function probeUrlFormats(url: string): Promise<UrlFormatsInfo> {
-  const { invoke } = await import("@tauri-apps/api/core");
-  const raw = await invoke<string>("probe_url_formats", {
-    url,
-    ytdlpPath: useSettingsStore.getState().ytdlpPath || undefined,
-  });
+export async function probeUrlFormats(url: string, signal?: AbortSignal): Promise<UrlFormatsInfo> {
+  const raw = await invokeProbe("probe_url_formats", url, signal);
   const j = JSON.parse(raw);
   return {
     duration: Number(j.duration) || 0,

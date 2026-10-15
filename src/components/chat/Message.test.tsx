@@ -1,7 +1,7 @@
 import { montage } from "../../test/interface";
 import { act } from "react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { Message } from "./Message";
+import { GalerieImagesProvider, Message } from "./Message";
 import { useMatrixStore } from "../../stores/useMatrixStore";
 import { useAppStore } from "../../stores/useAppStore";
 import type { ChatMessage } from "../../types/matrix";
@@ -40,8 +40,9 @@ beforeEach(() => {
   serveur.redact = 50;
   serveur.natif = true;
   serveur.epingles = [];
+  serveur.supprimer.mockReset().mockResolvedValue(undefined);
   useMatrixStore.setState({ currentUserId: "@moi:sion.test", deleteMessage: serveur.supprimer, pinnedVersion: 0 });
-  useAppStore.setState({ activeChannel: "!salon", replyingTo: null, editingMessage: null });
+  useAppStore.setState({ activeChannel: "!salon", replyingTo: null, editingMessage: null, fileError: null });
 });
 afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
 
@@ -229,6 +230,29 @@ it("un modérateur peut désépingler et supprimer un message tiers", async () =
   expect(serveur.supprimer).toHaveBeenCalledWith("!salon", "$message");
 });
 
+it("prevents a second deletion while the first confirmation is pending", async () => {
+  let finish!: () => void;
+  serveur.supprimer.mockReturnValue(new Promise<void>((resolve) => { finish = resolve; }));
+  await rendre(true); await ouvrir(); await choisir("chat.deleteMessage");
+  await choisir("chat.deleteMessageConfirm");
+  expect(bulle().getAttribute("aria-busy")).toBe("true");
+  await ouvrir();
+  expect(libelles()).not.toContain("chat.deleteMessage");
+  expect(serveur.supprimer).toHaveBeenCalledOnce();
+  await act(async () => finish());
+  expect(bulle().getAttribute("aria-busy")).toBeNull();
+});
+
+it("shows a failed deletion and lets the user retry", async () => {
+  serveur.supprimer.mockRejectedValueOnce(Error("Server unavailable"));
+  await rendre(true); await ouvrir(); await choisir("chat.deleteMessage");
+  await choisir("chat.deleteMessageConfirm");
+  expect(useAppStore.getState().fileError).toBe("Server unavailable");
+  expect(bulle().getAttribute("aria-busy")).toBeNull();
+  await ouvrir(); await choisir("chat.deleteMessage"); await choisir("chat.deleteMessageConfirm");
+  expect(serveur.supprimer).toHaveBeenCalledTimes(2);
+});
+
 it("le droit d'épingler ne donne pas celui de supprimer quand le seuil redact est supérieur", async () => {
   serveur.pouvoir = 50; serveur.redact = 75;
   await rendre(); await ouvrir();
@@ -276,6 +300,52 @@ it("un appui long ouvre les actions sur téléphone", async () => {
 const image = (id: string): ChatMessage => ({
   ...message, id, eventId: id, text: "", time: "12:03",
   attachments: [{ id, name: `${id}.png`, mimeType: "image/png", size: 12, url: `https://media.invalid/${id}` }],
+});
+
+it.each(["", "Regarde ce logo"])("la visionneuse affiche le fichier et prépare sa réponse avec sa légende (%s)", async (texte) => {
+  imagesVisibles();
+  const photo = { ...image("$photo"), text: texte };
+  photo.attachments![0].name = "Capture d’écran — logo final.png";
+  await vue.render(<Message message={photo} showHeader={false} isFirst />);
+  await vue.click('[role="button"]');
+  const visionneuse = document.querySelector('.sion-image-lightbox')!;
+  expect(visionneuse.querySelector('.sion-image-lightbox-nom')?.textContent).toBe("Capture d’écran — logo final.png");
+  expect(visionneuse.querySelector('.sion-image-lightbox-nom')?.getAttribute("title")).toBe("Capture d’écran — logo final.png");
+  expect(visionneuse.querySelector('[aria-label="chat.close"]')).not.toBeNull();
+  if (!texte) await act(async () => visionneuse.querySelector<HTMLImageElement>('img')!.click());
+  await act(async () => visionneuse.querySelector<HTMLButtonElement>('.sion-image-lightbox-repondre')!.click());
+  expect(document.querySelector('.sion-image-lightbox')).toBeNull();
+  expect(useAppStore.getState().replyingTo).toEqual({ eventId: "$photo", senderId: "@alice:sion.test", user: "Alice", text: texte || "Capture d’écran — logo final.png" });
+});
+
+it.each(["bouton", "clavier"])("la galerie actualise le fichier et répond à l'image affichée après navigation (%s)", async (navigation) => {
+  imagesVisibles();
+  const photos = [image("$premiere"), { ...image("$seconde"), user: "Bob", senderId: "@bob:sion.test" }];
+  await vue.render(<GalerieImagesProvider count={2}>{photos.map((photo, index) => <div data-photo={photo.id} key={photo.id}>
+    <Message message={photo} showHeader={false} isFirst={index === 0} enMosaique indexGalerie={index} />
+  </div>)}</GalerieImagesProvider>);
+  await vue.click('[data-photo="$premiere"] [role="button"]');
+  expect(document.querySelector('.sion-image-lightbox-nom')?.textContent).toBe("$premiere.png");
+  if (navigation === "bouton") await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="chat.nextImage"]')!.click());
+  else await act(async () => window.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", cancelable: true })));
+  expect(document.querySelector('.sion-image-lightbox-nom')?.textContent).toBe("$seconde.png");
+  expect(document.querySelector('.sion-image-lightbox-compteur')?.textContent).toBe("2 / 2");
+  await act(async () => document.querySelector<HTMLButtonElement>('.sion-image-lightbox-repondre')!.click());
+  expect(document.querySelector('.sion-image-lightbox')).toBeNull();
+  expect(useAppStore.getState().replyingTo).toEqual({ eventId: "$seconde", senderId: "@bob:sion.test", user: "Bob", text: "$seconde.png" });
+});
+
+it.each(["salon", "compte"])("une visionneuse ancienne ne prépare pas de réponse après changement de %s", async (changement) => {
+  imagesVisibles();
+  await vue.render(<Message message={image("$photo")} showHeader={false} isFirst />);
+  await vue.click('[role="button"]');
+  await act(async () => {
+    if (changement === "salon") useAppStore.setState({ activeChannel: "!autre" });
+    else useMatrixStore.setState({ currentUserId: "@autre:sion.test" });
+  });
+  await act(async () => document.querySelector<HTMLButtonElement>('.sion-image-lightbox-repondre')!.click());
+  expect(document.querySelector('.sion-image-lightbox')).toBeNull();
+  expect(useAppStore.getState().replyingTo).toBeNull();
 });
 
 it("affiche la légende après l’image dans une seule bulle", async () => {

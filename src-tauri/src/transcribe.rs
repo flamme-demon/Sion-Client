@@ -29,7 +29,7 @@
 
 use std::net::TcpListener;
 use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
-use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, SyncSender, TrySendError};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, TrySendError};
 use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -64,10 +64,21 @@ static NATIVE_MIC_ENABLED: AtomicBool = AtomicBool::new(false);
 static NATIVE_INGEST_STOP: Mutex<Option<std::sync::Arc<AtomicBool>>> = Mutex::new(None);
 static NATIVE_INGEST_THREAD: Mutex<Option<thread::JoinHandle<()>>> = Mutex::new(None);
 static ENGINE_CANCEL: Mutex<Option<CancelToken>> = Mutex::new(None);
+static ENGINE_THREAD: Mutex<Option<thread::JoinHandle<()>>> = Mutex::new(None);
+/// Serialize the full start/stop lifecycle outside audio callbacks.
+static ENGINE_LIFECYCLE: Mutex<()> = Mutex::new(());
+static NATIVE_MODE: AtomicBool = AtomicBool::new(false);
 /// Jobs (closed speech segments) from the segmenter to the whisper worker.
 static SEG_TX: Mutex<Option<SyncSender<SegJob>>> = Mutex::new(None);
 /// Outgoing JSON lines, one sender per connected WS client (broadcast).
-static OUT_SENDERS: Mutex<Vec<Sender<String>>> = Mutex::new(Vec::new());
+struct OutputClients {
+    status: Option<String>,
+    senders: Vec<SyncSender<String>>,
+}
+static OUTPUT: Mutex<OutputClients> = Mutex::new(OutputClients {
+    status: None,
+    senders: Vec::new(),
+});
 
 struct SegJob {
     samples: Vec<f32>,
@@ -83,8 +94,30 @@ fn now_ms() -> u64 {
 }
 
 fn broadcast_json(line: &str) {
-    let mut senders = OUT_SENDERS.lock().unwrap();
-    senders.retain(|tx| tx.send(line.to_string()).is_ok());
+    OUTPUT
+        .lock()
+        .unwrap()
+        .senders
+        .retain(|tx| tx.try_send(line.to_string()).is_ok());
+}
+
+fn broadcast_status(line: &str) {
+    let mut output = OUTPUT.lock().unwrap();
+    output.status = Some(line.to_string());
+    output
+        .senders
+        .retain(|tx| tx.try_send(line.to_string()).is_ok());
+}
+
+fn subscribe_output() -> Receiver<String> {
+    let (tx, rx) = std::sync::mpsc::sync_channel(32);
+    let mut output = OUTPUT.lock().unwrap();
+    // The model may be ready before the frontend opens its WebSocket.
+    if let Some(status) = output.status.as_ref() {
+        let _ = tx.try_send(status.clone());
+    }
+    output.senders.push(tx);
+    rx
 }
 
 // ---------------------------------------------------------------------------
@@ -94,6 +127,8 @@ fn broadcast_json(line: &str) {
 // ---------------------------------------------------------------------------
 
 struct Segmenter {
+    /// Keep this segmenter attached to its own worker across engine restarts.
+    tx: Option<SyncSender<SegJob>>,
     vad: vad::SpeechDetector,
     /// Samples not yet forming a full VAD frame.
     pending: Vec<f32>,
@@ -111,11 +146,16 @@ struct Segmenter {
 
 impl Segmenter {
     fn new() -> Self {
+        Self::with_sender(SEG_TX.lock().unwrap().clone())
+    }
+
+    fn with_sender(tx: Option<SyncSender<SegJob>>) -> Self {
         let vad_path = VAD_MODEL_PATH
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clone();
         Self {
+            tx,
             vad: vad::SpeechDetector::new(vad_path.as_deref()),
             pending: Vec::with_capacity(VAD_FRAME * 4),
             pre_roll: Vec::with_capacity(PRE_ROLL_MS * SAMPLE_RATE / 1000),
@@ -196,9 +236,9 @@ impl Segmenter {
             t0_ms: self.t0_ms,
             t1_ms: t1,
         };
-        if let Some(tx) = SEG_TX.lock().unwrap().as_ref() {
+        if let Some(tx) = self.tx.as_ref() {
             // Bounded queue: if whisper falls behind (undersized machine),
-            // drop the oldest pressure by dropping THIS segment rather than
+            // drop THIS segment rather than
             // ballooning memory — the transcript loses a sentence instead of
             // the app dying. try_send keeps the audio thread non-blocking.
             match tx.try_send(job) {
@@ -272,7 +312,7 @@ fn asr_worker(model_path: String, lang: String, rx: Receiver<SegJob>, cancel: Ca
                 return;
             }
             log::error!("[Sion][transcribe] model load failed: {e}");
-            broadcast_json(&format!(
+            broadcast_status(&format!(
                 "{{\"type\":\"error\",\"message\":{}}}",
                 json_escape(&format!("model load failed: {e}"))
             ));
@@ -293,6 +333,10 @@ fn asr_worker(model_path: String, lang: String, rx: Receiver<SegJob>, cancel: Ca
         Err(e) => {
             log::error!("[Sion][transcribe] session init failed: {e}");
             if !cancel.is_cancelled() {
+                broadcast_status(&format!(
+                    "{{\"type\":\"error\",\"message\":{}}}",
+                    json_escape(&format!("session init failed: {e}"))
+                ));
                 ENGINE_RUNNING.store(false, Ordering::Relaxed);
             }
             return;
@@ -324,7 +368,7 @@ fn asr_worker(model_path: String, lang: String, rx: Receiver<SegJob>, cancel: Ca
         }));
     }
     log::info!("[Sion][transcribe] model ready ({model_path}), lang={lang}, threads={threads}, whisper={is_whisper}");
-    broadcast_json("{\"type\":\"ready\"}");
+    broadcast_status("{\"type\":\"ready\"}");
 
     loop {
         let job = match rx.recv_timeout(Duration::from_millis(300)) {
@@ -394,42 +438,58 @@ fn ensure_ws_server() {
     thread::spawn(move || {
         for stream in listener.incoming().flatten() {
             let _ = stream.set_nodelay(true);
+            let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+            let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
             let Ok(mut ws) = tungstenite::accept(stream) else {
                 continue;
             };
-            let (out_tx, out_rx) = std::sync::mpsc::channel::<String>();
-            OUT_SENDERS.lock().unwrap().push(out_tx);
+            let (out_rx, mut input_tx) = {
+                let _lifecycle = ENGINE_LIFECYCLE.lock().unwrap_or_else(|e| e.into_inner());
+                (subscribe_output(), SEG_TX.lock().unwrap().clone())
+            };
             log::info!("[Sion][transcribe] WS client connected");
 
             thread::spawn(move || {
                 let _ = ws
                     .get_ref()
                     .set_read_timeout(Some(Duration::from_millis(20)));
-                let mut segmenter = Segmenter::new();
+                // A meeting output client does not need a second VAD.
+                let mut segmenter: Option<Segmenter> = None;
                 loop {
                     // Push whisper results queued for this client.
-                    while let Ok(line) = out_rx.try_recv() {
-                        if ws.send(Message::Text(line.into())).is_err() {
-                            return;
+                    loop {
+                        match out_rx.try_recv() {
+                            Ok(line) => {
+                                if ws.send(Message::Text(line.into())).is_err() {
+                                    return;
+                                }
+                            }
+                            Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                            Err(std::sync::mpsc::TryRecvError::Disconnected) => return,
                         }
                     }
                     match ws.read() {
                         Ok(Message::Binary(data)) => {
-                            if !ENGINE_RUNNING.load(Ordering::Relaxed) {
+                            if !ENGINE_RUNNING.load(Ordering::Relaxed)
+                                || NATIVE_MODE.load(Ordering::Acquire)
+                            {
                                 continue;
                             }
-                            // f32le mono 16 kHz PCM from the AudioWorklet.
+                            // Mono 16 kHz f32le from a file, never from another microphone.
                             let samples: Vec<f32> = data
                                 .chunks_exact(4)
                                 .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
                                 .collect();
-                            segmenter.feed(&samples);
+                            segmenter
+                                .get_or_insert_with(|| Segmenter::with_sender(input_tx.take()))
+                                .feed(&samples);
                         }
                         Ok(Message::Text(t)) => {
-                            // Control channel. `flush` = mic just muted;
-                            // close the open segment so the tail is not lost.
+                            // End of file: retain the final phrase.
                             if t.as_str().contains("flush") {
-                                segmenter.close_segment();
+                                if let Some(segmenter) = segmenter.as_mut() {
+                                    segmenter.close_segment();
+                                }
                             }
                         }
                         Ok(Message::Ping(data)) => {
@@ -457,13 +517,18 @@ fn ensure_ws_server() {
 /// partent sur le WS (sortie `ready`/`segment`). `mic_enabled` reflète l'état
 /// au démarrage (armement muet = tap fermé jusqu'au prochain unmute).
 #[tauri::command]
-pub fn transcribe_start_native(
+pub async fn transcribe_start_native(
     app: tauri::AppHandle<crate::TauriRuntime>,
     model_path: String,
     lang: String,
     mic_enabled: bool,
 ) -> Result<u16, String> {
-    start_native(model_path, lang, mic_enabled, bundled_vad_path(&app))
+    let vad_path = bundled_vad_path(&app);
+    tauri::async_runtime::spawn_blocking(move || {
+        start_native(model_path, lang, mic_enabled, vad_path)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 fn start_native(
@@ -472,18 +537,26 @@ fn start_native(
     mic_enabled: bool,
     vad_path: Option<std::path::PathBuf>,
 ) -> Result<u16, String> {
+    let _lifecycle = ENGINE_LIFECYCLE.lock().unwrap_or_else(|e| e.into_inner());
     *VAD_MODEL_PATH.lock().unwrap_or_else(|e| e.into_inner()) = vad_path;
-    let port = start_engine(model_path, lang)?;
+    let port = start_engine_locked(model_path, lang)?;
+    NATIVE_MODE.store(true, Ordering::Release);
     let rx = sion_native_audio::transcription_tap::subscribe();
     sion_native_audio::transcription_tap::enable();
     sion_native_audio::transcription_tap::set_mic_enabled(mic_enabled);
     NATIVE_MIC_ENABLED.store(mic_enabled, Ordering::Release);
     let stop = std::sync::Arc::new(AtomicBool::new(false));
     *NATIVE_INGEST_STOP.lock().unwrap_or_else(|e| e.into_inner()) = Some(stop.clone());
-    let handle = thread::Builder::new()
+    let handle = match thread::Builder::new()
         .name("sion-transcribe-native".into())
         .spawn(move || native_ingest_worker(rx, stop))
-        .map_err(|e| format!("thread transcription: {e}"))?;
+    {
+        Ok(handle) => handle,
+        Err(e) => {
+            stop_engine_locked();
+            return Err(format!("thread transcription: {e}"));
+        }
+    };
     *NATIVE_INGEST_THREAD
         .lock()
         .unwrap_or_else(|e| e.into_inner()) = Some(handle);
@@ -571,14 +644,20 @@ fn bundled_vad_path(app: &tauri::AppHandle<crate::TauriRuntime>) -> Option<std::
 /// loaded) and returns the WS port to stream audio to. Restarting with a
 /// different model/lang stops the previous worker first.
 #[tauri::command]
-pub fn transcribe_start(model_path: String, lang: String) -> Result<u16, String> {
-    start_engine(model_path, lang)
+pub async fn transcribe_start(model_path: String, lang: String) -> Result<u16, String> {
+    tauri::async_runtime::spawn_blocking(move || start_engine(model_path, lang))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 fn start_engine(model_path: String, lang: String) -> Result<u16, String> {
+    let _lifecycle = ENGINE_LIFECYCLE.lock().unwrap_or_else(|e| e.into_inner());
+    start_engine_locked(model_path, lang)
+}
+
+fn start_engine_locked(model_path: String, lang: String) -> Result<u16, String> {
     // Un seul moteur à la fois : le mode natif et le mode fichier (transcribeRef)
     // partagent `SEG_TX`.
-    stop_native_ingest();
     if !std::path::Path::new(&model_path).exists() {
         return Err(format!("modèle introuvable: {model_path}"));
     }
@@ -588,16 +667,8 @@ fn start_engine(model_path: String, lang: String) -> Result<u16, String> {
         return Err("serveur WS indisponible".into());
     }
 
-    // Stop a previous worker (drops its SEG_TX → recv disconnects).
-    ENGINE_RUNNING.store(false, Ordering::Relaxed);
-    if let Some(cancel) = ENGINE_CANCEL
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .take()
-    {
-        cancel.cancel();
-    }
-    *SEG_TX.lock().unwrap() = None;
+    // Cancel and join the previous worker before loading another model.
+    stop_engine_locked();
 
     // Bounded to a handful of pending segments (~1 min of speech max) —
     // see the try_send comment in `close_segment`.
@@ -606,14 +677,35 @@ fn start_engine(model_path: String, lang: String) -> Result<u16, String> {
     ENGINE_RUNNING.store(true, Ordering::Relaxed);
     let cancel = CancelToken::new();
     *ENGINE_CANCEL.lock().unwrap_or_else(|e| e.into_inner()) = Some(cancel.clone());
-    thread::spawn(move || asr_worker(model_path, lang, rx, cancel));
+    let handle = match thread::Builder::new()
+        .name("sion-transcribe-asr".into())
+        .spawn(move || asr_worker(model_path, lang, rx, cancel))
+    {
+        Ok(handle) => handle,
+        Err(e) => {
+            stop_engine_locked();
+            return Err(format!("thread ASR: {e}"));
+        }
+    };
+    *ENGINE_THREAD.lock().unwrap_or_else(|e| e.into_inner()) = Some(handle);
     Ok(port)
 }
 
 /// Stop the engine and unload the model. The WS server stays up (cheap) so a
 /// later start reuses the same port.
 #[tauri::command]
-pub fn transcribe_stop() {
+pub async fn transcribe_stop() -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(shutdown)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+pub fn shutdown() {
+    let _lifecycle = ENGINE_LIFECYCLE.lock().unwrap_or_else(|e| e.into_inner());
+    stop_engine_locked();
+}
+
+fn stop_engine_locked() {
     stop_native_ingest();
     ENGINE_RUNNING.store(false, Ordering::Relaxed);
     if let Some(cancel) = ENGINE_CANCEL
@@ -624,12 +716,100 @@ pub fn transcribe_stop() {
         cancel.cancel();
     }
     *SEG_TX.lock().unwrap() = None;
+    if let Some(handle) = ENGINE_THREAD
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .take()
+    {
+        let _ = handle.join();
+    }
+    NATIVE_MODE.store(false, Ordering::Release);
+    // Open WebSockets belong to the engine that just stopped.
+    let mut output = OUTPUT.lock().unwrap();
+    output.status = None;
+    output.senders.clear();
     log::info!("[Sion][transcribe] stop requested");
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stop_joins_ingest_and_asr_and_releases_their_owners_repeatedly() {
+        let _lifecycle = ENGINE_LIFECYCLE.lock().unwrap();
+        stop_engine_locked();
+        *VAD_MODEL_PATH.lock().unwrap() = None;
+        for _ in 0..16 {
+            let (tx, rx) = std::sync::mpsc::sync_channel::<SegJob>(6);
+            *SEG_TX.lock().unwrap() = Some(tx);
+            let cancel = CancelToken::new();
+            *ENGINE_CANCEL.lock().unwrap() = Some(cancel.clone());
+            ENGINE_RUNNING.store(true, Ordering::Release);
+            let owner = std::sync::Arc::new(());
+            let weak = std::sync::Arc::downgrade(&owner);
+            *ENGINE_THREAD.lock().unwrap() = Some(thread::spawn(move || {
+                let _owner = owner;
+                while !cancel.is_cancelled() {
+                    if rx.recv_timeout(Duration::from_millis(5)).is_err() {
+                        continue;
+                    }
+                }
+            }));
+            let rx = sion_native_audio::transcription_tap::subscribe();
+            sion_native_audio::transcription_tap::enable();
+            let stop = std::sync::Arc::new(AtomicBool::new(false));
+            let weak_stop = std::sync::Arc::downgrade(&stop);
+            *NATIVE_INGEST_STOP.lock().unwrap() = Some(stop.clone());
+            *NATIVE_INGEST_THREAD.lock().unwrap() =
+                Some(thread::spawn(move || native_ingest_worker(rx, stop)));
+            stop_engine_locked();
+            assert!(
+                weak.upgrade().is_none(),
+                "le worker ASR doit être détruit avant le retour"
+            );
+            assert!(
+                weak_stop.upgrade().is_none(),
+                "le worker micro doit être détruit avant le retour"
+            );
+            assert!(ENGINE_THREAD.lock().unwrap().is_none());
+            assert!(NATIVE_INGEST_THREAD.lock().unwrap().is_none());
+            assert!(!ENGINE_RUNNING.load(Ordering::Acquire));
+        }
+    }
+
+    #[test]
+    fn late_listener_receives_ready_and_a_stalled_listener_is_bounded() {
+        let _lifecycle = ENGINE_LIFECYCLE.lock().unwrap();
+        stop_engine_locked();
+        broadcast_status("{\"type\":\"ready\"}");
+        let rx = subscribe_output();
+        assert_eq!(rx.try_recv().unwrap(), "{\"type\":\"ready\"}");
+        for _ in 0..100 {
+            broadcast_json("segment");
+        }
+        assert_eq!(rx.try_iter().count(), 32);
+        assert!(OUTPUT.lock().unwrap().senders.is_empty());
+        stop_engine_locked();
+    }
+
+    #[test]
+    fn an_old_segment_cannot_enter_a_replacement_workers_queue() {
+        let _lifecycle = ENGINE_LIFECYCLE.lock().unwrap();
+        stop_engine_locked();
+        *VAD_MODEL_PATH.lock().unwrap() = None;
+        let (old_tx, old_rx) = std::sync::mpsc::sync_channel(6);
+        *SEG_TX.lock().unwrap() = Some(old_tx);
+        let mut old = Segmenter::new();
+        let (new_tx, new_rx) = std::sync::mpsc::sync_channel(6);
+        *SEG_TX.lock().unwrap() = Some(new_tx);
+        old.segment = vec![0.2; SAMPLE_RATE];
+        old.speech_ms = 1000;
+        old.close_segment();
+        assert!(old_rx.try_recv().is_ok());
+        assert!(new_rx.try_recv().is_err());
+        stop_engine_locked();
+    }
 
     /// E2E local : `SION_TEST_ASR_MODEL` = GGUF, `SION_TEST_ASR_PCM` = f32le
     /// mono 48 kHz (ex. `espeak-ng` + ffmpeg). Vérifie que le tap natif →
@@ -675,7 +855,8 @@ mod tests {
                 let scaled: Vec<f32> = frame.iter().map(|s| s * 32768.0).collect();
                 sion_native_audio::transcription_tap::forward(&scaled);
             }
-            std::thread::sleep(Duration::from_millis(1));
+            // Use real-time pacing to avoid artificially saturating the tap channel.
+            std::thread::sleep(Duration::from_millis(10));
         }
         // Fin d'élocution : le worker ferme le segment (hangover simulé).
         note_native_mic_enabled(false);
@@ -696,7 +877,7 @@ mod tests {
                 Err(e) => panic!("lecture segment: {e}"),
             }
         }
-        transcribe_stop();
+        shutdown();
         let segment = segment.expect("aucun segment transcrit");
         println!("[test] SEGMENT: {segment}");
     }

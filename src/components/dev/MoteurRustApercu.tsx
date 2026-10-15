@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { NativeAudioPlayer } from "../chat/NativeAudioPlayer";
 import {
   chargerHistorique, connecter, deconnecter, ecartHorloge, envoyerTexte, epingles as lireEpingles, fils as lireFils, poker,
   reagir, reprendre,
@@ -373,5 +374,5 @@ function Lecture({ url, video }: { url: string; video: boolean }) {
   if (!source) return null;
   return video
     ? <video controls preload="metadata" src={source} style={{ maxWidth: 320, maxHeight: 240, borderRadius: 8 }} />
-    : <audio controls preload="metadata" src={source} style={{ maxWidth: 320 }} />;
+    : <NativeAudioPlayer key={source} source={source} />;
 }

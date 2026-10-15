@@ -110,9 +110,14 @@ mod actif {
                 }
             },
         };
-        // Nom de l'appareil pour les connexions à venir (liste des sessions).
-        let nom = if cfg!(target_os = "android") { "Sion Android" } else { "Sion (moteur Rust)" };
-        let coeur = Arc::new(CoeurMatrix::nouveau(dossier, nom, coffre).avec_prefixe_medias(PREFIXE_MEDIAS));
+        // Include the platform from the first login, before the webview refresh.
+        let os = match std::env::consts::OS {
+            "android" => "Android", "ios" => "iOS", "windows" => "Windows",
+            "macos" => "macOS", "linux" => "Linux", _ => "Unknown",
+        };
+        let kind = if matches!(os, "Android" | "iOS") { "Mobile" } else { "Desktop" };
+        let nom = format!("Sion Client {} — {kind} ({os})", env!("CARGO_PKG_VERSION"));
+        let coeur = Arc::new(CoeurMatrix::nouveau(dossier, &nom, coffre).avec_prefixe_medias(PREFIXE_MEDIAS));
         // Le téléphone a une caméra : il sait scanner le QR de vérification.
         coeur.definir_camera(cfg!(target_os = "android"));
         let mut etat = coeur.etat();
@@ -727,8 +732,9 @@ pub mod commandes {
     }
 
     #[tauri::command]
-    pub async fn matrix_details_salon(salon: String) -> Result<serde_json::Value, String> {
-        json(coeur()?.details_salon(&salon).await)
+    pub async fn matrix_details_salon(salon: String, membres_complets: Option<bool>) -> Result<serde_json::Value, String> {
+        if membres_complets.unwrap_or(false) { json(coeur()?.details_salon_complet(&salon).await) }
+        else { json(coeur()?.details_salon(&salon).await) }
     }
 
     #[tauri::command]
@@ -769,6 +775,11 @@ pub mod commandes {
     #[tauri::command]
     pub async fn matrix_bannir(salon: String, utilisateur: String, raison: Option<String>) -> Result<(), String> {
         coeur()?.bannir(&salon, &utilisateur, raison.as_deref()).await.map_err(erreur)
+    }
+
+    #[tauri::command]
+    pub async fn matrix_debannir(salon: String, utilisateur: String) -> Result<(), String> {
+        coeur()?.debannir(&salon, &utilisateur).await.map_err(erreur)
     }
 
     #[tauri::command]
@@ -1372,7 +1383,7 @@ pub mod commandes {
         Err(INACTIF.into())
     }
     #[tauri::command]
-    pub async fn matrix_details_salon(_salon: String) -> Result<serde_json::Value, String> {
+    pub async fn matrix_details_salon(_salon: String, _membres_complets: Option<bool>) -> Result<serde_json::Value, String> {
         Err(INACTIF.into())
     }
 
@@ -1413,6 +1424,11 @@ pub mod commandes {
 
     #[tauri::command]
     pub async fn matrix_bannir(_salon: String, _utilisateur: String, _raison: Option<String>) -> Result<(), String> {
+        Err(INACTIF.into())
+    }
+
+    #[tauri::command]
+    pub async fn matrix_debannir(_salon: String, _utilisateur: String) -> Result<(), String> {
         Err(INACTIF.into())
     }
 

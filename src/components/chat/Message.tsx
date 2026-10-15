@@ -1,5 +1,5 @@
 import { useIsMobile } from "../../hooks/useIsMobile";
-import React, { useState, useEffect, useRef, useMemo, useContext, lazy, Suspense } from "react";
+import React, { useState, useEffect, useRef, useMemo, useContext, useCallback, lazy, Suspense } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import { CrownIcon, ShieldIcon, FileIcon, DownloadIcon, ReplyIcon, PencilIcon, PinIcon, TrashIcon, EmojiIcon, MessageBubbleIcon, FlagIcon, CloseIcon } from "../icons";
@@ -31,6 +31,7 @@ import { useAppStore } from "../../stores/useAppStore";
 import * as matrixService from "../../services/matrixService";
 import { EmojiGridPanel } from "./EmojiGridPanel";
 import { ImageDuFil } from "./ImageDuFil";
+import { NativeAudioPlayer } from "./NativeAudioPlayer";
 import { MenuImage } from "./MenuImage";
 import { MenuMessage, type ActionMenuMessage } from "./MenuMessage";
 import { gestesMenuContextuel } from "../../utils/menuContextuel";
@@ -41,6 +42,7 @@ import { copierImage, enregistrerImage } from "../../services/actionsImage";
 import { definirLecteurActif, libererLecteurActif, useEstLecteurActif } from "../../services/lecteurActif";
 import { AndroidVideoPlayer } from "./AndroidVideoPlayer";
 import { SelectionMessagesContext } from "./selectionMessages";
+import "./ImageLightbox.css";
 // Lecteur hors moteur web (voir docs/lecteur-video-natif.md). Chargé à la
 // demande : il ne sert qu'au clic, inutile de l'embarquer au démarrage.
 const NativeVideoPlayer = lazy(() =>
@@ -133,7 +135,7 @@ function useResolvedUrl(attachment: FileAttachment, enabled: boolean = true): st
  *  hors thème (marqué pour le garde anti-couleurs-en-dur). */
 const LIGHTBOX_INK = "#fff"; // theme-exempt — contrôles posés sur le média
 
-function ImageLightbox({ src, alt, onClose, index, count, onNavigate }: { src: string; alt: string; onClose: () => void; index?: number; count?: number; onNavigate?: (direction: -1 | 1) => void }) {
+function ImageLightbox({ src, alt, onClose, onReply, index, count, onNavigate }: { src: string; alt: string; onClose: () => void; onReply?: () => void; index?: number; count?: number; onNavigate?: (direction: -1 | 1) => void }) {
   // Fit (default) ↔ real size. Clicking the image toggles; at 100% the
   // overlay scrolls so very large screenshots can actually be read.
   const [zoomed, setZoomed] = useState(false);
@@ -142,6 +144,7 @@ function ImageLightbox({ src, alt, onClose, index, count, onNavigate }: { src: s
   const [copiee, setCopiee] = useState(false);
   const touchStart = useRef<number | null>(null);
   const ignoreClick = useRef(false);
+  const origineReponse = useRef({ salon: useAppStore.getState().activeChannel, compte: useMatrixStore.getState().currentUserId });
   // Fermer avec Escape
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -160,6 +163,7 @@ function ImageLightbox({ src, alt, onClose, index, count, onNavigate }: { src: s
   // panneau de la soundboard passait devant malgré son z-index (27/09).
   return createPortal(
     <div
+      className="sion-image-lightbox"
       onClick={() => { if (ignoreClick.current) { ignoreClick.current = false; return; } onClose(); }}
       onTouchStart={(e) => { touchStart.current = e.touches[0]?.clientX ?? null; }}
       onTouchEnd={(e) => {
@@ -178,7 +182,7 @@ function ImageLightbox({ src, alt, onClose, index, count, onNavigate }: { src: s
       {/* Flex wrapper + `margin: auto` on the img: centers when it fits,
           scrolls from the true top-left when it overflows (a plain flex
           center would clip the top/left edges of oversized images). */}
-      <div style={{ minWidth: '100%', minHeight: '100%', display: 'flex' }}>
+      <div style={{ minWidth: '100%', minHeight: '100%', display: 'flex', boxSizing: 'border-box', padding: zoomed ? '60px 16px 112px' : undefined }}>
         <img
           src={src}
           alt={alt}
@@ -189,7 +193,7 @@ function ImageLightbox({ src, alt, onClose, index, count, onNavigate }: { src: s
             display: 'block',
             ...(zoomed
               ? { maxWidth: 'none', maxHeight: 'none' }
-              : { maxWidth: '90vw', maxHeight: '90vh', objectFit: 'contain' as const, borderRadius: 8 }),
+              : { maxWidth: '90vw', maxHeight: 'max(80px, calc(100dvh - var(--sion-image-lightbox-marges)))', objectFit: 'contain' as const, borderRadius: 8 }),
             boxShadow: '0 8px 40px rgba(0,0,0,0.6)',
             cursor: zoomed ? 'zoom-out' : 'zoom-in',
           }}
@@ -235,11 +239,21 @@ function ImageLightbox({ src, alt, onClose, index, count, onNavigate }: { src: s
           onClick={(e) => { e.stopPropagation(); onNavigate(direction); }}
           style={{ position: 'fixed', top: '50%', [direction < 0 ? 'left' : 'right']: 18, transform: 'translateY(-50%)', width: 48, height: 48, border: 'none', borderRadius: '50%', background: 'rgba(255,255,255,0.18)', color: LIGHTBOX_INK, cursor: 'pointer', fontSize: 30, lineHeight: '40px' }}
         >{direction < 0 ? '‹' : '›'}</button>)}
-        <div aria-live="polite" style={{ position: 'fixed', bottom: 'max(env(safe-area-inset-bottom, 0px), 20px)', left: '50%', transform: 'translateX(-50%)', padding: '6px 12px', borderRadius: 16, background: 'rgba(255,255,255,0.15)', color: LIGHTBOX_INK, fontSize: 13, fontWeight: 600, pointerEvents: 'none' }}>{(index ?? 0) + 1} / {count}</div>
       </>}
+      <div className="sion-image-lightbox-pied" style={{ color: LIGHTBOX_INK }} onClick={(e) => e.stopPropagation()}>
+        <span className="sion-image-lightbox-nom" title={alt} aria-live="polite">{alt}</span>
+        {count && count > 1 ? <span className="sion-image-lightbox-compteur" aria-live="polite">{(index ?? 0) + 1} / {count}</span> : null}
+        {onReply && <button type="button" className="sion-image-lightbox-repondre" onClick={() => {
+          onClose();
+          if (origineReponse.current.salon === useAppStore.getState().activeChannel && origineReponse.current.compte === useMatrixStore.getState().currentUserId) onReply();
+        }}>
+          <ReplyIcon />{t("chat.reply")}
+        </button>}
+      </div>
       {menu && <MenuImage url={src} nom={alt} x={menu.x} y={menu.y} onClose={() => setMenu(null)} />}
       <button
-        onClick={onClose}
+        type="button" aria-label={t("chat.close")}
+        onClick={(e) => { e.stopPropagation(); onClose(); }}
         style={{
           position: 'fixed', top: 'max(env(safe-area-inset-top, 0px), 16px)', right: 16,
           background: 'rgba(255,255,255,0.15)', border: 'none', borderRadius: '50%',
@@ -252,7 +266,7 @@ function ImageLightbox({ src, alt, onClose, index, count, onNavigate }: { src: s
   );
 }
 
-type AlbumImage = { src: string; alt: string };
+type AlbumImage = { src: string; alt: string; onReply: () => void };
 interface AlbumControls {
   enregistrer: (index: number, image: AlbumImage) => () => void;
   ouvrir: (index: number, image: AlbumImage) => void;
@@ -280,7 +294,7 @@ export function GalerieImagesProvider({ count, children }: { count: number; chil
   const controls = useMemo(() => ({ enregistrer, ouvrir }), [enregistrer, ouvrir]);
   return <AlbumImagesContext.Provider value={controls}>
     {children}
-    {active && <ImageLightbox src={active.image.src} alt={active.image.alt} index={active.index} count={count} onNavigate={naviguer} onClose={fermer} />}
+    {active && <ImageLightbox src={active.image.src} alt={active.image.alt} onReply={active.image.onReply} index={active.index} count={count} onNavigate={naviguer} onClose={fermer} />}
   </AlbumImagesContext.Provider>;
 }
 
@@ -542,7 +556,7 @@ function boiteVignette(largeur?: number, hauteur?: number) {
   return { width: Math.round(largeur * echelle), height: Math.round(hauteur * echelle) };
 }
 
-function AttachmentDisplay({ attachment, enMosaique = false, ouvrirMenu, indexGalerie }: { attachment: FileAttachment; enMosaique?: boolean; ouvrirMenu?: (event: React.MouseEvent, url: string) => void; indexGalerie?: number }) {
+function AttachmentDisplay({ attachment, onReply, enMosaique = false, ouvrirMenu, indexGalerie }: { attachment: FileAttachment; onReply: () => void; enMosaique?: boolean; ouvrirMenu?: (event: React.MouseEvent, url: string) => void; indexGalerie?: number }) {
   const { t } = useTranslation();
   const isImage = attachment.mimeType.startsWith("image/");
   const isAudio = attachment.mimeType.startsWith("audio/");
@@ -570,7 +584,7 @@ function AttachmentDisplay({ attachment, enMosaique = false, ouvrirMenu, indexGa
     isVideo ? !SUR_ANDROID && videoVisible && !!attachment.encryptedFile : true,
   );
   const galerie = useContext(AlbumImagesContext);
-  const imageAlbum = useMemo(() => resolvedUrl ? { src: resolvedUrl, alt: attachment.name } : null, [resolvedUrl, attachment.name]);
+  const imageAlbum = useMemo(() => resolvedUrl ? { src: resolvedUrl, alt: attachment.name, onReply } : null, [resolvedUrl, attachment.name, onReply]);
   useEffect(() => {
     if (!galerie || indexGalerie === undefined || !imageAlbum) return;
     return galerie.enregistrer(indexGalerie, imageAlbum);
@@ -611,7 +625,7 @@ function AttachmentDisplay({ attachment, enMosaique = false, ouvrirMenu, indexGa
           alt={attachment.name}
           onError={() => setVignetteEchouee(true)}
           onClick={() => {
-            if (galerie && indexGalerie !== undefined) galerie.ouvrir(indexGalerie, { src: resolvedUrl, alt: attachment.name });
+            if (galerie && indexGalerie !== undefined && imageAlbum) galerie.ouvrir(indexGalerie, imageAlbum);
             else setLightboxOpen(true);
           }}
           onContextMenu={(e) => { e.preventDefault(); if (ouvrirMenu) ouvrirMenu(e, resolvedUrl); else setMenuImage({ x: e.clientX, y: e.clientY }); }}
@@ -627,7 +641,7 @@ function AttachmentDisplay({ attachment, enMosaique = false, ouvrirMenu, indexGa
           }}
         />
         {lightboxOpen && !(galerie && indexGalerie !== undefined) && (
-          <ImageLightbox src={resolvedUrl} alt={attachment.name} onClose={() => setLightboxOpen(false)} />
+          <ImageLightbox src={resolvedUrl} alt={attachment.name} onReply={onReply} onClose={() => setLightboxOpen(false)} />
         )}
         {menuImage && (
           <MenuImage url={resolvedUrl} nom={attachment.name} x={menuImage.x} y={menuImage.y} onClose={() => setMenuImage(null)} />
@@ -643,7 +657,7 @@ function AttachmentDisplay({ attachment, enMosaique = false, ouvrirMenu, indexGa
           {attachment.name}
           <span style={{ color: 'var(--color-outline)', fontWeight: 400, marginLeft: 8 }}>{formatFileSize(attachment.size)}</span>
         </div>
-        <audio controls preload="auto" src={resolvedUrl} style={{ width: '100%', height: 44 }} />
+        <NativeAudioPlayer key={resolvedUrl} source={resolvedUrl} />
       </div>
     );
   }
@@ -751,6 +765,7 @@ export const Message = React.memo(function Message({ message, showHeader, isFirs
   const [isHovered, setIsHovered] = useState(false);
   const [showReactionPicker, setShowReactionPicker] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const [menuMessage, setMenuMessage] = useState<{ x: number; y: number } | null>(null);
   const messageBubbleRef = useRef<HTMLDivElement>(null);
   const reactionPickerRef = useRef<HTMLDivElement>(null);
@@ -873,24 +888,34 @@ export const Message = React.memo(function Message({ message, showHeader, isFirs
     setShowDeleteConfirm(true);
   };
 
-  const confirmDelete = () => {
+  const confirmDelete = useCallback(async () => {
+    if (deleting) return;
+    setDeleting(true);
     setShowDeleteConfirm(false);
     const evtId = message.eventId || String(message.id);
-    deleteMessage(activeChannel, evtId);
-  };
+    try {
+      await deleteMessage(activeChannel, evtId);
+    } catch (err) {
+      useAppStore.getState().setFileError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setDeleting(false);
+    }
+  }, [activeChannel, deleteMessage, deleting, message.eventId, message.id]);
 
   const cancelDelete = () => {
     setShowDeleteConfirm(false);
   };
 
-  const handleReply = () => {
+  const handleReply = useCallback(() => {
+    // An open gallery can outlive navigation; never reply into another room.
+    if (!activeChannel || useAppStore.getState().activeChannel !== activeChannel) return;
     setReplyingTo({
       eventId: message.eventId || String(message.id),
       senderId: message.senderId || "",
       user: message.user,
-      text: message.text,
+      text: message.text.trim() ? message.text : message.attachments?.[0]?.name ?? message.text,
     });
-  };
+  }, [activeChannel, message.eventId, message.id, message.senderId, message.user, message.text, message.attachments, setReplyingTo]);
 
   // État d'épinglage, pour que le bouton dise ce qu'il fait.
   //
@@ -972,7 +997,7 @@ export const Message = React.memo(function Message({ message, showHeader, isFirs
   if (!isOwnMessage && moteurRust() && message.eventId && activeChannel) {
     actionsContextuelles.push({ label: t("report.action"), icon: <FlagIcon />, action: () => setShowReport(true) });
   }
-  if (canDelete) {
+  if (canDelete && !deleting) {
     if (showDeleteConfirm) {
       actionsContextuelles.push(
         { label: t("chat.deleteMessageConfirm"), icon: <TrashIcon />, action: confirmDelete, tone: "error" },
@@ -1228,7 +1253,7 @@ export const Message = React.memo(function Message({ message, showHeader, isFirs
 
         {/* M3 Bubble — surface-container-high pour les autres, primary-container pour soi */}
         {children ?? <>
-        <div ref={messageBubbleRef} className="sion-message-bulle" aria-busy={message.sending || undefined} tabIndex={actionsContextuelles.length ? 0 : undefined}
+        <div ref={messageBubbleRef} className="sion-message-bulle" aria-busy={message.sending || deleting || undefined} tabIndex={actionsContextuelles.length ? 0 : undefined}
           onContextMenu={(event) => {
             if (!event.defaultPrevented && !cibleInteractive(event.target) && actionsContextuelles.length) gestesMessage.onContextMenu(event);
           }}
@@ -1364,7 +1389,7 @@ export const Message = React.memo(function Message({ message, showHeader, isFirs
           {message.attachments && message.attachments.length > 0 && (
             <div style={{ display: 'flex', flexWrap: 'wrap' as const, gap: 6, marginTop: enMosaique ? 0 : 4, width: enMosaique ? '100%' : undefined }}>
               {message.attachments.map((att) => (
-                <AttachmentDisplay key={att.id} attachment={att} enMosaique={enMosaique} indexGalerie={indexGalerie} ouvrirMenu={selection ? (event, url) => { setUrlMenuImage(url); ouvrirMenuMessage(event.clientX, event.clientY); } : undefined} />
+                <AttachmentDisplay key={att.id} attachment={att} onReply={handleReply} enMosaique={enMosaique} indexGalerie={indexGalerie} ouvrirMenu={selection ? (event, url) => { setUrlMenuImage(url); ouvrirMenuMessage(event.clientX, event.clientY); } : undefined} />
               ))}
             </div>
           )}

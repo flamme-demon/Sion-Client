@@ -201,6 +201,117 @@ fn emit_status(app: &tauri::AppHandle<TauriRuntime>, status: &VoiceNativeStatus)
     let _ = app.emit("voice-native-status", status);
 }
 
+#[cfg(target_os = "android")]
+static ANDROID_VOICE_APP: OnceLock<tauri::AppHandle<TauriRuntime>> = OnceLock::new();
+#[cfg(target_os = "android")]
+static ANDROID_VOICE_TOKEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+#[cfg(target_os = "android")]
+static ANDROID_NEXT_VOICE_TOKEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+#[cfg(target_os = "android")]
+static ANDROID_CALL_LIFECYCLE: Mutex<()> = Mutex::new(());
+#[cfg(target_os = "android")]
+struct AndroidControlWork {
+    token: u64,
+    revision: std::sync::atomic::AtomicU64,
+    worker: std::sync::atomic::AtomicBool,
+}
+#[cfg(target_os = "android")]
+static ANDROID_CONTROL_WORK: Mutex<Option<std::sync::Arc<AndroidControlWork>>> = Mutex::new(None);
+
+#[cfg(target_os = "android")]
+pub(crate) fn android_voice_token() -> u64 {
+    ANDROID_VOICE_TOKEN.load(std::sync::atomic::Ordering::Acquire)
+}
+
+#[cfg(target_os = "android")]
+pub(crate) fn android_voice_muted(token: u64) -> bool {
+    let inner = manager().lock().unwrap_or_else(|e| e.into_inner());
+    token == 0 || token != android_voice_token() || inner.muted
+}
+
+#[cfg(target_os = "android")]
+pub(crate) fn android_set_interrupted(token: u64, interrupted: bool) {
+    let _guard = manager().lock().unwrap_or_else(|e| e.into_inner());
+    if token != 0 && token == android_voice_token() {
+        sion_native_audio::set_device_interrupted(interrupted);
+    }
+}
+
+/// Apply hardware actions without requiring a running WebView or creating a second voice engine.
+#[cfg(target_os = "android")]
+pub(crate) fn android_headset_action(token: u64, action: i32) {
+    if token == 0 || token != android_voice_token() { return; }
+    let Some(app) = ANDROID_VOICE_APP.get().cloned() else { return };
+    if action == 3 {
+        let room = {
+            let inner = manager().lock().unwrap_or_else(|e| e.into_inner());
+            if token != android_voice_token() { return; }
+            ANDROID_VOICE_TOKEN.store(0, std::sync::atomic::Ordering::Release);
+            sion_native_audio::set_device_interrupted(true);
+            inner.room_name.clone()
+        };
+        tauri::async_runtime::spawn_blocking(move || {
+            let _lifecycle = ANDROID_CALL_LIFECYCLE.lock().unwrap_or_else(|e| e.into_inner());
+            {
+                let inner = manager().lock().unwrap_or_else(|e| e.into_inner());
+                if android_voice_token() != 0 || inner.room_name != room || inner.state == VoiceConnectionState::Disconnected { return; }
+            }
+            crate::matrix_pont::quitter_voix_bloquant(std::time::Duration::from_millis(1500));
+            disconnect_impl(app);
+        });
+        return;
+    }
+    if sion_native_audio::device_interrupted() { return; }
+    let Some(work) = ANDROID_CONTROL_WORK.lock().unwrap_or_else(|e| e.into_inner()).clone().filter(|w| w.token == token) else { return };
+    {
+        let mut inner = manager().lock().unwrap_or_else(|e| e.into_inner());
+        if token != android_voice_token() { return; }
+        inner.muted = match action { 0 => !inner.muted, 1 => true, 2 => false, _ => return };
+        sion_native_audio::set_device_capture_allowed(!inner.muted);
+        work.revision.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+    }
+    if work.worker.swap(true, std::sync::atomic::Ordering::AcqRel) { return; }
+    // Coalesce repeated presses into one owned runtime task per call.
+    tauri::async_runtime::spawn_blocking(move || {
+      let _lifecycle = ANDROID_CALL_LIFECYCLE.lock().unwrap_or_else(|e| e.into_inner());
+      while token == android_voice_token() {
+        let revision = work.revision.load(std::sync::atomic::Ordering::Acquire);
+        #[cfg(feature = "native-voice")]
+        let result = with_engine_shared(&app, "bouton du casque", |engine| {
+            if token != android_voice_token() { return Ok(()) }
+            engine.set_microphone_enabled(sion_native_audio::device_capture_allowed())
+        });
+        #[cfg(feature = "native-voice")]
+        if let Err(error) = result {
+            log::warn!("[Sion][android] bouton du casque : {error}");
+            let mut inner = manager().lock().unwrap_or_else(|e| e.into_inner());
+            if token == android_voice_token() && revision == work.revision.load(std::sync::atomic::Ordering::Acquire) {
+                inner.muted = true;
+                sion_native_audio::set_device_capture_allowed(false);
+            }
+        }
+        if token != android_voice_token() { return; }
+        let status = snapshot(&manager().lock().unwrap_or_else(|e| e.into_inner()));
+        #[cfg(feature = "moteur-matrix-rust")]
+        let _ = tauri::async_runtime::block_on(async {
+            // Cosmetic membership state must not hold up call teardown behind a busy queue.
+            tokio::time::timeout(std::time::Duration::from_millis(250),
+                crate::matrix_pont::commandes::matrix_etat_voix(status.muted, status.deafened)).await
+        });
+        if token != android_voice_token() { return; }
+        if revision != work.revision.load(std::sync::atomic::Ordering::Acquire) { continue; }
+        if let Ok(mut payload) = serde_json::to_value(&status) {
+            payload["android_control"] = serde_json::json!(true);
+            let _ = app.emit("voice-native-status", payload);
+        }
+        if revision != work.revision.load(std::sync::atomic::Ordering::Acquire) { continue; }
+        work.worker.store(false, std::sync::atomic::Ordering::Release);
+        if revision == work.revision.load(std::sync::atomic::Ordering::Acquire)
+            || work.worker.swap(true, std::sync::atomic::Ordering::AcqRel) { return; }
+      }
+    });
+}
+
 // RMS speech detection, matching the frontend thresholds.
 
 /// Speech onset threshold: typical RMS is 0.005-0.01 with AGC,
@@ -595,6 +706,12 @@ fn store_engine(engine: Option<LiveKitEngine>) {
 /// Reset the manager on explicit disconnect or dead-session cleanup.
 /// Match frontend mute/deafen resets so leaving muted does not silently mute the next join.
 fn reset_manager_to_disconnected() {
+    #[cfg(target_os = "android")]
+    ANDROID_VOICE_TOKEN.store(0, std::sync::atomic::Ordering::Release);
+    #[cfg(target_os = "android")]
+    { *ANDROID_CONTROL_WORK.lock().unwrap_or_else(|e| e.into_inner()) = None; }
+    sion_native_audio::set_device_interrupted(false);
+    sion_native_audio::set_device_capture_allowed(true);
     let mut inner = manager().lock().unwrap_or_else(|e| e.into_inner());
     inner.state = VoiceConnectionState::Disconnected;
     inner.room_name = None;
@@ -1542,6 +1659,8 @@ pub fn voice_native_start_microphone_test(
     device_id: String,
     owner: String,
 ) -> Result<(), String> {
+    #[cfg(target_os = "android")]
+    crate::android_natif::verifier_permission_micro()?;
     #[cfg(not(feature = "native-voice"))]
     {
         let _ = (app, device_id, owner);
@@ -1903,6 +2022,15 @@ fn connect_impl(
     processing: Option<NativeAudioProcessing>,
     audio_quality: Option<NativeAudioQuality>,
 ) -> Result<VoiceNativeStatus, String> {
+    #[cfg(target_os = "android")]
+    crate::android_natif::verifier_permission_micro()?;
+    #[cfg(target_os = "android")]
+    let _android_lifecycle = ANDROID_CALL_LIFECYCLE.lock().unwrap_or_else(|e| e.into_inner());
+    // Android routes the paired input/output through AudioManager, using the default ADM.
+    #[cfg(target_os = "android")]
+    let input_device = { let _ = input_device; None::<String> };
+    #[cfg(target_os = "android")]
+    let output_device = { let _ = output_device; None::<String> };
     let processing = processing.unwrap_or_default();
     let audio_quality = audio_quality.unwrap_or_default();
     processing.validate()?;
@@ -1982,6 +2110,15 @@ fn connect_impl(
             }
             emit_participants(&app);
             let mut inner = manager().lock().unwrap_or_else(|e| e.into_inner());
+            #[cfg(target_os = "android")]
+            {
+                let _ = ANDROID_VOICE_APP.set(app.clone());
+                let token = ANDROID_NEXT_VOICE_TOKEN.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+                ANDROID_VOICE_TOKEN.store(token, std::sync::atomic::Ordering::Release);
+                *ANDROID_CONTROL_WORK.lock().unwrap_or_else(|e| e.into_inner()) = Some(std::sync::Arc::new(AndroidControlWork {
+                    token, revision: std::sync::atomic::AtomicU64::new(0), worker: std::sync::atomic::AtomicBool::new(false),
+                }));
+            }
             inner.state = VoiceConnectionState::Connected;
             inner.identity = Some(identity);
             // Reset deafen intent on join; microphone mute is synchronized by connect_engine.
@@ -2004,6 +2141,14 @@ fn connect_impl(
 
 #[tauri::command]
 pub fn voice_native_disconnect(app: tauri::AppHandle<TauriRuntime>) -> VoiceNativeStatus {
+    #[cfg(target_os = "android")]
+    let _android_lifecycle = ANDROID_CALL_LIFECYCLE.lock().unwrap_or_else(|e| e.into_inner());
+    disconnect_impl(app)
+}
+
+fn disconnect_impl(app: tauri::AppHandle<TauriRuntime>) -> VoiceNativeStatus {
+    #[cfg(target_os = "android")]
+    ANDROID_VOICE_TOKEN.store(0, std::sync::atomic::Ordering::Release);
     #[cfg(feature = "native-voice")]
     {
         webrtc_sys::sion_audio::ffi::clear_soundboard_audio();
@@ -2023,6 +2168,8 @@ pub fn voice_native_disconnect(app: tauri::AppHandle<TauriRuntime>) -> VoiceNati
         let _ = app.emit("voice-native-participants", &empty);
     }
     reset_manager_to_disconnected();
+    sion_native_audio::set_device_interrupted(false);
+    sion_native_audio::set_device_capture_allowed(true);
     let status = snapshot(&manager().lock().unwrap_or_else(|e| e.into_inner()));
     emit_status(&app, &status);
     status
@@ -2032,6 +2179,10 @@ pub fn voice_native_disconnect(app: tauri::AppHandle<TauriRuntime>) -> VoiceNati
 /// so the SFU receives a clean departure before process exit.
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
 pub(crate) fn couper_voix_native() {
+    #[cfg(target_os = "android")]
+    let _android_lifecycle = ANDROID_CALL_LIFECYCLE.lock().unwrap_or_else(|e| e.into_inner());
+    #[cfg(target_os = "android")]
+    ANDROID_VOICE_TOKEN.store(0, std::sync::atomic::Ordering::Release);
     #[cfg(feature = "native-voice")]
     {
         webrtc_sys::sion_audio::ffi::clear_soundboard_audio();
@@ -2047,11 +2198,19 @@ pub(crate) fn couper_voix_native() {
             .clear();
     }
     reset_manager_to_disconnected();
+    sion_native_audio::set_device_interrupted(false);
+    sion_native_audio::set_device_capture_allowed(true);
 }
 
 /// Whether the user is deafened.
 pub(crate) fn en_sourdine() -> bool {
     manager().lock().unwrap_or_else(|e| e.into_inner()).deafened
+}
+
+#[cfg(feature = "native-voice")]
+pub(crate) fn rendu_local_dans_vocal() -> bool {
+    let inner = manager().lock().unwrap_or_else(|e| e.into_inner());
+    inner.state != VoiceConnectionState::Disconnected && !inner.deafened && sion_native_audio::rendu_actif()
 }
 
 /// Play peer soundboard or meme audio: discard while deafened and mix into WebRTC
@@ -2152,6 +2311,18 @@ pub fn voice_native_set_muted(
     app: tauri::AppHandle<TauriRuntime>,
     muted: bool,
 ) -> VoiceNativeStatus {
+    #[cfg(target_os = "android")]
+    let _android_lifecycle = ANDROID_CALL_LIFECYCLE.lock().unwrap_or_else(|e| e.into_inner());
+    #[cfg(target_os = "android")]
+    let android_intent = {
+        let mut inner = manager().lock().unwrap_or_else(|e| e.into_inner());
+        let previous = inner.muted;
+        let scope = ANDROID_CONTROL_WORK.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let revision = scope.as_ref().map(|w| w.revision.fetch_add(1, std::sync::atomic::Ordering::AcqRel) + 1);
+        inner.muted = muted;
+        sion_native_audio::set_device_capture_allowed(!muted);
+        (scope, revision, previous)
+    };
     // Preserve frontend state if the engine rejects the operation.
     let mut applied = true;
     // Apply mute even between sessions so the engine records intent for the next publish.
@@ -2175,8 +2346,16 @@ pub fn voice_native_set_muted(
         }
     }
     let mut inner = manager().lock().unwrap_or_else(|e| e.into_inner());
+    #[cfg(not(target_os = "android"))]
     if applied {
         inner.muted = muted;
+    }
+    #[cfg(target_os = "android")]
+    if !applied && android_intent.0.as_ref().is_none_or(|w|
+        w.token == android_voice_token() && Some(w.revision.load(std::sync::atomic::Ordering::Acquire)) == android_intent.1
+    ) {
+        inner.muted = android_intent.2;
+        sion_native_audio::set_device_capture_allowed(!inner.muted);
     }
     let status = snapshot(&inner);
     // Log every invocation to confirm deafen-triggered mute actually reaches the engine.

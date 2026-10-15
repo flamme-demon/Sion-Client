@@ -9,6 +9,7 @@ const serveur = vi.hoisted(() => ({ moi: 0, redact: 50, supprimer: vi.fn() }));
 vi.mock("./matrixService", () => ({ getUserPowerLevel: () => serveur.moi, getRedactPowerLevel: () => serveur.redact, redactMessage: serveur.supprimer }));
 const message = (id: string, senderId = "@moi:hs"): ChatMessage => ({ id, eventId: id, senderId, user: senderId, role: "user", text: "Texte", time: "12:00" });
 beforeEach(() => {
+  useMatrixStore.getState().reset();
   vi.clearAllMocks(); serveur.moi = 0; serveur.redact = 50; serveur.supprimer.mockResolvedValue(undefined);
   useMatrixStore.setState({ currentUserId: "@moi:hs", messages: { "!salon": [message("$1"), message("$2"), message("$3", "@alice:hs")], "!autre": [message("$autre")] } });
 });

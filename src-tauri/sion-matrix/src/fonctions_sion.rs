@@ -67,6 +67,8 @@ pub struct SonAjoute {
 pub struct EtatSalon {
     pub state_key: String,
     pub content: Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sender: Option<String>,
 }
 
 /// État propre à T6, tenu par le cœur.
@@ -478,6 +480,7 @@ impl CoeurMatrix {
                 Some(EtatSalon {
                     state_key: v.get("state_key").and_then(Value::as_str).unwrap_or("").to_owned(),
                     content: v.get("content").cloned().unwrap_or(Value::Null),
+                    sender: v.get("sender").and_then(Value::as_str).map(str::to_owned),
                 })
             })
             .collect())
@@ -545,7 +548,8 @@ impl CoeurMatrix {
         let client = self.client().await.ok_or(Erreur::PasDeSession)?;
         let appareil = client.device_id().ok_or(Erreur::PasDeSession)?.to_owned();
         let actuel = client.devices().await.map_err(matrix_sdk::Error::from)?.devices.into_iter().find(|d| d.device_id == appareil);
-        if actuel.and_then(|d| d.display_name).as_deref() == Some(nom) {
+        let actuel = actuel.and_then(|d| d.display_name);
+        if actuel.as_deref() == Some(nom) || !nom_appareil_automatique(actuel.as_deref()) {
             return Ok(false);
         }
         client.rename_device(&appareil, nom).await.map_err(matrix_sdk::Error::from)?;
@@ -619,9 +623,35 @@ pub(crate) fn segment_encode(s: &str) -> String {
         .collect()
 }
 
+// Keep this whitelist aligned with the web client's deviceIdentity helper.
+fn nom_appareil_automatique(nom: Option<&str>) -> bool {
+    let Some(nom) = nom.filter(|n| !n.is_empty()) else { return true };
+    if matches!(nom, "Sion Android" | "Sion (moteur Rust)") { return true; }
+    let nom = nom.strip_suffix(" — moteur Rust").unwrap_or(nom);
+    let Some((version, os)) = nom.strip_prefix("Sion Client ").and_then(|n| n.split_once(" (")) else { return false };
+    if !matches!(os, "Windows)" | "macOS)" | "Linux)" | "Android)" | "iOS)" | "Unknown)") { return false; }
+    let version = version.strip_suffix(" — Desktop").or_else(|| version.strip_suffix(" — Mobile")).unwrap_or(version);
+    let core = version.split(['-', '+']).next().unwrap_or("");
+    let parts: Vec<_> = core.split('.').collect();
+    parts.len() == 3 && parts.iter().all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
+        && version.bytes().all(|b| b.is_ascii_alphanumeric() || b".+-".contains(&b))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn seuls_les_noms_generes_sont_migres() {
+        for nom in [None, Some(""), Some("Sion Android"), Some("Sion (moteur Rust)"),
+            Some("Sion Client 2.0.0 (Linux)"), Some("Sion Client 2.0.0-beta.9 (Android) — moteur Rust"),
+            Some("Sion Client 2.0.1 — Desktop (Windows)"), Some("Sion Client 2.0.1 — Mobile (Android)")] {
+            assert!(nom_appareil_automatique(nom), "{nom:?}");
+        }
+        for nom in ["Mon PC", "Téléphone de Flamme", "Sion du salon", "Sion Client perso (Linux)", "Sion Client 2.0.0 (Linux) bureau"] {
+            assert!(!nom_appareil_automatique(Some(nom)), "{nom}");
+        }
+    }
 
     #[test]
     fn identifiant_de_salon_encode_dans_l_adresse() {

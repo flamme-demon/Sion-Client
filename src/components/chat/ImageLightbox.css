@@ -1,0 +1,49 @@
+.sion-image-lightbox { --sion-image-lightbox-marges: 144px; }
+.sion-image-lightbox-pied {
+  position: fixed;
+  left: max(env(safe-area-inset-left, 0px), 16px);
+  right: max(env(safe-area-inset-right, 0px), 16px);
+  bottom: max(env(safe-area-inset-bottom, 0px), 16px);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(0, 0, 0, 0.72);
+  cursor: auto;
+}
+.sion-image-lightbox-nom {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  user-select: text;
+}
+.sion-image-lightbox-compteur { flex-shrink: 0; font-size: 13px; white-space: nowrap; }
+.sion-image-lightbox-repondre {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  flex-shrink: 0;
+  padding: 8px 12px;
+  border: 0;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.15);
+  color: inherit;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.sion-image-lightbox-repondre:hover { background: rgba(255, 255, 255, 0.25); }
+.sion-image-lightbox-repondre:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }
+.sion-image-lightbox-repondre svg { width: 16px; height: 16px; }
+@media (max-width: 480px) {
+  .sion-image-lightbox { --sion-image-lightbox-marges: 200px; }
+  .sion-image-lightbox-pied { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
+  .sion-image-lightbox-nom { grid-column: 1 / -1; }
+  .sion-image-lightbox-compteur { grid-row: 2; }
+  .sion-image-lightbox-repondre { grid-row: 2; grid-column: 2; }
+}

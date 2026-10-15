@@ -18,5 +18,6 @@ export async function installYtdlp(onProgress?: (pct: number) => void): Promise<
 /** Resolved yt-dlp path if it runs, else null. */
 export async function detectYtdlp(): Promise<string | null> {
   const { invoke } = await import("@tauri-apps/api/core");
-  return (await invoke<string | null>("detect_ytdlp")) ?? null;
+  const { useSettingsStore } = await import("../stores/useSettingsStore");
+  return (await invoke<string | null>("detect_ytdlp", { ytdlpPath: useSettingsStore.getState().ytdlpPath || undefined })) ?? null;
 }

@@ -11,6 +11,7 @@ import type { MatrixState } from "./useMatrixStore";
 import type { Channel } from "../types/matrix";
 import type { EtatConnexion, EtatVerification, FilSalon } from "../services/matrixCore";
 import { fusionnerEchos } from "./echosMessages";
+import { filtrerSuppressions, reinitialiserSuppressions } from "./suppressionsMessages";
 
 type Set = (partiel: Partial<MatrixState> | ((s: MatrixState) => Partial<MatrixState>)) => void;
 type Get = () => MatrixState;
@@ -60,6 +61,7 @@ export async function demarrerMoteurRust(set: Set, get: Get): Promise<void> {
       void preparerSession(set, get);
     }
     if (etat.etat === "deconnecte") {
+      reinitialiserSuppressions();
       sessionPreparee = null;
       cache.vider();
       entreMembres.vider();
@@ -77,6 +79,7 @@ export async function demarrerMoteurRust(set: Set, get: Get): Promise<void> {
   };
 
   const appliquerFil = (fil: FilSalon, initial: boolean) => {
+    fil = { ...fil, messages: filtrerSuppressions(fil.salon, fil.messages) };
     const t0 = performance.now();
     mesuresRust.fils += 1;
     mesuresRust.messagesFils += fil.messages.length;

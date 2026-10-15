@@ -107,17 +107,20 @@ export async function generateSpeech(
   text: string,
   voiceRefPath: string,
   referenceText?: string,
+  signal?: AbortSignal,
 ): Promise<File> {
   const { invoke } = await import("@tauri-apps/api/core");
-  const wavPath = await invoke<string>("tts_generate", {
+  const { invokeNativeInference } = await import("./nativeInference");
+  const wavPath = await invokeNativeInference<string>("tts_generate", {
     model,
     text,
     voiceRef: voiceRefPath,
     referenceText: referenceText || undefined,
     language: "fr",
     enginePath: useSettingsStore.getState().ttsEnginePath || undefined,
-  });
+  }, signal);
   const b64 = await invoke<string>("read_file_b64", { path: wavPath });
+  if (signal?.aborted) throw new DOMException("Génération annulée", "AbortError");
   const bin = atob(b64);
   const bytes = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
@@ -264,74 +267,75 @@ export async function materializeRef(file: File): Promise<string> {
  * recharge le modèle et couperait la session en cours.
  */
 export async function transcribeRef(file: File): Promise<string> {
-  const { isTranscribing, ensureModelDownloaded } = await import("./transcriptionService");
-  if (isTranscribing()) throw new Error("busy");
-
-  const { invoke } = await import("@tauri-apps/api/core");
-  const { transcribeModel, transcribeLang } = useSettingsStore.getState();
-  const modelPath = await ensureModelDownloaded(transcribeModel);
-  const port = await invoke<number>("transcribe_start", { modelPath, lang: transcribeLang });
-
-  // Le moteur attend du 16 kHz mono : on laisse decodeAudioData rééchantillonner.
-  const ctx = new AudioContext({ sampleRate: 16000 });
-  let pcm: Float32Array;
+  const { reserveTranscriptionEngine } = await import("./transcriptionEngine");
+  const engine = reserveTranscriptionEngine();
   try {
+    // Decode offline without opening an input or output audio device.
+    // Reject unreadable files before loading the model.
+    const ctx = new OfflineAudioContext(1, 1, 16000);
     const buf = await ctx.decodeAudioData(await file.arrayBuffer());
-    pcm = buf.getChannelData(0).slice();
-  } finally {
-    await ctx.close().catch(() => {});
-  }
+    const pcm = buf.getChannelData(0).slice();
+    const { ensureModelDownloaded } = await import("./transcriptionService");
+    const { transcribeModel, transcribeLang } = useSettingsStore.getState();
+    const modelPath = await ensureModelDownloaded(transcribeModel);
+    const port = await engine.start("transcribe_start", { modelPath, lang: transcribeLang });
+    if (port === null) throw new Error("cancelled");
 
-  return await new Promise<string>((resolve, reject) => {
-    const ws = new WebSocket(`ws://127.0.0.1:${port}`);
-    ws.binaryType = "arraybuffer";
-    const parts: string[] = [];
-    // Le moteur n'annonce pas la fin d'un flux : on clôt un court instant après
-    // le dernier segment reçu, ou au plus tard au bout de 60 s.
-    let idle: ReturnType<typeof setTimeout> | null = null;
-    const finish = () => {
-      if (idle) clearTimeout(idle);
-      clearTimeout(hard);
-      try { ws.close(); } catch { /* déjà fermé */ }
-      void invoke("transcribe_stop").catch(() => {});
-      resolve(parts.join(" ").replace(/\s+/g, " ").trim());
-    };
-    const hard = setTimeout(finish, 60_000);
+    return await new Promise<string>((resolve, reject) => {
+      const ws = new WebSocket(`ws://127.0.0.1:${port}`);
+      ws.binaryType = "arraybuffer";
+      const parts: string[] = [];
+      // The engine does not signal stream completion: finish shortly after
+      // the last segment, or after the 60-second hard limit.
+      let idle: ReturnType<typeof setTimeout> | null = null;
+      let settled = false;
+      const finish = (error?: Error) => {
+        if (settled) return;
+        settled = true;
+        if (idle) clearTimeout(idle);
+        clearTimeout(hard);
+        ws.onopen = ws.onmessage = ws.onerror = ws.onclose = null;
+        try { ws.close(); } catch { /* already closed */ }
+        if (error) reject(error);
+        else resolve(parts.join(" ").replace(/\s+/g, " ").trim());
+      };
+      const hard = setTimeout(() => finish(), 60_000);
 
-    ws.onopen = () => {
-      // Tranches de ~1 s : le VAD travaille sur des trames courtes et le
-      // moteur borne sa file d'attente de segments.
-      const CHUNK = 16000;
-      for (let i = 0; i < pcm.length; i += CHUNK) {
-        ws.send(pcm.slice(i, i + CHUNK).buffer);
-      }
-      ws.send(JSON.stringify({ type: "flush" }));
-    };
-    ws.onmessage = (ev) => {
-      if (typeof ev.data !== "string") return;
-      try {
-        const msg = JSON.parse(ev.data) as { type: string; text?: string; message?: string };
-        if (msg.type === "segment" && msg.text) {
-          parts.push(msg.text);
-          if (idle) clearTimeout(idle);
-          idle = setTimeout(finish, 2500);
-        } else if (msg.type === "error") {
-          clearTimeout(hard);
-          try { ws.close(); } catch { /* déjà fermé */ }
-          void invoke("transcribe_stop").catch(() => {});
-          reject(new Error(msg.message || "engine error"));
-        } else if (msg.type === "ready" && !idle) {
-          // Rien reçu passé ce délai = extrait sans parole détectable.
-          idle = setTimeout(finish, 15_000);
+      ws.onopen = () => {
+        // Send roughly one-second chunks; the VAD uses short frames and
+        // the engine bounds its pending segment queue.
+        const CHUNK = 16000;
+        try {
+          for (let i = 0; i < pcm.length; i += CHUNK) {
+            ws.send(pcm.slice(i, i + CHUNK).buffer);
+          }
+          ws.send(JSON.stringify({ type: "flush" }));
+        } catch (err) {
+          finish(err instanceof Error ? err : new Error(String(err)));
         }
-      } catch { /* trame malformée */ }
-    };
-    ws.onerror = () => {
-      clearTimeout(hard);
-      void invoke("transcribe_stop").catch(() => {});
-      reject(new Error("websocket"));
-    };
-  });
+      };
+      ws.onmessage = (ev) => {
+        if (typeof ev.data !== "string") return;
+        try {
+          const msg = JSON.parse(ev.data) as { type: string; text?: string; message?: string };
+          if (msg.type === "segment" && msg.text) {
+            parts.push(msg.text);
+            if (idle) clearTimeout(idle);
+            idle = setTimeout(() => finish(), 2500);
+          } else if (msg.type === "error") {
+            finish(new Error(msg.message || "engine error"));
+          } else if (msg.type === "ready" && !idle) {
+            // No result before this deadline means no detectable speech.
+            idle = setTimeout(() => finish(), 15_000);
+          }
+        } catch { /* malformed frame */ }
+      };
+      ws.onerror = () => finish(new Error("websocket"));
+      ws.onclose = () => finish(new Error("websocket closed"));
+    });
+  } finally {
+    await engine.stop();
+  }
 }
 
 /** Durée conseillée pour un extrait de référence (secondes). */

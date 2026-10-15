@@ -217,11 +217,21 @@ export function ChatInput() {
 
     // Edit mode
     if (editingMessage) {
-      if (inputText.trim()) {
-        await editMessageStore(activeChannel, editingMessage.eventId, inputText.trim());
+      const text = inputText.trim();
+      envoiEnCours.current = true;
+      setSending(true);
+      try {
+        if (text) await editMessageStore(activeChannel, editingMessage.eventId, text);
+        if (useAppStore.getState().editingMessage?.eventId === editingMessage.eventId) {
+          clearEditingMessage();
+          setInputText((current) => current.trim() === text ? "" : current);
+        }
+      } catch (err) {
+        useAppStore.getState().setFileError(err instanceof Error ? err.message : String(err));
+      } finally {
+        envoiEnCours.current = false;
+        setSending(false);
       }
-      clearEditingMessage();
-      setInputText("");
       return;
     }
 

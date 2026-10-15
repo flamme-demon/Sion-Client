@@ -4,9 +4,45 @@ use crate::voice_native::NativeAudioProcessing;
 use webrtc_sys::sion_audio::ffi::{
     clear_soundboard_audio, process_capture_audio, queue_soundboard_audio,
 };
+static DSP_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[test]
+fn repeated_device_interruptions_release_the_apm_and_keep_microphone_mute() {
+    let _guard = DSP_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    struct Reset(sion_native_audio::Settings);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            sion_native_audio::set_device_interrupted(false);
+            sion_native_audio::set_device_capture_allowed(true);
+            sion_native_audio::set_capture_gate(true);
+            sion_native_audio::configure(self.0);
+            webrtc_sys::sion_audio::ffi::configure_capture_processing();
+        }
+    }
+    let _reset = Reset(sion_native_audio::settings());
+    NativeAudioProcessing { echo_cancellation: false, auto_gain_control: false, noise_suppression: false, mix: 1.0 }.apply().unwrap();
+    let baseline = webrtc_sys::sion_audio::ffi::capture_processing_status().instances;
+    let input = vec![0.1; 480];
+    for _ in 0..32 {
+        sion_native_audio::set_capture_gate(true);
+        sion_native_audio::set_device_capture_allowed(true);
+        sion_native_audio::set_device_interrupted(true);
+        let muted = process_capture_audio(&input, &[], 48_000);
+        assert_eq!(muted.len(), input.len());
+        assert!(muted.iter().all(|&v| v == 0.0));
+        sion_native_audio::set_device_interrupted(false);
+        let resumed = process_capture_audio(&input, &[], 48_000);
+        assert!(resumed.iter().any(|&v| v != 0.0));
+        sion_native_audio::set_device_capture_allowed(false);
+        let muted = process_capture_audio(&input, &[], 48_000);
+        assert!(muted.iter().all(|&v| v == 0.0));
+        assert_eq!(webrtc_sys::sion_audio::ffi::capture_processing_status().instances, baseline);
+    }
+}
 
 #[test]
 fn native_audio_bridge_filters_noise_and_honors_disabled_processing() {
+    let _guard = DSP_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     for rate in [16000, 32000, 48000] {
         let mut seed = 42_u32;
         let input: Vec<f32> = (0..rate * 2)
@@ -103,7 +139,37 @@ fn native_audio_bridge_filters_noise_and_honors_disabled_processing() {
         "soundboard was not included in AEC reference: {soundboard_energy}/{input_energy}"
     );
     clear_soundboard_audio();
+    // Previews use a controllable source separate from soundboard clips,
+    // but their render must enter the same AEC reference.
+    let stream = sion_native_audio::playback::Stream::new(1.0);
+    stream.push(&soundboard_pcm[..rate as usize * 2], 1, true).unwrap();
+    stream.route.store(sion_native_audio::playback::VOCAL, std::sync::atomic::Ordering::Release);
+    let source: std::sync::Arc<dyn sion_native_audio::playback::RenderSource> = stream.clone();
+    sion_native_audio::playback::register(&source);
+    let local_cancelled = process_capture_audio(&microphone[..rate as usize * 2], &[], rate);
+    let reference_energy: f32 = microphone[rate as usize..rate as usize * 2].iter().map(|x| x * x).sum();
+    let local_energy: f32 = local_cancelled[rate as usize..].iter().map(|x| x * x).sum();
+    assert!(local_energy < reference_energy * 0.3, "préécoute absente de la référence AEC : {local_energy}/{reference_energy}");
+    drop(source);
+    drop(stream);
     NativeAudioProcessing::default().apply().unwrap();
+
+    // Initialize, render and destroy the real C++ APM on each iteration.
+    // Neither the Rust registry nor the native graph may retain the source.
+    let baseline = webrtc_sys::sion_audio::ffi::capture_processing_status().instances;
+    for _ in 0..8 {
+        let stream = sion_native_audio::playback::Stream::new(1.0);
+        let weak = std::sync::Arc::downgrade(&stream);
+        stream.push(&vec![1000; 4800], 1, true).unwrap();
+        stream.route.store(sion_native_audio::playback::VOCAL, std::sync::atomic::Ordering::Release);
+        let source: std::sync::Arc<dyn sion_native_audio::playback::RenderSource> = stream.clone();
+        sion_native_audio::playback::register(&source);
+        assert_eq!(process_capture_audio(&vec![0.0; 4800], &[], 48_000).len(), 4800);
+        drop(source);
+        drop(stream);
+        assert!(weak.upgrade().is_none(), "source retenue après la destruction de l'APM");
+        assert_eq!(webrtc_sys::sion_audio::ffi::capture_processing_status().instances, baseline);
+    }
 }
 
 #[test]

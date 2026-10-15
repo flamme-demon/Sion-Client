@@ -42,6 +42,33 @@ async function importer() {
   await act(async () => [...dialog().querySelectorAll("button")].find((b) => b.textContent === "extVideo.download")!.click());
 }
 
+it("cancels the link probe when the dialog closes", async () => {
+  outils.analyser.mockImplementation(() => new Promise(() => {}));
+  await analyser();
+  const signal = outils.analyser.mock.calls[0][1] as AbortSignal;
+  expect(signal.aborted).toBe(false);
+  await act(async () => [...dialog().querySelectorAll("button")].find((b) => b.textContent === "poll.cancel")!.click());
+  expect(signal.aborted).toBe(true);
+  expect(outils.fermer).toHaveBeenCalledOnce();
+});
+
+it("cancels the link probe on unmount or room change", async () => {
+  outils.analyser.mockImplementation(() => new Promise(() => {}));
+  await analyser();
+  const signal = outils.analyser.mock.calls[0][1] as AbortSignal;
+  await vue.render(null);
+  expect(signal.aborted).toBe(true);
+});
+
+it("changing the URL cancels the old probe and makes another analysis possible", async () => {
+  outils.analyser.mockImplementation(() => new Promise(() => {}));
+  await analyser();
+  const signal = outils.analyser.mock.calls[0][1] as AbortSignal;
+  await saisir(dialog().querySelector<HTMLInputElement>('input')!, "https://x.com/other/status/456");
+  expect(signal.aborted).toBe(true);
+  expect([...dialog().querySelectorAll("button")].find((b) => b.textContent === "extAudio.analyze")!.disabled).toBe(false);
+});
+
 it("garde par défaut le meilleur fichier d'origine qui tient dans la limite", async () => {
   await analyser();
   expect(radio(360).checked).toBe(true);

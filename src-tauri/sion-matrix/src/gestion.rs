@@ -65,6 +65,8 @@ pub struct ResultatAnnuaire {
 #[serde(rename_all = "camelCase")]
 pub struct DetailsSalon {
     pub membres: Vec<MembreSalon>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub adhesions: Option<Vec<crate::fonctions_sion::EtatSalon>>,
     /// Mon niveau (`getUserPowerLevel`) ; `i64::MAX` = infini (créateur).
     pub moi: i64,
     /// Niveau requis pour l'état (`getStatePowerLevel`, 50 par défaut).
@@ -262,6 +264,33 @@ impl CoeurMatrix {
         Box::pin(self.details_salon_(salon)).await
     }
 
+    pub async fn details_salon_complet(&self, salon: &str) -> Resultat<DetailsSalon> {
+        let mut details = self.details_salon(salon).await?;
+        let room = self.salon(salon).await?;
+        // Read an authoritative snapshot, including changes acknowledged before /sync.
+        let requete = matrix_sdk::ruma::api::client::membership::get_member_events::v3::Request::new(room.room_id().to_owned());
+        let reponse = Box::pin(room.client().send(requete).into_future()).await.map_err(matrix_sdk::Error::from)?;
+        let pouvoirs = room.power_levels().await.map_err(matrix_sdk::Error::from)?;
+        let adhesions: Vec<_> = reponse.chunk.into_iter().filter_map(|e| {
+            let v: Value = serde_json::from_str(e.json().get()).ok()?;
+            Some(crate::fonctions_sion::EtatSalon {
+                state_key: v.get("state_key")?.as_str()?.to_owned(),
+                content: v.get("content")?.clone(),
+                sender: v.get("sender").and_then(Value::as_str).map(str::to_owned),
+            })
+        }).collect();
+        details.membres = adhesions.iter().filter(|e| e.content.get("membership").and_then(Value::as_str) == Some("join"))
+            .map(|e| MembreSalon {
+                user_id: e.state_key.clone(),
+                display_name: e.content.get("displayname").and_then(Value::as_str).filter(|s| !s.trim().is_empty()).unwrap_or(&e.state_key).to_owned(),
+                avatar_url: None,
+                presence: None,
+                power_level: UserId::parse(&e.state_key).map(|id| en_nombre(pouvoirs.for_user(&id))).unwrap_or(0),
+            }).collect();
+        details.adhesions = Some(adhesions);
+        Ok(details)
+    }
+
     async fn details_salon_(&self, salon: &str) -> Resultat<DetailsSalon> {
         let salon = self.salon(salon).await?;
         let client = salon.client();
@@ -297,6 +326,7 @@ impl CoeurMatrix {
         let regle = contenu_etat(&salon, StateEventType::RoomJoinRules).await;
         Ok(DetailsSalon {
             membres,
+            adhesions: None,
             moi: niveau(&moi),
             niveau_etat: niveaux.etat,
             niveau_invitation: niveaux.invitation,
@@ -401,6 +431,13 @@ impl CoeurMatrix {
         let id = utilisateur(id)?;
         let salon = self.salon(salon).await?;
         Box::pin(salon.ban_user(&id, raison)).await?;
+        Ok(())
+    }
+
+    pub async fn debannir(&self, salon: &str, id: &str) -> Resultat<()> {
+        let id = utilisateur(id)?;
+        let salon = self.salon(salon).await?;
+        Box::pin(salon.unban_user(&id, None)).await?;
         Ok(())
     }
 

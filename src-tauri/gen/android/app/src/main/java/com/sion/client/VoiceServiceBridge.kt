@@ -81,9 +81,20 @@ class VoiceServiceBridge(private val context: Context) {
     }
 
     @JavascriptInterface
+    fun voiceAudioState(): String = VoiceCallService.audioState
+
+    @JavascriptInterface
+    fun chooseVoiceAudio(id: String): Boolean = VoiceCallService.chooseAudio(id)
+
+    @JavascriptInterface
+    fun resumeVoiceAudio(): Boolean = VoiceCallService.resumeAudio()
+
+    @JavascriptInterface
+    fun setHeadsetButtonAction(action: String) { VoiceCallService.headsetAction = action.takeIf { it == "disconnect" } ?: "mute" }
+
+    @JavascriptInterface
     fun setSpeakerOn(on: Boolean) {
-        val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager
-        audioManager.isSpeakerphoneOn = on
+        VoiceCallService.chooseAudioType(if (on) "speaker" else "earpiece")
     }
 
     @JavascriptInterface

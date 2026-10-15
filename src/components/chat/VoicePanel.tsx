@@ -133,6 +133,8 @@ export function VoicePanel({ sounds, resolveSound, onUploaded, connectedVoice }:
   const [localRef, setLocalRef] = useState<File | null>(null);
   const [refWarning, setRefWarning] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const generationRef = useRef<AbortController | null>(null);
+  useEffect(() => () => generationRef.current?.abort(), []);
   const [installPct, setInstallPct] = useState<number | null>(null);
   const [enginePct, setEnginePct] = useState<number | null>(null);
   const [transcribing, setTranscribing] = useState(false);
@@ -221,11 +223,12 @@ export function VoicePanel({ sounds, resolveSound, onUploaded, connectedVoice }:
   // signal, l'utilisateur verrait seulement une attente anormalement longue.
   useEffect(() => {
     let stop: (() => void) | undefined;
+    let alive = true;
     import("@tauri-apps/api/event")
-      .then(({ listen }) => listen("tts-cpu-fallback", () => setCpuFallback(true)))
-      .then((un) => { stop = un; })
-      .catch(() => { /* hors Tauri */ });
-    return () => stop?.();
+      .then(({ listen }) => listen("tts-cpu-fallback", () => { if (alive) setCpuFallback(true); }))
+      .then((un) => { if (alive) stop = un; else un(); })
+      .catch(() => { /* Unavailable outside Tauri. */ });
+    return () => { alive = false; stop?.(); };
   }, []);
 
   /** L'extrait en WAV 24 kHz — seul format accepté par --voice-ref, et le
@@ -441,6 +444,7 @@ export function VoicePanel({ sounds, resolveSound, onUploaded, connectedVoice }:
   };
 
   const backToList = () => {
+    generationRef.current?.abort();
     setView("list");
     setResult(null);
   };
@@ -469,23 +473,28 @@ export function VoicePanel({ sounds, resolveSound, onUploaded, connectedVoice }:
   };
 
   const generate = async () => {
-    if (!current || busy) return;
+    if (!current || busy || generationRef.current) return;
+    const controller = new AbortController();
+    generationRef.current = controller;
     setError(null);
     setResult(null);
     setCpuFallback(false);
     setBusy(true);
     try {
       const refPath = await materializeRef(await selectionWav());
+      if (controller.signal.aborted) return;
       const wav = await generateSpeech(
         current.id,
         text.trim(),
         refPath,
         current.needsReferenceText ? refText.trim() : undefined,
+        controller.signal,
       );
-      setResult(wav);
+      if (!controller.signal.aborted) setResult(wav);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      if (!controller.signal.aborted) setError(e instanceof Error ? e.message : String(e));
     } finally {
+      if (generationRef.current === controller) generationRef.current = null;
       setBusy(false);
     }
   };

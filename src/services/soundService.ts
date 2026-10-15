@@ -1,11 +1,11 @@
 /**
- * Service de sons UI — génère des tons courts via Web Audio API.
+ * UI sound service: offline PCM synthesis and native playback.
  * Pas de fichiers audio externes nécessaires.
  */
 
 import { useAppStore } from "../stores/useAppStore";
+import { playNativeTone } from "./nativeAudioPlayback";
 
-let audioCtx: AudioContext | null = null;
 
 // Notification tones (incoming messages, pokes, remote join/leave) are
 // suppressed when the user is deafened. Action-feedback tones
@@ -15,38 +15,6 @@ function isDeafened(): boolean {
   return useAppStore.getState().isDeafened;
 }
 
-function getCtx(): AudioContext {
-  if (!audioCtx) {
-    audioCtx = new AudioContext();
-  }
-  if (audioCtx.state === "suspended") {
-    audioCtx.resume();
-  }
-  return audioCtx;
-}
-
-function playTone(frequency: number, duration: number, volume = 0.15, type: OscillatorType = "sine") {
-  try {
-    const ctx = getCtx();
-    const osc = ctx.createOscillator();
-    const gain = ctx.createGain();
-
-    osc.type = type;
-    osc.frequency.value = frequency;
-    gain.gain.value = volume;
-
-    // Fade out to avoid click
-    gain.gain.setValueAtTime(volume, ctx.currentTime);
-    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + duration);
-
-    osc.connect(gain);
-    gain.connect(ctx.destination);
-    osc.start(ctx.currentTime);
-    osc.stop(ctx.currentTime + duration);
-  } catch {
-    // Audio not available (e.g. no user interaction yet)
-  }
-}
 
 // Mic mute/unmute + deafen/undeafen feedback now lives in the customizable cue
 // system (voiceChannelSounds.ts: playMuteCue/playUnmuteCue/playDeafenCue/
@@ -55,6 +23,5 @@ function playTone(frequency: number, duration: number, volume = 0.15, type: Osci
 /** Son de message reçu — "blop" court et doux */
 export function playMessageReceived() {
   if (isDeafened()) return;
-  playTone(800, 0.08, 0.08, "sine");
-  setTimeout(() => playTone(1000, 0.06, 0.06, "sine"), 50);
+  playNativeTone([{ freq: 800, start: 0, dur: 0.08 }, { freq: 1000, start: 0.05, dur: 0.06 }], "sine", 0.08);
 }

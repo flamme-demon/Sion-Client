@@ -15,8 +15,9 @@ vi.hoisted(() => {
 });
 
 const native = vi.hoisted(() => ({
-  active: vi.fn(), level: vi.fn(), start: vi.fn(), stop: vi.fn(),
+  active: vi.fn(), level: vi.fn(), start: vi.fn(), stop: vi.fn(), tone: vi.fn(),
 }));
+vi.mock("../services/nativeAudioPlayback", () => ({ playNativeTone: native.tone }));
 
 vi.mock("../services/voiceNativeService", () => ({
   getActiveVoiceEngine: native.active,
@@ -67,6 +68,7 @@ it("utilise le RMS Rust pendant le mute sans ouvrir de capture webview", async (
   expect(native.start).toHaveBeenCalledWith("native-mic", "muted-speak-alert");
   expect(native.level).toHaveBeenCalled();
   expect(onSpeak).toHaveBeenCalledOnce();
+  expect(native.tone).toHaveBeenCalledOnce();
   expect(getUserMedia).not.toHaveBeenCalled();
 
   await act(async () => { useAppStore.setState({ isMuted: false }); });

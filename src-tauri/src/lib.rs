@@ -36,6 +36,12 @@ mod win_shortcuts;
 mod voice_native;
 // Native LiveKit engine, enabled by the native-voice feature.
 mod cue_playback;
+mod audio_playback;
+mod process_output;
+#[cfg(not(target_os = "android"))]
+mod inference_job;
+#[cfg(not(target_os = "android"))]
+mod ytdlp_probe;
 #[cfg(not(target_os = "android"))]
 mod incrustation_lecteur;
 #[cfg(not(target_os = "android"))]
@@ -1536,9 +1542,8 @@ pub(crate) fn hidden_command<S: AsRef<std::ffi::OsStr>>(program: S) -> std::proc
 /// a resolved ffmpeg/yt-dlp path actually works.
 #[cfg(not(target_os = "android"))]
 pub(crate) fn bin_runs(bin: &str, version_flag: &str) -> bool {
-    hidden_command(bin)
-        .arg(version_flag)
-        .output()
+    process_output::output(hidden_command(bin).arg(version_flag),
+        std::time::Duration::from_secs(10), &std::sync::atomic::AtomicBool::new(false))
         .map(|o| o.status.success())
         .unwrap_or(false)
 }
@@ -2381,14 +2386,11 @@ fn resolve_ytdlp(configured: Option<&str>, managed: Option<&str>) -> String {
 #[cfg(not(target_os = "android"))]
 /// Detect yt-dlp asynchronously, like detect_ffmpeg, because bin_runs spawns a process.
 #[tauri::command]
-async fn detect_ytdlp(app: tauri::AppHandle<TauriRuntime>) -> Result<Option<String>, String> {
+async fn detect_ytdlp(app: tauri::AppHandle<TauriRuntime>, ytdlp_path: Option<String>) -> Result<Option<String>, String> {
     let managed = managed_ytdlp_path(&app).map(|p| p.to_string_lossy().into_owned());
-    let bin = resolve_ytdlp(None, managed.as_deref());
-    Ok(if bin_runs(&bin, "--version") {
-        Some(bin)
-    } else {
-        None
-    })
+    let bin = resolve_ytdlp(ytdlp_path.as_deref(), managed.as_deref());
+    tauri::async_runtime::spawn_blocking(move || ytdlp_probe::version(&bin).map(|_| bin))
+        .await.map_err(|e| e.to_string())
 }
 
 /// Report the installed yt-dlp version (`--version`) and the latest released
@@ -2403,13 +2405,8 @@ async fn ytdlp_versions(
     let managed = managed_ytdlp_path(&app).map(|p| p.to_string_lossy().into_owned());
     let bin = resolve_ytdlp(ytdlp_path.as_deref(), managed.as_deref());
 
-    let current = hidden_command(&bin)
-        .arg("--version")
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .filter(|s| !s.is_empty());
+    let current = tauri::async_runtime::spawn_blocking(move || ytdlp_probe::version(&bin))
+        .await.map_err(|e| e.to_string())?;
 
     // Latest release tag from GitHub (build_client sends a User-Agent, which
     // the GitHub API requires). Best-effort: None if offline / rate-limited.
@@ -2526,11 +2523,13 @@ async fn probe_url_media(
     app: tauri::AppHandle<TauriRuntime>,
     url: String,
     ytdlp_path: Option<String>,
+    request_id: Option<String>,
 ) -> Result<String, String> {
+    let lease = ytdlp_probe::reserve(request_id)?;
     let managed = managed_ytdlp_path(&app).map(|p| p.to_string_lossy().into_owned());
     let bin = resolve_ytdlp(ytdlp_path.as_deref(), managed.as_deref());
 
-    let out = hidden_command(&bin)
+    let out = tauri::async_runtime::spawn_blocking(move || ytdlp_probe::run(hidden_command(&bin)
         .args([
             "--no-playlist",
             "--playlist-items",
@@ -2540,9 +2539,7 @@ async fn probe_url_media(
             "--print",
             "%(duration)s|%(title)s",
         ])
-        .arg(&url)
-        .output()
-        .map_err(|e| format!("yt-dlp introuvable: {}", e))?;
+        .arg(&url), lease)).await.map_err(|e| e.to_string())??;
     if !out.status.success() {
         return Err(format!("yt-dlp: {}", String::from_utf8_lossy(&out.stderr)));
     }
@@ -2612,9 +2609,8 @@ async fn import_url_audio(
         }
     }
 
-    let output = cmd
-        .output()
-        .map_err(|e| format!("yt-dlp introuvable: {}", e))?;
+    let output = process_output::output(&mut cmd, std::time::Duration::from_secs(1800),
+        &std::sync::atomic::AtomicBool::new(false))?;
     if !output.status.success() {
         let _ = std::fs::remove_dir_all(&work);
         return Err(format!(
@@ -2693,11 +2689,10 @@ fn run_ffmpeg_encode(
     if annulable && IMPORT_ANNULE.load(std::sync::atomic::Ordering::SeqCst) {
         return Err(IMPORT_ANNULE_MESSAGE.into());
     }
-    let mut child = hidden_command(ffmpeg_bin)
+    let mut child = process_output::ChildTree::spawn(hidden_command(ffmpeg_bin)
         .args(args)
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
+        .stderr(Stdio::piped()))
         .map_err(|e| format!("ffmpeg introuvable: {}", e))?;
     let mut errp = child.stderr.take().unwrap();
     let errh = std::thread::spawn(move || {
@@ -2738,16 +2733,21 @@ fn run_ffmpeg_encode(
 
 /// Track the active yt-dlp or ffmpeg import process so Cancel stops native
 /// work and prevents subsequent encoding attempts.
-static IMPORT_EN_COURS: std::sync::Mutex<Option<std::process::Child>> = std::sync::Mutex::new(None);
+static IMPORT_EN_COURS: std::sync::Mutex<Option<process_output::ChildTree>> = std::sync::Mutex::new(None);
+static IMPORT_GATE: std::sync::Mutex<()> = std::sync::Mutex::new(());
 static IMPORT_ANNULE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 const IMPORT_ANNULE_MESSAGE: &str = "Import annulé";
 
-fn confier_a_l_annulation(enfant: Option<std::process::Child>) {
-    *IMPORT_EN_COURS.lock().unwrap_or_else(|e| e.into_inner()) = enfant;
+fn confier_a_l_annulation(enfant: Option<process_output::ChildTree>) {
+    let old = {
+        let mut tracked = IMPORT_EN_COURS.lock().unwrap_or_else(|e| e.into_inner());
+        std::mem::replace(&mut *tracked, enfant)
+    };
+    drop(old); // Also release the old process tree when replacing an import.
 }
 
 /// Take the tracked process; None if Cancel already terminated it.
-fn reprendre_de_l_annulation() -> Option<std::process::Child> {
+fn reprendre_de_l_annulation() -> Option<process_output::ChildTree> {
     IMPORT_EN_COURS
         .lock()
         .unwrap_or_else(|e| e.into_inner())
@@ -2760,8 +2760,7 @@ fn reprendre_de_l_annulation() -> Option<std::process::Child> {
 fn import_url_video_annuler() {
     IMPORT_ANNULE.store(true, std::sync::atomic::Ordering::SeqCst);
     if let Some(mut enfant) = reprendre_de_l_annulation() {
-        let _ = enfant.kill();
-        let _ = enfant.wait();
+        enfant.terminate();
         log::info!(
             "[Sion][vidéo] import annulé : processus {} arrêté",
             enfant.id()
@@ -2778,11 +2777,13 @@ async fn probe_url_formats(
     app: tauri::AppHandle<TauriRuntime>,
     url: String,
     ytdlp_path: Option<String>,
+    request_id: Option<String>,
 ) -> Result<String, String> {
+    let lease = ytdlp_probe::reserve(request_id)?;
     let managed = managed_ytdlp_path(&app).map(|p| p.to_string_lossy().into_owned());
     let bin = resolve_ytdlp(ytdlp_path.as_deref(), managed.as_deref());
 
-    let out = hidden_command(&bin)
+    let out = tauri::async_runtime::spawn_blocking(move || ytdlp_probe::run(hidden_command(&bin)
         // `--playlist-items 1`: multi-video posts (e.g. an X tweet with several
         // clips) are a playlist — without this yt-dlp emits one JSON object per
         // entry and the parse below breaks. Take the first video.
@@ -2794,9 +2795,7 @@ async fn probe_url_formats(
             "--no-warnings",
         ])
         .args(["-S", video_import_formats::TRI_FORMATS])
-        .arg(&url)
-        .output()
-        .map_err(|e| format!("yt-dlp introuvable: {}", e))?;
+        .arg(&url), lease)).await.map_err(|e| e.to_string())??;
     if !out.status.success() {
         return Err(format!("yt-dlp: {}", String::from_utf8_lossy(&out.stderr)));
     }
@@ -2811,6 +2810,10 @@ async fn probe_url_formats(
 
     Ok(video_import_formats::resume(&json).to_string())
 }
+
+#[cfg(not(target_os = "android"))]
+#[tauri::command]
+fn cancel_ytdlp_probe(request_id: String) { ytdlp_probe::cancel(request_id); }
 
 /// Download a video at a chosen max height (AV1 preferred when available),
 /// optionally a [start,end] section. Returns `{ext, data(b64)}`.
@@ -2829,6 +2832,7 @@ async fn import_url_video(
     recode_webm: Option<bool>,
     duration_sec: Option<f64>,
 ) -> Result<String, String> {
+    let _import = IMPORT_GATE.try_lock().map_err(|_| "Un import vidéo est déjà en cours".to_string())?;
     use base64::Engine;
     use std::io::{BufRead, BufReader, Read};
     use std::process::Stdio;
@@ -2888,8 +2892,7 @@ async fn import_url_video(
             ]);
         }
     }
-    let mut child = dl
-        .spawn()
+    let mut child = process_output::ChildTree::spawn(&mut dl)
         .map_err(|e| format!("yt-dlp introuvable: {}", e))?;
     let mut errp = child.stderr.take().unwrap();
     let errh = std::thread::spawn(move || {
@@ -3593,6 +3596,7 @@ pub fn run() {
         matrix_pont::commandes::matrix_inviter,
         matrix_pont::commandes::matrix_expulser,
         matrix_pont::commandes::matrix_bannir,
+        matrix_pont::commandes::matrix_debannir,
         matrix_pont::commandes::matrix_changer_niveau,
         matrix_pont::commandes::matrix_rejoindre,
         matrix_pont::commandes::matrix_quitter,
@@ -3747,6 +3751,8 @@ pub fn run() {
         #[cfg(not(target_os = "android"))]
         ytdlp_versions,
         #[cfg(not(target_os = "android"))]
+        cancel_ytdlp_probe,
+        #[cfg(not(target_os = "android"))]
         probe_url_media,
         #[cfg(not(target_os = "android"))]
         import_url_audio,
@@ -3815,6 +3821,8 @@ pub fn run() {
         #[cfg(not(target_os = "android"))]
         summarize::summarize_transcript,
         #[cfg(not(target_os = "android"))]
+        summarize::cancel_summary_generation,
+        #[cfg(not(target_os = "android"))]
         summarize::delete_summary_assets,
         #[cfg(not(target_os = "android"))]
         summarize::llama_versions,
@@ -3832,6 +3840,8 @@ pub fn run() {
         tts::delete_tts_model,
         #[cfg(not(target_os = "android"))]
         tts::tts_generate,
+        #[cfg(not(target_os = "android"))]
+        tts::cancel_tts_generation,
         voice_native::voice_native_status,
         voice_native::voice_native_available,
         voice_native::voice_native_audio_devices,
@@ -3846,6 +3856,12 @@ pub fn run() {
         voice_native::voice_native_connect,
         voice_native::voice_native_disconnect,
         voice_native::voice_native_play_soundboard,
+        audio_playback::audio_native_open,
+        audio_playback::audio_native_push,
+        audio_playback::audio_native_pause,
+        audio_playback::audio_native_volume,
+        audio_playback::audio_native_status,
+        audio_playback::audio_native_stop,
         voice_native::voice_native_set_muted,
         voice_native::voice_native_set_deafened,
         voice_native::voice_native_set_e2ee_key,
@@ -4172,6 +4188,14 @@ pub fn run() {
             // Give JS ~1.5s to flush the LiveKit WS leave + MatrixRTC
             // membership state event before forcing the close.
             std::thread::spawn(move || {
+                audio_playback::shutdown();
+                #[cfg(not(target_os = "android"))]
+                transcribe::shutdown();
+                #[cfg(not(target_os = "android"))]
+                {
+                    import_url_video_annuler();
+                    process_output::shutdown();
+                }
                 std::thread::sleep(std::time::Duration::from_millis(1500));
                 let _ = win.destroy();
             });

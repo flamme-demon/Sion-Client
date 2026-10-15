@@ -8,6 +8,8 @@ import * as cacheRust from "./cacheRust";
 import { moteurRust } from "./moteur";
 import { plateformeLocale } from "../utils/plateforme";
 import { contexteBibliotheque } from "../utils/bibliotheque";
+import { messageEditContent } from "../utils/messageEdit";
+import { deviceDisplayName, deviceOperatingSystem, isAutomaticDeviceName } from "./deviceIdentity";
 
 let matrixClient: MatrixClient | null = null;
 
@@ -58,21 +60,7 @@ const cryptoCallbacks = {
 };
 
 function getDeviceDisplayName(): string {
-  let os = "Unknown";
-  const ua = navigator.userAgent;
-  if (ua.includes("Win")) os = "Windows";
-  else if (ua.includes("Mac")) os = "macOS";
-  else if (ua.includes("Linux")) os = "Linux";
-  else if (ua.includes("Android")) os = "Android";
-  else if (ua.includes("iPhone") || ua.includes("iPad")) os = "iOS";
-  // La VERSION fait partie du nom d'appareil.
-  //
-  // C'est le seul endroit où le serveur conserve, par session, une information
-  // que l'administrateur peut relire sans que le client ait à publier quoi que
-  // ce soit : ni événement d'état dans chaque salon, ni trafic supplémentaire.
-  // Elle ne se lit que par l'API d'administration — la version reste donc une
-  // donnée d'exploitation, invisible des autres membres.
-  return `Sion Client ${__APP_VERSION__} (${os})`;
+  return deviceDisplayName(__APP_VERSION__);
 }
 
 /** Type d'événement d'état portant la version du client d'un membre. */
@@ -102,14 +90,14 @@ export interface SionMemberVersion {
  */
 export async function publishClientVersion(): Promise<void> {
   if (moteurRust()) {
-    const os = getDeviceDisplayName().replace(/^.*\(/, "").replace(/\)$/, "");
+    const os = deviceOperatingSystem();
     await core.publierVersion(__APP_VERSION__, os).catch(() => 0);
     return;
   }
   if (!matrixClient) return;
   const userId = matrixClient.getUserId();
   if (!userId) return;
-  const os = getDeviceDisplayName().replace(/^.*\(/, "").replace(/\)$/, "");
+  const os = deviceOperatingSystem();
   const contenu = { version: __APP_VERSION__, os, ts: Date.now() };
 
   const salons = matrixClient
@@ -220,7 +208,7 @@ export function getRoomClientVersions(roomId: string): SionMemberVersion[] {
  */
 export async function refreshDeviceVersionLabel(): Promise<void> {
   if (moteurRust()) {
-    await core.rafraichirNomAppareil(`${getDeviceDisplayName()} — moteur Rust`).catch(() => false);
+    await core.rafraichirNomAppareil(getDeviceDisplayName()).catch(() => false);
     return;
   }
   if (!matrixClient) return;
@@ -229,7 +217,7 @@ export async function refreshDeviceVersionLabel(): Promise<void> {
   const voulu = getDeviceDisplayName();
   try {
     const actuel = await matrixClient.getDevice(deviceId);
-    if (actuel?.display_name === voulu) return;
+    if (actuel?.display_name === voulu || !isAutomaticDeviceName(actuel?.display_name)) return;
     await matrixClient.setDeviceDetails(deviceId, { display_name: voulu });
     console.info(`[Sion] nom d'appareil mis à jour : ${voulu}`);
   } catch (err) {
@@ -1578,6 +1566,24 @@ export async function editMessage(roomId: string, originalEventId: string, newTe
   }
   if (!matrixClient) throw new Error("Matrix client not initialized");
   originalEventId = requireServerEventId(roomId, originalEventId);
+  const room = matrixClient.getRoom(roomId);
+  let original = room?.findEventById(originalEventId);
+  if (!original) {
+    const raw = await matrixClient.fetchRoomEvent(roomId, originalEventId);
+    original = matrixClient.getEventMapper()({ ...raw, room_id: roomId });
+  }
+  await matrixClient.decryptEventIfNeeded(original);
+  if (original.getType() !== "m.room.message") throw new Error("Message original indisponible ou indéchiffrable");
+  const content = messageEditContent(original.getOriginalContent(), originalEventId, newText);
+  const crypto = matrixClient.getCrypto();
+  const encryptedRoom = original.isEncrypted() || room?.hasEncryptionStateEvent()
+    || await crypto?.isEncryptionEnabledInRoom(roomId);
+  if (encryptedRoom) {
+    // Media keys must stay inside an encrypted replacement event.
+    if (!crypto) throw new Error("Chiffrement du salon indisponible");
+    await matrixClient.sendMessage(roomId, content as never);
+    return;
+  }
   // Use REST API directly to avoid SDK pendingEventOrdering bug
   const baseUrl = matrixClient.getHomeserverUrl();
   const token = matrixClient.getAccessToken();
@@ -1587,12 +1593,7 @@ export async function editMessage(roomId: string, originalEventId: string, newTe
     {
       method: "PUT",
       headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        msgtype: "m.text",
-        body: `* ${newText}`,
-        "m.new_content": { msgtype: "m.text", body: newText },
-        "m.relates_to": { rel_type: "m.replace", event_id: originalEventId },
-      }),
+      body: JSON.stringify(content),
     },
   );
   if (!res.ok) {
@@ -1943,6 +1944,16 @@ export async function banUser(roomId: string, userId: string, reason?: string): 
   }
   if (!matrixClient) throw new Error("Matrix client not initialized");
   await matrixClient.ban(roomId, userId, reason);
+}
+
+export async function unbanUser(roomId: string, userId: string): Promise<void> {
+  if (moteurRust()) {
+    await core.debannir(roomId, userId);
+    cacheRust.oublierDetails(roomId);
+    return;
+  }
+  if (!matrixClient) throw new Error("Matrix client not initialized");
+  await matrixClient.unban(roomId, userId);
 }
 
 export async function setUserPowerLevel(roomId: string, userId: string, level: number): Promise<void> {

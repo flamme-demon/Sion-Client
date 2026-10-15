@@ -104,6 +104,9 @@ fn depuis_json(json: &Value, echec: bool) -> EvenementBrut {
         expediteur: chaine("sender"),
         ts: json.get("origin_server_ts").and_then(Value::as_i64).unwrap_or(0),
         echec_dechiffrement: echec,
+        supprime: json.pointer("/unsigned/redacted_because").is_some_and(Value::is_object),
+        redacts: json.get("redacts").and_then(Value::as_str)
+            .or_else(|| json.pointer("/content/redacts").and_then(Value::as_str)).map(str::to_owned),
         edition_groupee: json
             .pointer("/unsigned/m.relations/m.replace")
             .filter(|e| e.get("content").is_some())
@@ -128,6 +131,46 @@ mod tests_echo {
             assert_eq!(brut.transaction_id.as_deref(), Some("sion-transaction"));
         }
         assert!(depuis_json(&json!({ "event_id": "$autre" }), false).transaction_id.is_none());
+    }
+
+    #[test]
+    fn redacted_original_cannot_be_restored_by_its_edit() {
+        let edit = json!({ "type": "m.room.message", "event_id": "$edit", "sender": "@moi:hs",
+            "content": { "msgtype": "m.text", "body": "* caption", "m.new_content": { "msgtype": "m.text", "body": "caption" },
+                "m.relates_to": { "rel_type": "m.replace", "event_id": "$photo" } } });
+        for bundled in [false, true] {
+            let mut original = json!({ "type": "m.room.message", "event_id": "$photo", "sender": "@moi:hs", "content": {},
+                "unsigned": { "redacted_because": { "type": "m.room.redaction", "event_id": "$redact" } } });
+            if bundled { original["unsigned"]["m.relations"]["m.replace"] = edit.clone(); }
+            let events = [depuis_json(&original, false), depuis_json(&edit, false)];
+            let profile = |_: &str| (None, None);
+            let url = |_: &messages::SourceMedia, _: bool| None;
+            let ctx = Contexte { profil: &profile, url: &url };
+            assert!(messages::extraire(&events, &ctx).is_empty());
+            assert_eq!(messages::contenu_affiche(&events, &events[0]), json!({}));
+        }
+    }
+
+    #[test]
+    fn redaction_targets_are_read_for_old_and_new_room_versions() {
+        for legacy in [false, true] {
+            let original = json!({ "type": "m.room.message", "event_id": "$photo", "sender": "@moi:hs",
+                "content": { "msgtype": "m.image", "body": "photo.png", "url": "mxc://hs/photo" } });
+            let edit = json!({ "type": "m.room.message", "event_id": "$edit", "sender": "@moi:hs",
+                "content": { "msgtype": "m.text", "body": "* caption", "m.new_content": { "msgtype": "m.text", "body": "caption" },
+                    "m.relates_to": { "rel_type": "m.replace", "event_id": "$photo" } } });
+            let mut redaction = json!({ "type": "m.room.redaction", "event_id": "$redact", "content": {} });
+            if legacy { redaction["redacts"] = json!("$photo"); }
+            else { redaction["content"]["redacts"] = json!("$photo"); }
+            for undecryptable in [false, true] {
+                let events = [depuis_json(&original, undecryptable), depuis_json(&edit, false), depuis_json(&redaction, false)];
+                let profile = |_: &str| (None, None);
+                let url = |_: &messages::SourceMedia, _: bool| None;
+                let ctx = Contexte { profil: &profile, url: &url };
+                assert!(messages::extraire(&events, &ctx).is_empty());
+                assert_eq!(messages::contenu_affiche(&events, &events[0]), json!({}));
+            }
+        }
     }
 }
 

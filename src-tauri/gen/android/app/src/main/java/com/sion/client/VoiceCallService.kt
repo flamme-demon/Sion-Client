@@ -7,10 +7,12 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.BroadcastReceiver
+import android.content.IntentFilter
 import android.content.pm.ServiceInfo
-import android.media.AudioDeviceCallback
-import android.media.AudioDeviceInfo
 import android.media.AudioManager
+import android.media.session.MediaSession
+import android.media.session.PlaybackState
 import android.telephony.PhoneStateListener
 import android.telephony.TelephonyManager
 import android.os.Build
@@ -18,7 +20,9 @@ import android.os.Handler
 import android.os.Looper
 import android.os.IBinder
 import android.os.PowerManager
+import android.view.KeyEvent
 import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
 
 class VoiceCallService : Service() {
 
@@ -43,6 +47,33 @@ class VoiceCallService : Service() {
         private var currentMuted = false
         private var currentDeafened = false
         private var currentChannelName = "Voice"
+        @Volatile private var instance: VoiceCallService? = null
+        @Volatile var audioState = "{\"running\":false,\"selected\":\"auto\",\"devices\":[]}"
+            private set
+        @Volatile var headsetAction = "mute"
+
+        fun chooseAudio(id: String): Boolean {
+            val service = instance ?: return false
+            val state = org.json.JSONObject(audioState)
+            val devices = state.optJSONArray("devices") ?: return false
+            if (!state.optBoolean("running") || (id != "auto" && (0 until devices.length()).none { devices.getJSONObject(it).getString("id") == id })) return false
+            service.handler.post { if (instance === service && isRunning) service.audioRouting?.choose(id) }
+            return true
+        }
+
+        fun chooseAudioType(type: String): Boolean {
+            val devices = org.json.JSONObject(audioState).optJSONArray("devices") ?: return false
+            val id = (0 until devices.length()).map { devices.getJSONObject(it) }.firstOrNull { it.optString("type") == type }?.optString("id") ?: return false
+            return chooseAudio(id)
+        }
+
+        fun headsetButton(event: KeyEvent): Boolean = instance?.handleHeadsetButton(event) ?: false
+
+        fun resumeAudio(): Boolean {
+            val service = instance ?: return false
+            service.handler.post { if (instance === service && isRunning) service.audioRouting?.resume() }
+            return true
+        }
 
         fun consumePendingAction(): String {
             synchronized(pendingActions) {
@@ -77,50 +108,119 @@ class VoiceCallService : Service() {
 
     private var wakeLock: PowerManager.WakeLock? = null
     private val handler = Handler(Looper.getMainLooper())
-    /**
-     * Sortie audio de l'appel : casque (Bluetooth, filaire, USB) s'il y en a
-     * un, sinon haut-parleur. Réévaluée quand un appareil se branche ou se
-     * débranche. Avant : le haut-parleur était forcé toutes les 2 s, ce qui
-     * rendait un casque Bluetooth inutilisable (29/09).
-     */
-    private fun choisirSortie() {
-        val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            val dispo = am.availableCommunicationDevices
-            val ordre = listOf(
-                AudioDeviceInfo.TYPE_BLE_HEADSET,
-                AudioDeviceInfo.TYPE_BLUETOOTH_SCO,
-                AudioDeviceInfo.TYPE_WIRED_HEADSET,
-                AudioDeviceInfo.TYPE_WIRED_HEADPHONES,
-                AudioDeviceInfo.TYPE_USB_HEADSET,
-                AudioDeviceInfo.TYPE_BUILTIN_SPEAKER,
-            )
-            val choix = ordre.firstNotNullOfOrNull { type -> dispo.firstOrNull { it.type == type } }
-            if (choix != null && am.communicationDevice?.id != choix.id) {
-                am.setCommunicationDevice(choix)
-            }
-        } else {
-            @Suppress("DEPRECATION")
-            run {
-                val sorties = am.getDevices(AudioManager.GET_DEVICES_OUTPUTS).map { it.type }
-                val bluetooth = AudioDeviceInfo.TYPE_BLUETOOTH_SCO in sorties
-                val filaire = sorties.any {
-                    it == AudioDeviceInfo.TYPE_WIRED_HEADSET || it == AudioDeviceInfo.TYPE_WIRED_HEADPHONES ||
-                        it == AudioDeviceInfo.TYPE_USB_HEADSET
-                }
-                am.mode = AudioManager.MODE_IN_COMMUNICATION
-                if (bluetooth) {
-                    am.startBluetoothSco()
-                    am.isBluetoothScoOn = true
-                }
-                am.isSpeakerphoneOn = !bluetooth && !filaire
+    private var audioRouting: VoiceAudioController? = null
+    private var headsetSession: MediaSession? = null
+    private var nativeSession = -1L
+    private var audioStarted = false
+    private val hardwareMicrophone = HeadsetMicrophone()
+    private var microphoneRegistered = false
+    private var reportedMute: Boolean? = null
+    private val usesTelecom: Boolean
+        get() = Build.VERSION.SDK_INT >= 34 && packageManager.hasSystemFeature(android.content.pm.PackageManager.FEATURE_TELECOM)
+    private val microphoneReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action == AudioManager.ACTION_MICROPHONE_MUTE_CHANGED) {
+                hardwareMicrophoneChanged(getSystemService(AudioManager::class.java).isMicrophoneMute)
             }
         }
     }
+    private val headsetSync = object : Runnable {
+        override fun run() {
+            if (!isRunning || nativeSession == 0L || nativeSession != SionNatif.sessionVoix()) { stopSelf(); return }
+            refreshHeadsetState()
+            handler.postDelayed(this, 500)
+        }
+    }
 
-    private val appareilsAudio = object : AudioDeviceCallback() {
-        override fun onAudioDevicesAdded(added: Array<out AudioDeviceInfo>) = choisirSortie()
-        override fun onAudioDevicesRemoved(removed: Array<out AudioDeviceInfo>) = choisirSortie()
+    private fun hardwareMicrophoneChanged(muted: Boolean) {
+        val action = hardwareMicrophone.changed(muted) ?: return
+        if (isRunning && !appelEnCours && !org.json.JSONObject(audioState).optBoolean("interrupted")) {
+            headsetCommand(action, "microphone-system")
+        }
+    }
+
+    private fun refreshHeadsetState() {
+        val muted = SionNatif.microCoupe(nativeSession)
+        currentMuted = muted
+        if (reportedMute != muted) {
+            reportedMute = muted
+            headsetSession?.setPlaybackState(PlaybackState.Builder()
+                .setState(if (muted) PlaybackState.STATE_PAUSED else PlaybackState.STATE_PLAYING, 0, 1f)
+                .setActions(PlaybackState.ACTION_PLAY_PAUSE or PlaybackState.ACTION_PLAY or PlaybackState.ACTION_PAUSE or PlaybackState.ACTION_STOP).build())
+            getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID,
+                buildNotification(currentChannelName, muted, currentDeafened))
+        }
+        audioRouting?.muteChanged(muted)
+    }
+
+    private fun startAudio() {
+        if (audioStarted) return
+        audioStarted = true
+        try {
+            nativeSession = SionNatif.sessionVoix()
+            headsetSession = MediaSession(this, "SionVoice").apply {
+                setFlags(MediaSession.FLAG_HANDLES_MEDIA_BUTTONS or MediaSession.FLAG_HANDLES_TRANSPORT_CONTROLS)
+                // Headset buttons must not restart an ended voice call.
+                setMediaButtonReceiver(null)
+                setPlaybackToLocal(android.media.AudioAttributes.Builder()
+                    .setUsage(android.media.AudioAttributes.USAGE_VOICE_COMMUNICATION)
+                    .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SPEECH).build())
+                setCallback(object : MediaSession.Callback() {
+                    override fun onMediaButtonEvent(intent: Intent): Boolean {
+                        @Suppress("DEPRECATION") val event = intent.getParcelableExtra<KeyEvent>(Intent.EXTRA_KEY_EVENT) ?: return false
+                        return handleHeadsetButton(event)
+                    }
+                    override fun onPlay() = headsetCommand(2)
+                    override fun onPause() = headsetCommand(1)
+                    override fun onStop() = headsetCommand(3)
+                }, handler)
+                isActive = true
+            }
+            val interrupted: (Boolean) -> Unit = { interrupted ->
+                SionNatif.interruptionVoix(nativeSession, interrupted)
+                headsetSession?.isActive = !interrupted
+            }
+            val changed: (String) -> Unit = { state ->
+                if (state != audioState) android.util.Log.i("SionAudio", "Communication route: $state")
+                audioState = state
+                sendBroadcast(Intent("com.sion.client.VOICE_AUDIO").setPackage(packageName).putExtra("state", state))
+            }
+            audioRouting = if (usesTelecom && Build.VERSION.SDK_INT >= 34) AndroidTelecomVoiceAudio(this, handler, currentChannelName,
+                interrupted, changed, { muted -> headsetCommand(if (muted) 1 else 2, "telecom-microphone") }, { headsetCommand(3, "telecom") }, {
+                    getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID,
+                        buildNotification(currentChannelName, currentMuted, currentDeafened))
+                }) else AndroidVoiceAudio(this, handler, interrupted, changed)
+            hardwareMicrophoneChanged(getSystemService(AudioManager::class.java).isMicrophoneMute)
+            // Telecom distinguishes our mute acknowledgements from headset actions.
+            // Reading the same changes through a second receiver would feed them back.
+            if (!usesTelecom) {
+                ContextCompat.registerReceiver(this, microphoneReceiver,
+                    IntentFilter(AudioManager.ACTION_MICROPHONE_MUTE_CHANGED), ContextCompat.RECEIVER_NOT_EXPORTED)
+                microphoneRegistered = true
+            }
+            refreshHeadsetState()
+            audioRouting?.start()
+            handler.post(headsetSync)
+        }
+        catch (e: RuntimeException) {
+            android.util.Log.e("SionAudio", "Audio initialization failed", e)
+            SionNatif.actionCasque(nativeSession, 3)
+            stopSelf()
+        }
+    }
+
+    private fun handleHeadsetButton(event: KeyEvent): Boolean {
+        if (!isRunning || appelEnCours || org.json.JSONObject(audioState).optBoolean("interrupted") || !HeadsetButtons.supported(event.keyCode)) return false
+        HeadsetButtons.action(event.keyCode, event.action == KeyEvent.ACTION_DOWN, event.repeatCount, event.isCanceled, headsetAction)?.let { headsetCommand(it, "key-${event.keyCode}") }
+        return true
+    }
+
+    private fun headsetCommand(action: Int, source: String = "media") {
+        if (!isRunning || (appelEnCours && source != "telecom")) return
+        android.util.Log.i("SionAudio", "Headset command: source=$source action=$action")
+        SionNatif.actionCasque(nativeSession, action)
+        if (action == 3) stopSelf()
+        else refreshHeadsetState()
     }
 
     // ── Appel téléphonique ──────────────────────────────────────────────
@@ -138,8 +238,7 @@ class VoiceCallService : Service() {
             putExtra("action", if (enAppel) ACTION_APPEL_DEBUT else ACTION_APPEL_FIN)
             setPackage(packageName)
         })
-        // Après l'appel, le système a repris la main sur le mode et la sortie.
-        if (!enAppel) handler.postDelayed({ choisirSortie() }, 800)
+        audioRouting?.phoneCall(enAppel)
     }
 
     @Suppress("DEPRECATION")
@@ -153,6 +252,7 @@ class VoiceCallService : Service() {
             }
             am.addOnModeChangedListener(mainExecutor, ecoute)
             ecouteMode = ecoute
+            signalerAppel(am.mode == AudioManager.MODE_IN_CALL)
         } else {
             val tm = getSystemService(Context.TELEPHONY_SERVICE) as TelephonyManager
             val ecoute = object : PhoneStateListener() {
@@ -160,8 +260,12 @@ class VoiceCallService : Service() {
                     signalerAppel(state == TelephonyManager.CALL_STATE_OFFHOOK)
                 }
             }
-            tm.listen(ecoute, PhoneStateListener.LISTEN_CALL_STATE)
-            ecouteTelephone = ecoute
+            try {
+                tm.listen(ecoute, PhoneStateListener.LISTEN_CALL_STATE)
+                ecouteTelephone = ecoute
+            } catch (_: SecurityException) {
+                // Audio focus still suspends Sion without the phone-state permission.
+            }
         }
     }
 
@@ -188,11 +292,7 @@ class VoiceCallService : Service() {
             acquire()
         }
         isRunning = true
-
-        // Sortie choisie une fois WebRTC en place, puis à chaque appareil
-        // branché ou débranché.
-        handler.postDelayed({ choisirSortie() }, 1500)
-        (getSystemService(Context.AUDIO_SERVICE) as AudioManager).registerAudioDeviceCallback(appareilsAudio, handler)
+        instance = this
         suivreAppelsTelephoniques()
     }
 
@@ -213,6 +313,10 @@ class VoiceCallService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (SionNatif.sessionVoix() == 0L) {
+            stopSelf()
+            return START_NOT_STICKY
+        }
         // Handle action intents from notification buttons
         when (intent?.action) {
             ACTION_MUTE -> {
@@ -264,26 +368,29 @@ class VoiceCallService : Service() {
         val notification = buildNotification(channelName, isMuted, isDeafened)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
             startForeground(NOTIFICATION_ID, notification,
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE or
+                    (if (usesTelecom) ServiceInfo.FOREGROUND_SERVICE_TYPE_PHONE_CALL else 0))
         } else {
             startForeground(NOTIFICATION_ID, notification)
         }
+        // Android 15 requires foreground ownership before requesting audio focus.
+        startAudio()
+        refreshHeadsetState()
         return START_STICKY
     }
 
     override fun onDestroy() {
         isRunning = false
+        instance = null
         handler.removeCallbacksAndMessages(null)
+        if (microphoneRegistered) unregisterReceiver(microphoneReceiver)
+        microphoneRegistered = false
         cesserSuivreAppels()
-        (getSystemService(Context.AUDIO_SERVICE) as AudioManager).unregisterAudioDeviceCallback(appareilsAudio)
-        // Restore audio routing
-        val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            audioManager.clearCommunicationDevice()
-        } else {
-            audioManager.isSpeakerphoneOn = false
-            audioManager.mode = AudioManager.MODE_NORMAL
-        }
+        headsetSession?.isActive = false
+        headsetSession?.release()
+        headsetSession = null
+        audioRouting?.stop()
+        audioRouting = null
         wakeLock?.let {
             if (it.isHeld) it.release()
         }
@@ -354,10 +461,14 @@ class VoiceCallService : Service() {
             .setContentIntent(openIntent)
             .addAction(muteIcon, muteLabel, muteIntent)
             .addAction(deafenIcon, deafenLabel, deafenIntent)
-            .addAction(R.drawable.ic_call_end, "Quitter", disconnectIntent)
+            .apply {
+                if (usesTelecom) setStyle(NotificationCompat.CallStyle.forOngoingCall(
+                    androidx.core.app.Person.Builder().setName(channelName).build(), disconnectIntent))
+                else addAction(R.drawable.ic_call_end, "Quitter", disconnectIntent)
+            }
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
-            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
             .setCategory(NotificationCompat.CATEGORY_CALL)
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
             .setSilent(true)
             .build()
     }

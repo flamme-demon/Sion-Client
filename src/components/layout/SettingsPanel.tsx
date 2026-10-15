@@ -171,12 +171,12 @@ export function SettingsPanel() {
   const [ytdlpVer, setYtdlpVer] = useState<{ current: string | null; latest: string | null } | null>(null);
   const redetectYtdlp = useCallback(() => {
     import("@tauri-apps/api/core")
-      .then(({ invoke }) => invoke<string | null>("detect_ytdlp"))
+      .then(({ invoke }) => invoke<string | null>("detect_ytdlp", { ytdlpPath: useSettingsStore.getState().ytdlpPath || undefined }))
       .then((p) => setYtdlpDetected(p ?? null))
       .catch(() => setYtdlpDetected(null));
     setYtdlpVer(null);
     import("@tauri-apps/api/core")
-      .then(({ invoke }) => invoke<string>("ytdlp_versions"))
+      .then(({ invoke }) => invoke<string>("ytdlp_versions", { ytdlpPath: useSettingsStore.getState().ytdlpPath || undefined }))
       .then((raw) => setYtdlpVer(JSON.parse(raw)))
       .catch(() => setYtdlpVer(null));
   }, []);

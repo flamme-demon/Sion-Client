@@ -5,7 +5,7 @@ resolver = "2"
 
 [package]
 name = "sion-client"
-version = "2.0.0"
+version = "2.0.1"
 description = "Sion Client - Voice/Text client based on Matrix + LiveKit"
 authors = ["Sion"]
 license = "MIT OR Apache-2.0"
@@ -244,6 +244,8 @@ windows = { version = "0.62", features = [
     "Win32_System_Com_StructuredStorage",
     "Win32_System_LibraryLoader",
     "Win32_System_Threading",
+    "Win32_System_JobObjects",
+    "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_Variant",
     "Win32_System_SystemInformation",
     "Win32_Storage_FileSystem",

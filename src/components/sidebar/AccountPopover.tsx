@@ -606,7 +606,7 @@ export function AccountPopover({ compact = false }: { compact?: boolean }) {
                 >
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
-                      <span style={{ fontSize: 12, fontWeight: 500, color: 'var(--color-on-surface)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      <span title={device.display_name || device.device_id} style={{ fontSize: 12, fontWeight: 500, color: 'var(--color-on-surface)', overflowWrap: 'anywhere' }}>
                         {device.display_name || device.device_id}
                       </span>
                       {isCurrent && (

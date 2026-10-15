@@ -2,6 +2,7 @@ import { useEffect, useState, type CSSProperties } from "react";
 import { useTranslation } from "react-i18next";
 import { useSettingsStore } from "../../stores/useSettingsStore";
 import { useAppStore } from "../../stores/useAppStore";
+import { autoriserMicro } from "../../services/androidVoiceService";
 import {
   getVoiceNativeAudioLevel,
   getVoiceNativeAudioDevices,
@@ -99,8 +100,12 @@ export function NativeAudioSettings() {
         if (!stopped) timer = setTimeout(sample, 50);
       }
     }
-    void startVoiceNativeMicrophoneTest(input, "settings")
-      .then(() => sample())
+    void (async () => {
+      if (!(await autoriserMicro())) throw new Error("autorisation du micro refusée");
+      if (stopped) return;
+      await startVoiceNativeMicrophoneTest(input, "settings");
+      if (!stopped) await sample();
+    })()
       .catch((err) => { if (!stopped) setError(String(err)); });
     return () => {
       stopped = true;

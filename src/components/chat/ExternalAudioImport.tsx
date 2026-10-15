@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { probeUrlMedia, importUrlAudio, type UrlMediaInfo } from "../../services/ytdlpService";
 import { detectYtdlp, installYtdlp } from "../../services/ytdlpInstall";
@@ -49,6 +49,8 @@ export function ExternalAudioImport({ onImported }: Props) {
   const [endStr, setEndStr] = useState("");
   const [phase, setPhase] = useState<"idle" | "probing" | "importing">("idle");
   const [error, setError] = useState<string | null>(null);
+  const probe = useRef<AbortController | null>(null);
+  useEffect(() => () => { probe.current?.abort(); probe.current = null; }, []);
 
   useEffect(() => { detectYtdlp().then((p) => setReady(!!p)).catch(() => setReady(false)); }, []);
 
@@ -70,12 +72,17 @@ export function ExternalAudioImport({ onImported }: Props) {
     setError(null);
     setInfo(null);
     setPhase("probing");
+    const controller = new AbortController();
+    probe.current?.abort();
+    probe.current = controller;
     try {
-      setInfo(await probeUrlMedia(url.trim()));
+      const result = await probeUrlMedia(url.trim(), controller.signal);
+      if (probe.current === controller && !controller.signal.aborted) setInfo(result);
     } catch (e) {
+      if (probe.current !== controller || controller.signal.aborted) return;
       setError(e instanceof Error ? e.message : String(e));
     } finally {
-      setPhase("idle");
+      if (probe.current === controller) { probe.current = null; setPhase("idle"); }
     }
   };
 
@@ -120,7 +127,10 @@ export function ExternalAudioImport({ onImported }: Props) {
     <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
       <div style={{ display: 'flex', gap: 6 }}>
         <input
-          value={url} onChange={(e) => { setUrl(e.target.value); setInfo(null); }}
+          value={url} onChange={(e) => {
+            if (probe.current) { probe.current.abort(); probe.current = null; setPhase("idle"); }
+            setUrl(e.target.value); setInfo(null);
+          }}
           onKeyDown={(e) => { if (e.key === "Enter") analyze(); }}
           placeholder={t("extAudio.urlPlaceholder")} style={{ ...inputStyle, flex: 1 }}
         />

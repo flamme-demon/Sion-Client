@@ -19,6 +19,7 @@ import { useAppStore } from "../stores/useAppStore";
 import { useSettingsStore } from "../stores/useSettingsStore";
 import { useTranscriptStore } from "../stores/useTranscriptStore";
 import * as matrixService from "./matrixService";
+import { reserveTranscriptionEngine, type TranscriptionEngineLease } from "./transcriptionEngine";
 
 function isTauri(): boolean {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -32,6 +33,7 @@ interface Session {
   roomId: string;
   ws: WebSocket | null;
   unsubApp: (() => void) | null;
+  engine: TranscriptionEngineLease;
 }
 
 let session: Session | null = null;
@@ -132,64 +134,87 @@ export function syncArmedTranscribers(identities: string[]): void {
 async function startEngine(roomId: string): Promise<void> {
   if (!isTauri()) throw new Error("desktop only");
   if (session) await stopEngine();
-
-  const store = useTranscriptStore.getState();
-  store.setState("starting");
-  const { transcribeModel, transcribeLang } = useSettingsStore.getState();
-  const modelPath = await ensureModelDownloaded(transcribeModel);
-
-  const { isMuted, isDeafened } = useAppStore.getState();
-  const port = await invoke<number>("transcribe_start_native", {
-    modelPath,
-    lang: transcribeLang,
-    micEnabled: !isMuted && !isDeafened,
-  });
-
-  const s: Session = { roomId, ws: null, unsubApp: null };
+  let engine: TranscriptionEngineLease;
+  try {
+    engine = reserveTranscriptionEngine();
+  } catch (err) {
+    useTranscriptStore.getState().setState("error", String((err as Error)?.message || err));
+    disarmTranscription(roomId);
+    throw err;
+  }
+  const s: Session = { roomId, ws: null, unsubApp: null, engine };
   session = s;
-
-  const ws = new WebSocket(`ws://127.0.0.1:${port}`);
-  s.ws = ws;
-  ws.onmessage = (ev) => {
-    if (typeof ev.data !== "string") return;
-    try {
-      const msg = JSON.parse(ev.data) as {
-        type: string;
-        text?: string;
-        t0?: number;
-        t1?: number;
-        message?: string;
-      };
-      if (msg.type === "ready") {
-        useTranscriptStore.getState().setState("on");
-      } else if (msg.type === "error") {
-        console.error("[Sion][transcribe] erreur moteur:", msg.message);
-        useTranscriptStore.getState().setState("error", msg.message || "engine error");
-      } else if (msg.type === "segment" && msg.text) {
-        const t0 = msg.t0 ?? Date.now();
-        const t1 = msg.t1 ?? t0;
-        // Publié dans le salon : notre propre entrée revient par le même
-        // chemin Matrix que celle des autres (echo dédupliqué).
-        const sessionId = useTranscriptStore.getState().sessions[s.roomId]?.id;
-        matrixService.sendTranscriptSegment(s.roomId, msg.text, t0, t1, sessionId).catch((err) => {
-          console.warn("[Sion][transcribe] publication du segment échouée:", err);
-        });
-      }
-    } catch { /* malformed */ }
-  };
-  ws.onclose = () => {
-    if (session === s && useTranscriptStore.getState().state !== "error") {
-      useTranscriptStore.getState().setState("off");
-    }
-  };
-
-  // Un transcript ne doit pas survivre à la réunion qu'il décrit.
+  useTranscriptStore.getState().setState("starting");
+  // Install cancellation before the potentially long download/load.
   s.unsubApp = useAppStore.subscribe((state) => {
-    if (state.connectedVoiceChannel !== s.roomId) {
+    if (session === s && state.connectedVoiceChannel !== s.roomId) {
       console.log("[Sion][transcribe] sortie du vocal → arrêt");
       disarmTranscription(s.roomId);
     }
   });
+  if (useAppStore.getState().connectedVoiceChannel !== roomId) {
+    disarmTranscription(roomId);
+    return;
+  }
+  try {
+    const { transcribeModel, transcribeLang } = useSettingsStore.getState();
+    const modelPath = await ensureModelDownloaded(transcribeModel);
+    if (session !== s) return;
+
+    const { isMuted, isDeafened } = useAppStore.getState();
+    const port = await s.engine.start("transcribe_start_native", {
+      modelPath,
+      lang: transcribeLang,
+      micEnabled: !isMuted && !isDeafened,
+    });
+
+    if (session !== s || port === null) return;
+
+    const ws = new WebSocket(`ws://127.0.0.1:${port}`);
+    s.ws = ws;
+    ws.onmessage = (ev) => {
+      if (session !== s || typeof ev.data !== "string") return;
+      try {
+        const msg = JSON.parse(ev.data) as {
+          type: string;
+          text?: string;
+          t0?: number;
+          t1?: number;
+          message?: string;
+        };
+        if (msg.type === "ready") {
+          useTranscriptStore.getState().setState("on");
+        } else if (msg.type === "error") {
+          console.error("[Sion][transcribe] erreur moteur:", msg.message);
+          useTranscriptStore.getState().setState("error", msg.message || "engine error");
+          disarmTranscription(s.roomId);
+        } else if (msg.type === "segment" && msg.text) {
+          const t0 = msg.t0 ?? Date.now();
+          const t1 = msg.t1 ?? t0;
+          // Publish to the room; our own entry returns through the same
+          // Matrix path as remote entries, with echo deduplication.
+          const sessionId = useTranscriptStore.getState().sessions[s.roomId]?.id;
+          matrixService.sendTranscriptSegment(s.roomId, msg.text, t0, t1, sessionId).catch((err) => {
+            console.warn("[Sion][transcribe] publication du segment échouée:", err);
+          });
+        }
+      } catch { /* malformed */ }
+    };
+    ws.onclose = () => {
+      if (session === s) disarmTranscription(s.roomId);
+    };
+    ws.onerror = () => {
+      if (session === s) {
+        useTranscriptStore.getState().setState("error", "websocket");
+        disarmTranscription(s.roomId);
+      }
+    };
+  } catch (err) {
+    if (session !== s) return; // ignore a cancelled earlier download
+    useTranscriptStore.getState().setState("error", String((err as Error)?.message || err));
+    disarmTranscription(roomId);
+    throw err;
+  }
 }
 
 /** Arrête NOTRE moteur : le tap et le modèle sont libérés côté Rust. Les
@@ -200,10 +225,11 @@ async function stopEngine(): Promise<void> {
   if (!s) return;
   s.unsubApp?.();
   try { s.ws?.close(); } catch { /* déjà fermé */ }
-  try { await invoke("transcribe_stop"); } catch { /* pas lancé */ }
+  const stopping = s.engine.stop();
   if (useTranscriptStore.getState().state !== "error") {
     useTranscriptStore.getState().setState("off");
   }
+  try { await stopping; } catch (err) { console.warn("[Sion][transcribe] arrêt moteur échoué:", err); }
 }
 
 // ---------------------------------------------------------------------------
@@ -327,7 +353,6 @@ export function handleSessionEvent(roomId: string, action: "start" | "end", id: 
       armedRoom = null;
       startEngine(roomId).catch((err) => {
         console.error("[Sion][transcribe] démarrage moteur échoué:", err);
-        useTranscriptStore.getState().setState("error", String((err as Error)?.message || err));
       });
     }
     return;
@@ -337,15 +362,7 @@ export function handleSessionEvent(roomId: string, action: "start" | "end", id: 
   if (!cur || cur.id !== id || cur.endedAt) return;
   store.setSession(roomId, { ...cur, endedAt: ts });
   console.log(`[Sion][transcribe] session ${id.slice(0, 8)} ended for everyone`);
-  clearArmWatch();
-  armedRoom = null;
-  sessionProposed = false;
-  setLocalArmed(false);
-  if (session) {
-    void stopEngine();
-  } else if (useTranscriptStore.getState().state === "armed") {
-    useTranscriptStore.getState().setState("off");
-  }
+  if (session?.roomId === roomId || armedRoom === roomId) disarmTranscription(roomId);
 }
 
 /** Path of the requested whisper model, downloading it on first use
@@ -439,6 +456,9 @@ export async function summarizeMeeting(roomId: string, sessionId?: string): Prom
   if (sessionId) entries = entries.filter((e) => e.sessionId === sessionId);
   if (!entries.length || store.summaryState !== "idle") return;
 
+  // Reserve before the first await, including asset detection and downloads.
+  store.setSummaryState("running");
+  const taggedSession = sessionId ?? store.sessions[roomId]?.id;
   try {
     await ensureSummaryAssets();
     useTranscriptStore.getState().setSummaryState("running");
@@ -454,13 +474,13 @@ export async function summarizeMeeting(roomId: string, sessionId?: string): Prom
 
     const { useSettingsStore } = await import("../stores/useSettingsStore");
     const lang = useSettingsStore.getState().language || "fr";
-    const md = await invoke<string>("summarize_transcript", { transcript, lang });
+    const { invokeNativeInference } = await import("./nativeInference");
+    const md = await invokeNativeInference<string>("summarize_transcript", { transcript, lang });
 
     const title = lang.startsWith("en") ? "## 📝 Meeting summary" : "## 📝 Résumé de la réunion";
     // Tag the message with the session it covers (explicit for a history
     // re-summarize, otherwise the room's current session) so the history
     // view can link back to it.
-    const taggedSession = sessionId ?? useTranscriptStore.getState().sessions[roomId]?.id;
     await matrixService.sendSummaryMessage(roomId, `${title}\n\n${md}`, taggedSession);
   } finally {
     useTranscriptStore.getState().setSummaryState("idle");

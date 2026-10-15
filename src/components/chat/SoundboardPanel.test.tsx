@@ -6,15 +6,17 @@ import { PanneauLateral } from "../layout/PanneauLateral";
 import { useSettingsStore } from "../../stores/useSettingsStore";
 import { useLayoutStore } from "../../stores/useLayoutStore";
 import { useAppStore } from "../../stores/useAppStore";
+import { useMatrixStore } from "../../stores/useMatrixStore";
 
-const services = vi.hoisted(() => ({ deleteSound: vi.fn(), playSoundLocal: vi.fn(), invalidateSoundCache: vi.fn() }));
+const services = vi.hoisted(() => ({ deleteSound: vi.fn(), playSoundLocal: vi.fn(), invalidateSoundCache: vi.fn(), canSendMessage: vi.fn(), android: false }));
 
 vi.mock("../../i18n", () => ({ default: { t: (key: string) => key, changeLanguage: vi.fn() } }));
 vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string, options?: { defaultValue?: string; count?: number; label?: string }) => options?.defaultValue?.replace("{{count}}", String(options.count)) ?? (options?.label ? `${key} ${options.label}` : key) }) }));
 vi.mock("../../services/moteur", () => ({ moteurRust: () => false }));
-vi.mock("../../services/matrixService", () => ({ canSendMessage: () => true, getMatrixClient: () => null, getMemberPowerLevel: () => 100, getRoomMembers: () => [] }));
+vi.mock("../../services/matrixService", () => ({ canSendMessage: services.canSendMessage, getMatrixClient: () => null, getMemberPowerLevel: () => 100, getRoomMembers: () => [] }));
+vi.mock("../../utils/plateforme", () => ({ get SUR_ANDROID() { return services.android; } }));
 vi.mock("./SoundboardUploadModal", () => ({ SoundboardUploadModal: () => null }));
-vi.mock("./VoicePanel", () => ({ VoicePanel: () => null }));
+vi.mock("./VoicePanel", () => ({ VoicePanel: () => <div data-voice-panel /> }));
 vi.mock("./HotkeyCaptureModal", () => ({ HotkeyCaptureModal: () => null }));
 vi.mock("../../services/soundboardHotkeys", () => ({ loadHotkeys: () => ({}), onHotkeysChange: () => () => {}, pruneHotkeys: vi.fn(), resyncHotkeys: vi.fn() }));
 vi.mock("../../services/soundboardService", () => ({
@@ -28,13 +30,39 @@ vi.mock("../../services/soundboardService", () => ({
 }));
 const vue = montage();
 beforeEach(() => {
+  services.android = false;
+  services.canSendMessage.mockReset().mockReturnValue(true);
   useAppStore.setState({ connectedVoiceChannel: "!vocal" });
+  useMatrixStore.setState({ currentUserId: "@admin:hs" });
   useSettingsStore.setState({ soundboardView: { mode: "all", category: null }, soundboardPlayCounts: { son1: 2 }, hiddenCategories: [], soundboardEnabled: true });
   services.deleteSound.mockReset().mockResolvedValue(undefined);
   services.playSoundLocal.mockReset();
   services.invalidateSoundCache.mockReset();
 });
 afterEach(() => vi.restoreAllMocks());
+it.each([
+  { android: false, upload: true },
+  { android: false, upload: false },
+  { android: true, upload: true },
+])("conserve seulement les onglets audio disponibles, même pour un administrateur ($android, $upload)", async ({ android, upload }) => {
+  services.android = android;
+  services.canSendMessage.mockReturnValue(upload);
+  await vue.render(<SoundboardPanel />);
+  const voixDisponibles = !android && upload;
+  expect(vue.container.textContent).not.toContain("soundboard.tabMembers");
+  expect(vue.container.querySelectorAll(".sion-board-onglets")).toHaveLength(voixDisponibles ? 1 : 0);
+  expect(vue.container.querySelector(".soundboard-panel")?.getAttribute("data-onglets")).toBe(String(voixDisponibles));
+  expect(vue.container.querySelectorAll(".sound-card")).toHaveLength(2);
+  if (voixDisponibles) {
+    expect(Array.from(vue.container.querySelectorAll(".sion-board-onglets-select option")).map((o) => o.textContent)).toEqual(["soundboard.tabSounds", "tts.tab"]);
+    await vue.click(".sion-board-onglets > button:last-child");
+    expect(vue.container.querySelector("[data-voice-panel]")).not.toBeNull();
+    services.canSendMessage.mockReturnValue(false);
+    await vue.render(<SoundboardPanel />);
+    expect(vue.container.querySelector("[data-voice-panel]")).toBeNull();
+    expect(vue.container.querySelectorAll(".sound-card")).toHaveLength(2);
+  }
+});
 it("Top, Tous et les catégories filtrent les sons et mémorisent le choix", async () => {
   await vue.render(<SoundboardPanel />);
   await vue.click('[data-filter="top"]');

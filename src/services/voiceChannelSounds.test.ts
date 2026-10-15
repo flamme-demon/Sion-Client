@@ -1,105 +1,217 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-
-// Régression (16/09) : WebKitGTK ne lit pas directement le schéma custom
-// `tauri://`, et decodeAudioData ne décodait plus que le premier cue après
-// l'ouverture du moteur vocal natif. Les assets doivent passer par une URL
-// Blob lisible par HTMLAudioElement, sans utiliser le décodeur Web Audio.
-
-const srcStart = vi.fn();
-const oscStart = vi.fn();
-const decodeAudioData = vi.fn(async () => ({ duration: 1.49 }) as unknown as AudioBuffer);
-const audioPlay = vi.fn(async () => undefined);
-const audioSources: string[] = [];
-
-function gainNode() {
-  return node({
-    gain: {
-      value: 1,
-      setValueAtTime: vi.fn(),
-      linearRampToValueAtTime: vi.fn(),
-      exponentialRampToValueAtTime: vi.fn(),
-    },
-  }) as unknown as GainNode;
-}
-
-function node(extra: Record<string, unknown> = {}) {
-  return { connect: vi.fn(), start: vi.fn(), stop: vi.fn(), ...extra };
-}
-
-const fakeCtx = {
-  state: "running" as AudioContextState,
-  currentTime: 0,
-  sampleRate: 44100,
-  destination: {},
-  resume: vi.fn(async () => undefined),
-  decodeAudioData,
-  createBufferSource: () =>
-    node({
-      buffer: null as AudioBuffer | null,
-      start: srcStart,
-    }) as unknown as AudioBufferSourceNode,
-  createGain: () => gainNode(),
-  createOscillator: () =>
-    node({ type: "sine", frequency: { value: 0 }, start: oscStart }) as unknown as OscillatorNode,
-};
-
-vi.mock("./audioContext", () => ({ getSharedAudioContext: () => fakeCtx }));
-vi.mock("../stores/useSettingsStore", () => ({
-  useSettingsStore: {
-    getState: () => ({ voiceChannelSounds: true, voiceSounds: {}, muteSoundsWhenDeafened: false }),
-  },
-}));
-vi.mock("../stores/useAppStore", () => ({ useAppStore: { getState: () => ({ isDeafened: false }) } }));
-
+import type { VoiceCue, VoiceSoundCfg } from "../stores/useSettingsStore";
+const mocks = vi.hoisted(() => ({ play: vi.fn(), read: vi.fn(), decode: vi.fn(), bundled: vi.fn(), stop: vi.fn(), encode: vi.fn() }));
+let appState: { isDeafened: boolean; connectedVoiceChannel: string | null };
+let settingsState: { voiceChannelSounds: boolean; voiceSounds: Partial<Record<VoiceCue, VoiceSoundCfg>>; muteSoundsWhenDeafened: boolean };
+vi.mock("./audioContext", () => ({ getSharedAudioContext: () => ({ decodeAudioData: mocks.decode }) }));
+vi.mock("../stores/useSettingsStore", () => ({ useSettingsStore: { getState: () => settingsState } }));
+vi.mock("../stores/useAppStore", () => ({ useAppStore: { getState: () => appState } }));
+vi.mock("@tauri-apps/api/core", () => ({ invoke: (...args: unknown[]) => mocks.read(...args) }));
+vi.mock("@tauri-apps/plugin-log", () => ({ info: vi.fn(async () => undefined) }));
+vi.mock("./soundboardService", () => ({ decodeNativeSoundboardPcm: (...args: unknown[]) => mocks.bundled(...args) }));
+vi.mock("./nativeAudioPlayback", () => ({ playNativePcm: mocks.play, tonePcm: () => "AAABAA==" }));
+vi.mock("./voiceNativeService", () => ({ bytesToB64: mocks.encode }));
 import {
   previewCue, resetVoiceCues, onParticipantJoined, onParticipantLeft, remplacerLecturePourTests,
-  noteConnectionLost, noteRaisonDepart,
+  noteConnectionLost, noteRaisonDepart, primeActionCues, playMuteCue, playUnmuteCue, playJoinCue,
 } from "./voiceChannelSounds";
-
-const fetchMock = vi.fn();
-
 beforeEach(() => {
-  srcStart.mockClear();
-  oscStart.mockClear();
-  decodeAudioData.mockClear();
-  fetchMock.mockReset();
-  vi.stubGlobal("fetch", fetchMock);
-  vi.stubGlobal("Audio", class {
-    volume = 1;
-    constructor(src: string) { audioSources.push(src); }
-    addEventListener() {}
-    play = audioPlay;
+  appState = { isDeafened: false, connectedVoiceChannel: null };
+  settingsState = { voiceChannelSounds: true, voiceSounds: {}, muteSoundsWhenDeafened: false };
+  vi.clearAllMocks();
+  mocks.encode.mockImplementation((bytes: Uint8Array) => {
+    let binary = ""; for (const byte of bytes) binary += String.fromCharCode(byte); return btoa(binary);
   });
-  vi.stubGlobal("URL", { createObjectURL: vi.fn(() => "blob:sion-cue") });
-  audioPlay.mockClear();
-  audioSources.length = 0;
+  mocks.play.mockReturnValue({ ready: Promise.resolve(), stop: mocks.stop });
+  mocks.read.mockResolvedValue(btoa("custom mp3"));
+  mocks.bundled.mockResolvedValue({ pcmB64: "AAAA", durationMs: 1 });
+  mocks.decode.mockResolvedValue({ duration: 1, length: 4, sampleRate: 4, numberOfChannels: 1,
+    getChannelData: () => Float32Array.from([0, 0.25, 0.5, 0.75]) });
+  vi.stubGlobal("Audio", vi.fn());
   resetVoiceCues();
 });
-
-describe("cues embarqués (schéma custom de la webview)", () => {
-  it("joue le fichier du bundle via une URL Blob, sans décodeur Web Audio", async () => {
-    fetchMock.mockResolvedValue({ ok: true, blob: async () => new Blob(["mp3"]) });
-
+afterEach(() => vi.unstubAllGlobals());
+function custom(cue: VoiceCue): VoiceSoundCfg {
+  const cfg = { path: `/cues/${expect.getState().currentTestName}.mp3`, start: 0.25, end: 0.75, gain: 1.8 };
+  settingsState.voiceSounds[cue] = cfg;
+  return cfg;
+}
+describe("cues exclusivement natifs", () => {
+  it("joue le fichier embarqué par Rust même hors appel", async () => {
     previewCue("join");
-
-    await vi.waitFor(() => expect(audioPlay).toHaveBeenCalledTimes(1));
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    const requested = String(fetchMock.mock.calls[0][0]);
-    expect(requested).toMatch(/join[\w-]*\.mp3$/);
-    expect(URL.createObjectURL).toHaveBeenCalledTimes(1);
-    expect(audioSources).toEqual(["blob:sion-cue"]);
-    expect(decodeAudioData).not.toHaveBeenCalled();
-    expect(srcStart).not.toHaveBeenCalled();
-    expect(oscStart).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(mocks.play).toHaveBeenCalledOnce());
+    expect(mocks.bundled).toHaveBeenCalledWith(expect.stringMatching(/join[\w-]*\.mp3$/));
+    expect(mocks.play).toHaveBeenCalledWith("AAAA", expect.objectContaining({ gain: 0.7 }));
+    expect(Audio).not.toHaveBeenCalled();
   });
-
-  it("retombe sur le timbre synthétisé si l'asset est injouable", async () => {
-    fetchMock.mockRejectedValue(new Error("404"));
-
+  it("un fichier injouable utilise un timbre PCM natif", async () => {
+    mocks.bundled.mockRejectedValueOnce(new Error("decode"));
     previewCue("poke");
+    await vi.waitFor(() => expect(mocks.play).toHaveBeenCalledOnce());
+    expect(mocks.play).toHaveBeenCalledWith("AAABAA==", expect.objectContaining({ gain: 1 }));
+    expect(Audio).not.toHaveBeenCalled();
+  });
+  it("Narkow : l'arrivée personnalisée garde l'extrait et le gain", async () => {
+    appState.connectedVoiceChannel = "!vocal:hs";
+    const cfg = custom("join");
+    onParticipantJoined("@narkow:hs:PC");
+    await vi.waitFor(() => expect(mocks.play).toHaveBeenCalledOnce());
+    expect(mocks.read).toHaveBeenCalledWith("read_file_b64", { path: cfg.path });
+    const [pcm, options] = mocks.play.mock.calls[0];
+    expect(atob(pcm)).toHaveLength(24_000 * 2);
+    expect(atob(pcm).charCodeAt(1)).toBe(32);
+    expect(options.gain).toBe(1.8);
+  });
+  it("précharge l'arrivée personnalisée et régénère seulement le PCM si l'extrait change", async () => {
+    const cfg = custom("join");
+    await primeActionCues();
+    expect(mocks.play).not.toHaveBeenCalled();
+    playJoinCue();
+    await vi.waitFor(() => expect(mocks.play).toHaveBeenCalledTimes(1));
+    settingsState.voiceSounds.join = { ...cfg, start: 0.5, gain: 0.4 };
+    playJoinCue();
+    await vi.waitFor(() => expect(mocks.play).toHaveBeenCalledTimes(2));
+    expect(atob(mocks.play.mock.calls[1][0])).toHaveLength(12_000 * 2);
+    expect(mocks.play.mock.calls[1][1].gain).toBe(0.4);
+    expect(mocks.decode).toHaveBeenCalledOnce();
+    expect(mocks.read).toHaveBeenCalledOnce();
+  });
+  it("garde le retour de micro audible en sourdine", async () => {
+    appState.isDeafened = true;
+    settingsState.muteSoundsWhenDeafened = true;
+    custom("mute");
+    playMuteCue();
+    await vi.waitFor(() => expect(mocks.play).toHaveBeenCalledOnce());
+    expect(mocks.play.mock.calls[0][1].allowDeafened).toBe(true);
+  });
+  it("ne conserve pas les anciens extraits après des réglages successifs", async () => {
+    const cfg = custom("join");
+    await primeActionCues();
+    for (const start of [0.5, 0.1, 0.4, cfg.start]) {
+      settingsState.voiceSounds.join = { ...cfg, start };
+      await primeActionCues();
+    }
+    expect(mocks.encode).toHaveBeenCalledTimes(5);
+    expect(mocks.decode).toHaveBeenCalledOnce();
+  });
+  it("libère les fichiers retirés, même si leur décodage finit plus tard", async () => {
+    let resolve!: (buffer: unknown) => void;
+    const decoded = await mocks.decode();
+    mocks.decode.mockClear();
+    mocks.decode.mockReturnValueOnce(new Promise((done) => { resolve = done; }));
+    const cfg = custom("join");
+    const pending = primeActionCues();
+    await vi.waitFor(() => expect(mocks.decode).toHaveBeenCalledOnce());
+    settingsState.voiceSounds = {};
+    await primeActionCues();
+    resolve(decoded);
+    await pending;
+    settingsState.voiceSounds.join = cfg;
+    await primeActionCues();
+    expect(mocks.read).toHaveBeenCalledTimes(2);
+    expect(mocks.decode).toHaveBeenCalledTimes(2);
+    expect(mocks.encode).toHaveBeenCalledTimes(2);
+  });
+  it("garde les arrivées choisies audibles en sourdine via Rust", async () => {
+    appState.isDeafened = true;
+    custom("join");
+    playJoinCue();
+    await vi.waitFor(() => expect(mocks.play).toHaveBeenCalledOnce());
+    expect(mocks.play.mock.calls[0][1].allowDeafened).toBe(true);
+    expect(Audio).not.toHaveBeenCalled();
+  });
+  it("respecte la coupure des sons en sourdine", async () => {
+    appState.isDeafened = true;
+    settingsState.muteSoundsWhenDeafened = true;
+    custom("join");
+    playJoinCue();
+    await Promise.resolve();
+    expect(mocks.play).not.toHaveBeenCalled();
+    expect(mocks.read).not.toHaveBeenCalled();
+  });
+  it("un retour d'action plus récent annule un décodage encore en attente", async () => {
+    let resolve!: (bytes: string) => void;
+    mocks.read.mockReturnValueOnce(new Promise((r) => { resolve = r; }));
+    custom("mute");
+    playMuteCue();
+    await Promise.resolve();
+    playUnmuteCue();
+    await vi.waitFor(() => expect(mocks.play).toHaveBeenCalledOnce());
+    resolve(btoa("mp3"));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(mocks.play).toHaveBeenCalledOnce();
+  });
+  it("le retour de kick reste audible après la fermeture de la session vocale", async () => {
+    let resolve!: (bytes: string) => void;
+    mocks.read.mockReturnValueOnce(new Promise<string>((done) => { resolve = done; }));
+    custom("kick");
+    previewCue("kick");
+    await vi.waitFor(() => expect(mocks.read).toHaveBeenCalled());
+    resetVoiceCues();
+    resolve(btoa("kick mp3"));
+    await vi.waitFor(() => expect(mocks.play).toHaveBeenCalledOnce());
+  });
+});
 
-    await vi.waitFor(() => expect(oscStart).toHaveBeenCalled());
-    expect(srcStart).not.toHaveBeenCalled();
+describe("arrivées encore en attente de décodage", () => {
+  let resolve: (bytes: string) => void;
+  beforeEach(() => {
+    vi.useFakeTimers();
+    appState.connectedVoiceChannel = "!vocal:hs";
+    mocks.read.mockReturnValueOnce(new Promise<string>((done) => { resolve = done; }));
+    custom("join");
+  });
+  afterEach(() => { resetVoiceCues(); vi.useRealTimers(); });
+  async function finishDecode() {
+    resolve(btoa("custom mp3"));
+    await vi.advanceTimersByTimeAsync(0);
+  }
+  it("une ancienne arrivée ne se met pas à jouer au réveil du contexte", async () => {
+    onParticipantJoined("@narkow:hs:PC");
+    await vi.advanceTimersByTimeAsync(2500);
+    await finishDecode();
+    expect(mocks.play).not.toHaveBeenCalled();
+  });
+  it("le départ du pair invalide le son d'arrivée qui attend encore", async () => {
+    onParticipantJoined("@narkow:hs:PC");
+    await vi.advanceTimersByTimeAsync(0);
+    onParticipantLeft("@narkow:hs:PC");
+    await finishDecode();
+    expect(mocks.play).not.toHaveBeenCalled();
+  });
+  it("quitter puis revenir dans le même salon invalide les sons de l'ancien appel", async () => {
+    onParticipantJoined("@narkow:hs:PC");
+    await vi.advanceTimersByTimeAsync(0);
+    resetVoiceCues();
+    await finishDecode();
+    expect(mocks.play).not.toHaveBeenCalled();
+  });
+  it("changer de salon invalide le son même si le nettoyage n'a pas fini", async () => {
+    onParticipantJoined("@narkow:hs:PC");
+    await vi.advanceTimersByTimeAsync(0);
+    appState.connectedVoiceChannel = "!autre:hs";
+    await finishDecode();
+    expect(mocks.play).not.toHaveBeenCalled();
+  });
+  it("le réglage des sons est relu après le décodage", async () => {
+    onParticipantJoined("@narkow:hs:PC");
+    await vi.advanceTimersByTimeAsync(0);
+    settingsState.voiceChannelSounds = false;
+    await finishDecode();
+    expect(mocks.play).not.toHaveBeenCalled();
+  });
+  it("une arrivée rapide conserve sa lecture musicale complète", async () => {
+    onParticipantJoined("@narkow:hs:PC");
+    await vi.advanceTimersByTimeAsync(0);
+    await finishDecode();
+    expect(mocks.play).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(3000);
+    mocks.play.mock.calls[0][1].onTime(3);
+    expect(mocks.stop).not.toHaveBeenCalled();
+    onParticipantLeft("@narkow:hs:PC");
+    mocks.play.mock.calls[0][1].onTime(3.1);
+    expect(mocks.stop).toHaveBeenCalledOnce();
   });
 });
 

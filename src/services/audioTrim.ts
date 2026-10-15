@@ -3,6 +3,7 @@
 // compressed opus clip (so a long upload becomes a small ≤20s file rather than
 // shipping the whole thing). Encoding uses MediaRecorder (la webview a
 // opus), which runs in real time — fine for a one-off upload of ≤20s.
+import { playNativeBuffer } from "./nativeAudioPlayback";
 
 let sharedCtx: AudioContext | null = null;
 function ctx(): AudioContext {
@@ -135,36 +136,7 @@ export function playSlice(
   onEnd: () => void,
   gain: number = 1,
 ): { stop: () => void } {
-  const c = ctx();
   const start = Math.max(0, startSec);
   const dur = Math.max(0.05, Math.min(endSec, buffer.duration) - start);
-  const src = c.createBufferSource();
-  src.buffer = buffer;
-  if (gain !== 1) {
-    const g = c.createGain();
-    g.gain.value = Math.max(0, gain);
-    src.connect(g);
-    g.connect(c.destination);
-  } else {
-    src.connect(c.destination);
-  }
-  const t0 = c.currentTime;
-  let raf = 0;
-  const tick = () => {
-    const elapsed = c.currentTime - t0;
-    onTime(start + Math.min(elapsed, dur));
-    if (elapsed < dur) raf = requestAnimationFrame(tick);
-  };
-  let stopped = false;
-  const stop = () => {
-    if (stopped) return;
-    stopped = true;
-    cancelAnimationFrame(raf);
-    try { src.stop(); src.disconnect(); } catch { /* ignore */ }
-    onEnd();
-  };
-  src.onended = () => { cancelAnimationFrame(raf); if (!stopped) { stopped = true; onEnd(); } };
-  src.start(0, start, dur);
-  raf = requestAnimationFrame(tick);
-  return { stop };
+  return playNativeBuffer(buffer, start, start + dur, { gain: Math.max(0, gain), allowDeafened: true, onTime, onEnd });
 }

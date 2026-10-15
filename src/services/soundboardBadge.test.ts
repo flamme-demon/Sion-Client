@@ -15,6 +15,13 @@ const publishData = vi.fn().mockResolvedValue(undefined);
 const extendBadge = vi.fn().mockResolvedValue(undefined);
 const playNativeSoundboard = vi.fn().mockResolvedValue(undefined);
 const decodeAudioData = vi.fn();
+vi.mock("./nativeAudioPlayback", () => ({
+  playNativePcm: (pcm: string, options: { gain: number }) => {
+    playNativeSoundboard(pcm, options.gain);
+    return { ready: Promise.resolve(), stop: vi.fn() };
+  },
+  playNativeTone: vi.fn(),
+}));
 
 /** Base64 minimal, hissé par `vi.hoisted` : les fabriques `vi.mock` sont
  *  elles-mêmes hissées et ne peuvent pas lire un `const` du fichier. Même

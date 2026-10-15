@@ -20,7 +20,7 @@ import {
   SOUNDBOARD_MAX_FILE_SIZE,
   type SoundEntry,
 } from "../../services/soundboardService";
-import { canSendMessage, getMatrixClient, getMemberPowerLevel, getRoomMembers } from "../../services/matrixService";
+import { canSendMessage, getMatrixClient } from "../../services/matrixService";
 import { moteurRust } from "../../services/moteur";
 import { useMatrixStore } from "../../stores/useMatrixStore";
 import { SoundboardUploadModal } from "./SoundboardUploadModal";
@@ -28,7 +28,6 @@ import { VoicePanel } from "./VoicePanel";
 import { TTS_MODEL_LABELS } from "../../services/ttsService";
 import { HotkeyCaptureModal } from "./HotkeyCaptureModal";
 import { formatCombo } from "../../utils/keyCombo";
-import { UserAvatar } from "../sidebar/UserAvatar";
 import { loadHotkeys, onHotkeysChange, pruneHotkeys, resyncHotkeys } from "../../services/soundboardHotkeys";
 import { SUR_ANDROID } from "../../utils/plateforme";
 import { buildTree, findNode, sortedChildren, parentPath } from "../../utils/categories";
@@ -49,7 +48,7 @@ export function SoundboardPanel() {
   const [filterMode, setFilterMode] = useState<FilterMode>(() => useSettingsStore.getState().soundboardView.mode);
   const setSoundboardView = useSettingsStore((s) => s.setSoundboardView);
   const [showUpload, setShowUpload] = useState(false);
-  const [tab, setTab] = useState<"sounds" | "voices" | "members">("sounds");
+  const [tab, setTab] = useState<"sounds" | "voices">("sounds");
   const [errorToast, setErrorToast] = useState<string | null>(null);
   const [hotkeyTarget, setHotkeyTarget] = useState<SoundEntry | null>(null);
   const [editTarget, setEditTarget] = useState<SoundEntry | null>(null);
@@ -182,46 +181,6 @@ export function SoundboardPanel() {
 
   const canUpload = roomId ? canSendMessage(roomId) : false;
 
-  const client = getMatrixClient();
-  const currentUserId = useMatrixStore((s) => s.currentUserId);
-  const myUserId = client?.getUserId() || currentUserId || "";
-  const myPl = roomId && myUserId ? getMemberPowerLevel(roomId, myUserId) : 0;
-  const canManageMembers = myPl >= 100 && !!roomId;
-
-  const members = useMemo(() => {
-    void sounds; // re-evaluate when roomId changes
-    if (!roomId) return [];
-    if (moteurRust()) {
-      return getRoomMembers(roomId)
-        .map((m) => ({ userId: m.userId, name: m.displayName, avatarUrl: m.avatarUrl, pl: getMemberPowerLevel(roomId, m.userId) }))
-        .sort((a, b) => b.pl - a.pl || a.name.localeCompare(b.name));
-    }
-    if (!client) return [];
-    const room = client.getRoom(roomId);
-    if (!room) return [];
-    return room.getJoinedMembers()
-      .map((m) => ({
-        userId: m.userId,
-        name: m.name || m.userId,
-        avatarUrl: m.getAvatarUrl(client.baseUrl, 64, 64, "crop", true, false) || null,
-        pl: getMemberPowerLevel(roomId, m.userId),
-      }))
-      .sort((a, b) => b.pl - a.pl || a.name.localeCompare(b.name));
-  }, [roomId, client, sounds]);
-
-  const handleSetPl = async (userId: string, level: number) => {
-    if (!roomId) return;
-    try {
-      const { setUserPowerLevel } = await import("../../services/matrixService");
-      await setUserPowerLevel(roomId, userId, level);
-      refreshRef.current();
-    } catch (err) {
-      console.error("[Sion] setPowerLevel failed:", err);
-      setErrorToast(t("soundboard.plError"));
-      setTimeout(() => setErrorToast(null), 3000);
-    }
-  };
-
   const hiddenCategoriesSet = useMemo(() => new Set(hiddenCategories), [hiddenCategories]);
 
   const isCategoryHidden = (cat: string): boolean => {
@@ -340,10 +299,11 @@ export function SoundboardPanel() {
 
   const tabDefs = [
     { key: "sounds" as const, label: t("soundboard.tabSounds"), show: true },
-    // Voix clonées : modèles locaux, pas sur téléphone.
+    // Cloned voices require local models on desktop.
     { key: "voices" as const, label: t("tts.tab"), show: canUpload && !SUR_ANDROID },
-    { key: "members" as const, label: `${t("soundboard.tabMembers")} · ${members.length}`, show: canManageMembers },
   ].filter((x) => x.show);
+  const activeTab = tabDefs.some((x) => x.key === tab) ? tab : "sounds";
+  const showTabs = !!roomId && tabDefs.length > 1;
 
   const volumeControl = (
     <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0, flex: 1, color: 'var(--color-on-surface-variant)' }}>
@@ -375,7 +335,7 @@ export function SoundboardPanel() {
   );
 
   return (
-    <div className="soundboard-panel sion-board" data-tab={tab} data-prete={!!roomId} data-onglets={!!roomId && (canUpload || canManageMembers)}>
+    <div className="soundboard-panel sion-board" data-tab={activeTab} data-prete={!!roomId} data-onglets={showTabs}>
       <style>{`
         /* Scrollbar masquée — navigation à la molette (onPillWheel). */
         .sb-pills { scrollbar-width: none; -ms-overflow-style: none; }
@@ -386,9 +346,9 @@ export function SoundboardPanel() {
         <>
           {/* Tabs — défilement horizontal (masqué) pour ne jamais rogner quand le
               panneau est étroit. */}
-          {roomId && (canUpload || canManageMembers) && (
+          {showTabs && (
             <div className="sb-pills sion-board-onglets" onWheel={onPillWheel}>
-              <select className="sion-board-onglets-select" aria-label={t("soundboard.title")} value={tab}
+              <select className="sion-board-onglets-select" aria-label={t("soundboard.title")} value={activeTab}
                 onChange={(e) => setTab(e.currentTarget.value as typeof tab)}>
                 {tabDefs.map((x) => <option key={x.key} value={x.key}>{x.label}</option>)}
               </select>
@@ -399,8 +359,8 @@ export function SoundboardPanel() {
                   style={{
                     padding: '8px 0', border: 'none', background: 'transparent', cursor: 'pointer',
                     fontSize: 13, fontWeight: 600, fontFamily: 'inherit', flexShrink: 0, whiteSpace: 'nowrap',
-                    borderBottom: tab === x.key ? '2px solid var(--color-primary)' : '2px solid transparent',
-                    color: tab === x.key ? 'var(--color-on-surface)' : 'var(--color-on-surface-variant)',
+                    borderBottom: activeTab === x.key ? '2px solid var(--color-primary)' : '2px solid transparent',
+                    color: activeTab === x.key ? 'var(--color-on-surface)' : 'var(--color-on-surface-variant)',
                   }}
                 >{x.label}</button>
               ))}
@@ -415,7 +375,7 @@ export function SoundboardPanel() {
         </div>
       )}
 
-      {roomId && tab === "voices" && canUpload && (
+      {roomId && activeTab === "voices" && (
         <div className="sion-board-alternative">
         <VoicePanel
           sounds={sounds}
@@ -426,45 +386,7 @@ export function SoundboardPanel() {
         </div>
       )}
 
-      {roomId && tab === "members" && canManageMembers && (
-        <div className="sion-board-alternative" style={{ padding: 12 }}>
-          {members.map((m) => {
-            const isMe = m.userId === myUserId;
-            const role = m.pl >= 100 ? "admin" : m.pl >= 50 ? "mod" : "user";
-            return (
-              <div key={m.userId} style={{
-                display: 'flex', alignItems: 'center', gap: 8, padding: 6,
-                borderRadius: 8, marginBottom: 4, background: 'var(--color-surface-container)',
-              }}>
-                <UserAvatar name={m.name} size="sm" speaking={false} avatarUrl={m.avatarUrl || undefined} />
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{
-                    fontSize: 12, fontWeight: role !== "user" ? 600 : 400,
-                    color: role === "admin" ? 'var(--color-primary)' : role === "mod" ? 'var(--color-tertiary)' : 'var(--color-on-surface)',
-                    overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                  }}>{m.name} {isMe && "(vous)"}</div>
-                  <div style={{ fontSize: 10, color: 'var(--color-outline)' }}>
-                    {role === "admin" ? t("contextMenu.roleAdmin") : role === "mod" ? t("contextMenu.roleModerator") : t("contextMenu.roleUser")}
-                  </div>
-                </div>
-                {!isMe && role !== "admin" && (
-                  role === "mod" ? (
-                    <button onClick={() => handleSetPl(m.userId, 0)}
-                      style={{ padding: '4px 10px', fontSize: 11, borderRadius: 10, border: 'none', cursor: 'pointer', background: 'var(--color-error-container)', color: 'var(--color-error)', fontFamily: 'inherit' }}
-                    >{t("soundboard.demote")}</button>
-                  ) : (
-                    <button onClick={() => handleSetPl(m.userId, 50)}
-                      style={{ padding: '4px 10px', fontSize: 11, borderRadius: 10, border: 'none', cursor: 'pointer', background: 'var(--color-primary-container)', color: 'var(--color-on-primary-container)', fontFamily: 'inherit' }}
-                    >{t("soundboard.promote")}</button>
-                  )
-                )}
-              </div>
-            );
-          })}
-        </div>
-      )}
-
-      {roomId && tab === "sounds" && (
+      {roomId && activeTab === "sounds" && (
         <>
           <div className="sion-board-outils" onWheel={onPillWheel}>
           {/* Recherche et ajout réunis dans un même champ. */}

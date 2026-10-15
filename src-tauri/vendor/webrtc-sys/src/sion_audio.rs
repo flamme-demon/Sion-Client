@@ -37,6 +37,8 @@ pub mod ffi {
         fn process_channel(self: &mut CaptureProcessor, channel: usize, samples: &mut [f32]);
         fn capture_settings() -> CaptureSettings;
         fn mix_soundboard_render(samples: &mut [f32]);
+        fn mix_local_render(left: &mut [f32], right: &mut [f32]);
+        fn device_audio_interrupted() -> bool;
         fn enqueue_soundboard_audio_rs(samples: &[i16], gain: f32) -> bool;
         fn clear_soundboard_audio_rs();
     }
@@ -54,6 +56,10 @@ pub mod ffi {
 fn mix_soundboard_render(samples: &mut [f32]) {
     sion_native_audio::mix_soundboard_render(samples);
 }
+fn mix_local_render(left: &mut [f32], right: &mut [f32]) {
+    sion_native_audio::playback::mix_render(left, right);
+}
+fn device_audio_interrupted() -> bool { sion_native_audio::device_interrupted() }
 fn enqueue_soundboard_audio_rs(samples: &[i16], gain: f32) -> bool {
     sion_native_audio::enqueue_soundboard_audio(samples, gain)
 }

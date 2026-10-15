@@ -7,6 +7,8 @@ import { useMatrixStore } from "../stores/useMatrixStore";
 import { adresseEspace, salonCommun } from "../utils/espaces";
 import type { Channel } from "../types/matrix";
 
+const bibliothequesCreees = new Map<string, string>();
+const creationsBibliotheques = new Map<string, Promise<{ roomId: string; alreadyExisted: boolean; invitedCount: number; echecs: string[] }>>();
 export const espaceSelectionne = (id = useEspacesStore.getState().espaceActif): Channel | undefined => {
   return useMatrixStore.getState().channels.find((c) => c.isSpace && c.id === id);
 };
@@ -78,7 +80,9 @@ export function viderDecouvertesEspaces(): void {
   compteDecouverte = null;
 }
 const arreterSuiviCompte = useEspacesStore.subscribe((etat, avant) => {
-  if (etat.utilisateur !== avant.utilisateur) viderDecouvertesEspaces();
+  if (etat.utilisateur !== avant.utilisateur) {
+    viderDecouvertesEspaces(); bibliothequesCreees.clear(); creationsBibliotheques.clear();
+  }
 });
 if (import.meta.hot) import.meta.hot.dispose(() => { arreterSuiviCompte(); viderDecouvertesEspaces(); });
 
@@ -233,7 +237,7 @@ export async function creerSalonDansEspace(espace: string, nom: string, vocal: b
   return id;
 }
 export async function membresEspace(espace: string): Promise<{ userId: string; displayName?: string; powerLevel: number }[]> {
-  if (moteurRust()) return (await core.detailsSalon(espace)).membres;
+  if (moteurRust()) return (await core.detailsSalon(espace, true)).membres;
   const room = client().getRoom(espace);
   if (!room) throw new Error("spaces.notSpace");
   await room.loadMembersIfNeeded();
@@ -264,10 +268,13 @@ export async function invitationsEspace(espace: string): Promise<core.Utilisateu
   return invitations.sort((a, b) => a.displayName.localeCompare(b.displayName, undefined, { sensitivity: "base" }));
 }
 export async function inviterMembresEspace(espace: string, salon: string): Promise<string[]> {
+  const compte = useMatrixStore.getState().currentUserId;
   const echecs: string[] = [];
   for (const m of await membresEspace(espace)) {
-    if (m.userId === useMatrixStore.getState().currentUserId) continue;
+    if (useMatrixStore.getState().currentUserId !== compte) throw new Error("spaces.libraryChanged");
+    if (m.userId === compte) continue;
     try { await inviteUser(salon, m.userId); } catch (e) {
+      if (useMatrixStore.getState().currentUserId !== compte) throw new Error("spaces.libraryChanged", { cause: e });
       // Déjà membre : une invitation inutile ne devient pas un échec.
       const membres = moteurRust() ? (await core.detailsSalon(salon)).membres : client().getRoom(salon)?.getJoinedMembers();
       if (!membres?.some((u) => u.userId === m.userId)) { console.warn("[Sion][espaces] invitation échouée", e); echecs.push(m.userId); }
@@ -282,13 +289,41 @@ export async function rattacherBibliotheque(espace: string, salon: string) {
   await inviterMembresEspace(espace, salon);
 }
 export async function creerBibliotheque(espace: string) {
+  const compte = useMatrixStore.getState().currentUserId;
+  const cle = `${compte}:${espace}`;
+  const existante = creationsBibliotheques.get(cle);
+  if (existante) return existante;
+  const creation = creerBibliothequeDuCompte(espace, compte, cle);
+  creationsBibliotheques.set(cle, creation);
+  try { return await creation; }
+  finally { if (creationsBibliotheques.get(cle) === creation) creationsBibliotheques.delete(cle); }
+}
+async function creerBibliothequeDuCompte(espace: string, compte: string | null, cle: string) {
+  const verifierCompte = () => {
+    if (!compte || useMatrixStore.getState().currentUserId !== compte) throw new Error("spaces.libraryChanged");
+  };
   if (!await administrateurEspace(espace)) throw new Error("spaces.libraryAdminOnly");
+  verifierCompte();
+  const { inviterBibliothequeEspace } = await import("./bibliothequeEspaceService");
   const ancien = String((await lireEtat(espace, "com.sion.space"))?.board_room_id ?? "");
-  if (ancien) { const echecs = await inviterMembresEspace(espace, ancien); return { roomId: ancien, alreadyExisted: true, invitedCount: (await membresEspace(espace)).length - echecs.length, echecs }; }
-  const id = await creerSalonDansEspace(espace, "Soundboard & Memeboard", false, true, false, true, false);
+  verifierCompte();
+  if (ancien) {
+    bibliothequesCreees.delete(cle);
+    return { roomId: ancien, alreadyExisted: true, ...await inviterBibliothequeEspace(espace, ancien) };
+  }
+  const id = bibliothequesCreees.get(cle) ?? await creerSalonDansEspace(espace, "Soundboard & Memeboard", false, true, false, true, false);
+  verifierCompte();
+  // Reuse a created room if publishing its designation fails or /sync is late.
+  bibliothequesCreees.set(cle, id);
+  if (bibliothequesCreees.size > 64) bibliothequesCreees.delete(bibliothequesCreees.keys().next().value!);
   await envoyerEtat(espace, "com.sion.space", { board_room_id: id });
+  verifierCompte();
+  // A new room has no exclusions; its designation may still be waiting for /sync.
+  const membres = await membresEspace(espace);
+  verifierCompte();
   const echecs = await inviterMembresEspace(espace, id);
-  return { roomId: id, alreadyExisted: false, invitedCount: 0, echecs };
+  return { roomId: id, alreadyExisted: false,
+    invitedCount: membres.filter((m) => m.userId !== compte).length - echecs.length, echecs };
 }
 export async function modifierEspace(espace: string, nom: string, sujet: string, image?: File) {
   await verifierResponsable(espace);

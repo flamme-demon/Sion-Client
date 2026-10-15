@@ -119,14 +119,33 @@ pub(crate) fn reponse(cible: &str, corps: &str, membres: &[Membre]) -> Value {
     avec_mentions(c, corps, membres)
 }
 
-/// `editMessage`.
-pub(crate) fn edition(cible: &str, texte: &str) -> Value {
-    json!({
-        "msgtype": "m.text",
-        "body": format!("* {texte}"),
-        "m.new_content": { "msgtype": "m.text", "body": texte },
-        "m.relates_to": { "rel_type": "m.replace", "event_id": cible },
-    })
+/// Change the text or caption without discarding media, keys or custom metadata.
+pub(crate) fn edition(cible: &str, texte: &str, origine: &Value) -> Result<Value, String> {
+    let mut nouveau = origine.as_object().cloned().ok_or("Message original indisponible")?;
+    let type_ = origine.get("msgtype").and_then(Value::as_str).filter(|s| !s.is_empty())
+        .ok_or("Message original indisponible ou indéchiffrable")?;
+    if origine.pointer("/m.relates_to/rel_type").and_then(Value::as_str) == Some("m.replace") {
+        return Err("L'édition doit viser le message d'origine".into());
+    }
+    if matches!(type_, "m.image" | "m.video" | "m.audio" | "m.file") {
+        if ![origine.get("url"), origine.pointer("/file/url")].into_iter()
+            .flatten().any(|v| v.as_str().is_some_and(|s| !s.is_empty())) {
+            return Err("Le média du message original est indisponible".into());
+        }
+        // A caption needs a separate filename, including older captionless uploads.
+        if !nouveau.get("filename").and_then(Value::as_str).is_some_and(|s| !s.is_empty()) {
+            nouveau.insert("filename".into(), origine.get("body").cloned().unwrap_or_else(|| "fichier".into()));
+        }
+    }
+    for cle in ["format", "formatted_body", "m.mentions", "m.new_content", "m.relates_to"] {
+        nouveau.remove(cle);
+    }
+    nouveau.insert("body".into(), texte.into());
+    let mut contenu = nouveau.clone();
+    contenu.insert("body".into(), format!("* {texte}").into());
+    contenu.insert("m.new_content".into(), Value::Object(nouveau));
+    contenu.insert("m.relates_to".into(), json!({ "rel_type": "m.replace", "event_id": cible }));
+    Ok(Value::Object(contenu))
 }
 
 /// `sendReaction` (type `m.reaction`).
@@ -330,10 +349,44 @@ mod tests {
     fn reponse_et_edition() {
         let r = reponse("$a", "ok", &[]);
         assert_eq!(r, json!({ "msgtype": "m.text", "body": "ok", "m.relates_to": { "m.in_reply_to": { "event_id": "$a" } } }));
-        let e = edition("$a", "corrigé");
+        let e = edition("$a", "corrigé", &texte("original", &[])).unwrap();
         assert_eq!(e["body"], "* corrigé");
         assert_eq!(e["m.new_content"], json!({ "msgtype": "m.text", "body": "corrigé" }));
         assert_eq!(e["m.relates_to"], json!({ "rel_type": "m.replace", "event_id": "$a" }));
+    }
+
+    #[test]
+    fn caption_edits_keep_all_media_sources_and_metadata() {
+        for type_ in ["m.image", "m.video", "m.audio", "m.file"] {
+            for encrypted in [false, true] {
+                let mut original = json!({
+                    "msgtype": type_, "body": "photo.png", "info": { "mimetype": "image/png", "size": 42, "w": 640, "h": 480, "thumbnail_url": "mxc://hs/thumb" },
+                    "format": "org.matrix.custom.html", "formatted_body": "<b>old</b>",
+                    "m.mentions": { "user_ids": ["@old:hs"] }, "com.sion.test": { "keep": true }
+                });
+                let source = if encrypted { "file" } else { "url" };
+                original[source] = if encrypted { json!({ "url": "mxc://hs/photo", "key": { "k": "secret" }, "iv": "iv", "hashes": { "sha256": "hash" }, "v": "v2" }) } else { "mxc://hs/photo".into() };
+                let edit = edition("$photo", "Quel fumier ce chat !", &original).unwrap();
+                for content in [&edit, &edit["m.new_content"]] {
+                    assert_eq!(content["msgtype"], type_);
+                    assert_eq!(content[source], original[source]);
+                    assert_eq!(content["info"], original["info"]);
+                    assert_eq!(content["filename"], "photo.png");
+                    assert_eq!(content["com.sion.test"], original["com.sion.test"]);
+                    assert!(content.get("formatted_body").is_none());
+                    assert!(content.get("m.mentions").is_none());
+                }
+                assert_eq!(edit["m.new_content"]["body"], "Quel fumier ce chat !");
+                assert!(original.get("filename").is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn unreadable_originals_cannot_be_replaced_with_plain_text() {
+        for original in [Value::Null, json!({}), json!({ "msgtype": "m.image", "body": "photo" })] {
+            assert!(edition("$photo", "caption", &original).is_err());
+        }
     }
 
     #[test]

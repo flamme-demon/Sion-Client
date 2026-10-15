@@ -1,5 +1,7 @@
 import { Filter, Direction } from "matrix-js-sdk";
 import { getSharedAudioContext } from "./audioContext";
+import { playNativePcm, playNativeTone } from "./nativeAudioPlayback";
+import { audioBufferToNativePcm } from "./nativeAudioPcm";
 import { getMatrixClient, findSoundboardRoom, uploadFile } from "./matrixService";
 import * as core from "./matrixCore";
 import { moteurRust } from "./moteur";
@@ -546,93 +548,16 @@ export async function decodeNativeSoundboardPcm(url: string): Promise<{ pcmB64: 
   if (!response.ok) throw new Error(`Sound decode failed: ${response.status}`);
   const encoded = await response.arrayBuffer();
   const decoded = await getSharedAudioContext().decodeAudioData(encoded);
-  const outputLength = Math.ceil(decoded.length * 48_000 / decoded.sampleRate);
-  const bytes = new Uint8Array(outputLength * 2);
-  const channels = Array.from(
-    { length: decoded.numberOfChannels },
-    (_, channel) => decoded.getChannelData(channel),
-  );
-  for (let i = 0; i < outputLength; i++) {
-    const position = i * decoded.sampleRate / 48_000;
-    const left = Math.min(Math.floor(position), decoded.length - 1);
-    const right = Math.min(left + 1, decoded.length - 1);
-    const fraction = position - left;
-    let sample = 0;
-    for (const channel of channels) {
-      sample += channel[left] + (channel[right] - channel[left]) * fraction;
-    }
-    sample = Math.max(-1, Math.min(1, sample / channels.length));
-    const pcm = sample < 0 ? Math.round(sample * 32768) : Math.round(sample * 32767);
-    bytes[i * 2] = pcm & 0xff;
-    bytes[i * 2 + 1] = (pcm >> 8) & 0xff;
-  }
-  const { bytesToB64 } = await import("./voiceNativeService");
   return {
-    pcmB64: bytesToB64(bytes),
+    pcmB64: bytesToB64(audioBufferToNativePcm(decoded)),
     durationMs: Number.isFinite(decoded.duration) ? Math.round(decoded.duration * 1000) : null,
   };
 }
 
 async function playSoundNative(url: string, gain: number): Promise<number | null> {
-  const { playVoiceNativeSoundboard } = await import("./voiceNativeService");
   const { pcmB64, durationMs } = await decodeNativeSoundboardPcm(url);
-  await playVoiceNativeSoundboard(pcmB64, playbackVolume * clampGain(gain));
+  await playNativePcm(pcmB64, { gain: playbackVolume * clampGain(gain) }).ready;
   return durationMs;
-}
-
-/** Build the playback chain for one HTMLAudioElement and start playback.
- *  Web Audio is needed (vs `audio.volume`) because element volume is
- *  capped at 1.0 — boosting beyond that requires a GainNode. The
- *  DynamicsCompressor at the tail prevents loud clipping when a user pushes
- *  the gain too high. Cleanup is wired to `ended`/`error` of the element. */
-async function playElementWithGain(audio: HTMLAudioElement, gain: number, onCleanup?: () => void): Promise<number | null> {
-  const ctx = getSharedAudioContext();
-  if (ctx.state === "suspended") {
-    try { await ctx.resume(); } catch { /* fine — first play after gesture will resume */ }
-  }
-  let source: MediaElementAudioSourceNode;
-  try {
-    source = ctx.createMediaElementSource(audio);
-  } catch (err) {
-    // createMediaElementSource throws if called twice on the same element —
-    // we always pass a freshly-created element, so this signals a real error.
-    audio.remove();
-    onCleanup?.();
-    throw err;
-  }
-  const gainNode = ctx.createGain();
-  gainNode.gain.value = playbackVolume * clampGain(gain);
-  // Soft brick-wall to keep loud peaks from blowing out viewers' ears when
-  // someone pushes the slider to 300 % on an already-loud sample.
-  const limiter = ctx.createDynamicsCompressor();
-  limiter.threshold.value = -3;
-  limiter.knee.value = 0;
-  limiter.ratio.value = 20;
-  limiter.attack.value = 0.001;
-  limiter.release.value = 0.05;
-  source.connect(gainNode);
-  gainNode.connect(limiter);
-  limiter.connect(ctx.destination);
-
-  const cleanup = () => {
-    try { source.disconnect(); } catch { /* */ }
-    try { gainNode.disconnect(); } catch { /* */ }
-    try { limiter.disconnect(); } catch { /* */ }
-    audio.remove();
-    onCleanup?.();
-  };
-  audio.addEventListener("ended", cleanup, { once: true });
-  audio.addEventListener("error", cleanup, { once: true });
-
-  try {
-    await audio.play();
-  } catch (err) {
-    cleanup();
-    throw err;
-  }
-  // Durée réelle du média une fois les métadonnées lues (null si le conteneur
-  // ne l'expose pas — flux infini, webm sans en-tête).
-  return Number.isFinite(audio.duration) ? Math.round(audio.duration * 1000) : null;
 }
 
 /** Plays the sound locally with the per-sound gain applied. Used both for
@@ -648,19 +573,7 @@ export async function playSoundLocal(mxcUrl: string, gain: number = 1.0): Promis
   if (useAppStore.getState().isDeafened) return null;
 
   const url = await resolveBlobUrl(mxcUrl);
-  // En appel, le clip est mixé par le moteur Rust dans le rendu WebRTC (donc
-  // aussi dans la référence AEC). Hors appel, lecture locale DOM classique.
-  if (useAppStore.getState().connectedVoiceChannel) {
-    return playSoundNative(url, gain);
-  }
-  // Attach to the DOM so the webview doesn't GC the element mid-play (which
-  // manifests as AbortError: "media was removed from the document").
-  const audio = document.createElement("audio");
-  audio.src = url;
-  audio.style.display = "none";
-  audio.preload = "auto";
-  document.body.appendChild(audio);
-  return playElementWithGain(audio, gain);
+  return playSoundNative(url, gain);
 }
 
 const afkEncoder = new TextEncoder();
@@ -752,26 +665,7 @@ export async function handleRemoteBroadcast(payload: Uint8Array, senderIdentity:
  */
 export function playErrorBuzzer(): void {
   if (useAppStore.getState().isDeafened) return;
-  try {
-    // Reuse the shared context (les webviews plafonnent les AudioContexts concurrents) —
-    // a per-call `new AudioContext()` risked hitting the cap and leaked when
-    // start/stop threw before its close timer fired.
-    const ctx = getSharedAudioContext();
-    if (ctx.state === "suspended") ctx.resume().catch(() => {});
-    const now = ctx.currentTime;
-    const osc = ctx.createOscillator();
-    const gain = ctx.createGain();
-    osc.type = "sawtooth";
-    osc.frequency.setValueAtTime(220, now);
-    osc.frequency.exponentialRampToValueAtTime(80, now + 0.25);
-    gain.gain.setValueAtTime(0.15, now);
-    gain.gain.linearRampToValueAtTime(0, now + 0.35);
-    osc.connect(gain).connect(ctx.destination);
-    // Detach from the shared destination once done so the nodes are GC'd.
-    osc.onended = () => { try { osc.disconnect(); gain.disconnect(); } catch { /* already gone */ } };
-    osc.start(now);
-    osc.stop(now + 0.4);
-  } catch { /* AudioContext not available */ }
+  playNativeTone([{ freq: 220, endFreq: 80, start: 0, dur: 0.4 }], "sawtooth", 0.15);
 }
 
 async function bibliothequeRequise(): Promise<string> {

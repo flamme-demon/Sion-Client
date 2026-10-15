@@ -1,6 +1,7 @@
 import { useEffect, useRef, useCallback } from "react";
 import { useAppStore } from "../stores/useAppStore";
 import { useSettingsStore } from "../stores/useSettingsStore";
+import { playNativeTone } from "../services/nativeAudioPlayback";
 import {
   getVoiceNativeAudioLevel,
   startVoiceNativeMicrophoneTest,
@@ -9,29 +10,9 @@ import {
 
 const ALERT_COOLDOWN_MS = 3000;
 
-// Short "bip bip" alert sound via Web Audio API
+// Render local feedback through Rust alongside received voices.
 function playMutedAlert() {
-  try {
-    const ctx = new AudioContext();
-    const gain = ctx.createGain();
-    gain.connect(ctx.destination);
-    gain.gain.value = 0.15;
-
-    // Two short beeps
-    for (const offset of [0, 0.15]) {
-      const osc = ctx.createOscillator();
-      osc.type = "sine";
-      osc.frequency.value = 800;
-      osc.connect(gain);
-      osc.start(ctx.currentTime + offset);
-      osc.stop(ctx.currentTime + offset + 0.08);
-    }
-
-    // Cleanup after sounds finish
-    setTimeout(() => ctx.close(), 500);
-  } catch {
-    // Silently fail if audio not available
-  }
+  playNativeTone([{ freq: 800, start: 0, dur: 0.08 }, { freq: 800, start: 0.15, dur: 0.08 }], "sine", 0.15);
 }
 
 export function useMutedSpeakDetection(onSpeakWhileMuted: () => void) {
@@ -44,14 +25,14 @@ export function useMutedSpeakDetection(onSpeakWhileMuted: () => void) {
 
   const lastAlertRef = useRef(0);
   const onSpeakRef = useRef(onSpeakWhileMuted);
-  onSpeakRef.current = onSpeakWhileMuted;
+  useEffect(() => { onSpeakRef.current = onSpeakWhileMuted; }, [onSpeakWhileMuted]);
   // Ref mirror of the threshold so the rAF loop picks up slider changes
   // without tearing down getUserMedia/AudioContext. Dragging the slider
   // previously re-ran the whole effect (stop tracks → ctx.close() → new
   // getUserMedia), taking ~200–500 ms each tick and making the setting
   // feel "ignored until reload".
   const micThresholdRef = useRef(micThreshold);
-  micThresholdRef.current = micThreshold;
+  useEffect(() => { micThresholdRef.current = micThreshold; }, [micThreshold]);
 
   const triggerAlert = useCallback(() => {
     const now = Date.now();

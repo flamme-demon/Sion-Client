@@ -19,6 +19,7 @@ import { noteServerTimestamp, serverNow, publishClockSkew } from "../services/se
 import { plateformeMobile } from "../utils/plateforme";
 import { heureMessage } from "../utils/heure";
 import { confirmerEcho } from "./echosMessages";
+import { filtrerSuppressions, noterSuppression, reinitialiserSuppressions, sessionSuppressionActuelle, supprimerUneFois, suppressionConfirmee } from "./suppressionsMessages";
 
 export type VerificationStep =
   | "idle"           // No verification in progress
@@ -563,7 +564,17 @@ export function parsePollStartContent(content: any): PollData | null {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function extractMessagesFromEvents(events: any[], room: any, client: any): ChatMessage[] {
   const msgs: ChatMessage[] = [];
+  const deleted = new Set<string>();
   for (const evt of events) {
+    const id = evt.getId?.();
+    if (id && (evt.isRedacted?.() || evt.getUnsigned?.()?.redacted_because)) deleted.add(id);
+    if (evt.getType?.() === "m.room.redaction") {
+      const target = evt.getAssociatedId?.() || evt.getContent?.()?.redacts || evt.event?.redacts;
+      if (target) deleted.add(target);
+    }
+  }
+  for (const evt of events) {
+    if (deleted.has(evt.getId?.())) continue;
     const type = evt.getType?.();
     const content = evt.getContent?.();
 
@@ -631,25 +642,25 @@ export function extractMessagesFromEvents(events: any[], room: any, client: any)
     const ts = evt.getTs?.() || Date.now();
     const time = heureMessage(ts);
 
+    // Handle edit events (m.replace)
+    const relatesTo = content["m.relates_to"];
+    if (relatesTo?.rel_type === "m.replace" && relatesTo?.event_id) {
+      const newContent = content["m.new_content"];
+      const editedText = newContent?.body ?? content.body;
+      const targetId = relatesTo.event_id;
+      // Update existing message in place
+      const existing = msgs.find((m) => m.id === targetId);
+      if (existing && existing.senderId === senderId) {
+        existing.text = editedText;
+        existing.formattedBody = newContent?.format === "org.matrix.custom.html" ? newContent.formatted_body : undefined;
+        existing.edited = true;
+      }
+      continue;
+    }
+
     // Messages texte
     if (msgtype === "m.text" || msgtype === "m.notice" || msgtype === "m.emote" || msgtype === "m.poke") {
       if (!content.body) continue;
-
-      // Handle edit events (m.replace)
-      const relatesTo = content["m.relates_to"];
-      if (relatesTo?.rel_type === "m.replace" && relatesTo?.event_id) {
-        const newContent = content["m.new_content"];
-        const editedText = newContent?.body || content.body;
-        const targetId = relatesTo.event_id;
-        // Update existing message in place
-        const existing = msgs.find((m) => m.id === targetId);
-        if (existing) {
-          existing.text = editedText;
-          existing.formattedBody = newContent?.format === "org.matrix.custom.html" ? newContent.formatted_body : undefined;
-          existing.edited = true;
-        }
-        continue;
-      }
 
       // Parse reply reference
       let replyTo: ChatMessage["replyTo"];
@@ -705,6 +716,7 @@ export function extractMessagesFromEvents(events: any[], room: any, client: any)
   }
   // Parse reactions (m.annotation) and attach to messages
   for (const evt of events) {
+    if (deleted.has(evt.getId?.())) continue;
     if (evt.getType?.() !== "m.reaction") continue;
     const rel = evt.getContent?.()?.["m.relates_to"];
     if (rel?.rel_type !== "m.annotation" || !rel?.event_id || !rel?.key) continue;
@@ -727,7 +739,8 @@ export function extractMessagesFromEvents(events: any[], room: any, client: any)
 
   // Plafond par salon : on garde les plus récents, l'ancien restant
   // rechargeable par scrollback si l'utilisateur remonte.
-  return msgs.length > MAX_MESSAGES_PER_ROOM ? msgs.slice(-MAX_MESSAGES_PER_ROOM) : msgs;
+  const visible = filtrerSuppressions(room?.roomId ?? "", msgs);
+  return visible.length > MAX_MESSAGES_PER_ROOM ? visible.slice(-MAX_MESSAGES_PER_ROOM) : visible;
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1398,6 +1411,7 @@ export const useMatrixStore = create<MatrixState>((set, get) => ({
       // Skip events with no ID or sender (malformed/pending decryption artifacts)
       const eventId = event.getId?.();
       if (!eventId || !event.getSender?.()) return;
+      if (suppressionConfirmee(room.roomId, eventId)) return;
       // Prevent duplicate processing (SDK can emit Timeline twice for same event)
       if (processedEventIds.has(eventId)) return;
       processedEventIds.add(eventId);
@@ -1416,14 +1430,14 @@ export const useMatrixStore = create<MatrixState>((set, get) => ({
       const relatesTo = content["m.relates_to"];
       if (relatesTo?.rel_type === "m.replace" && relatesTo?.event_id) {
         const newContent = content["m.new_content"];
-        const editedText = newContent?.body || content.body;
+        const editedText = newContent?.body ?? content.body;
         const targetId = relatesTo.event_id;
         set((s) => {
           const existing = s.messages[room.roomId] || [];
           const idx = existing.findIndex((m) => m.id === targetId);
           if (idx === -1) return s;
           const updated = [...existing];
-          updated[idx] = { ...updated[idx], text: editedText, edited: true };
+          updated[idx] = { ...updated[idx], text: editedText, formattedBody: newContent?.format === "org.matrix.custom.html" ? newContent.formatted_body : undefined, edited: true };
           return { messages: { ...s.messages, [room.roomId]: updated } };
         });
         return;
@@ -2396,38 +2410,42 @@ export const useMatrixStore = create<MatrixState>((set, get) => ({
       await matrixService.editMessage(channelId, eventId, newText);
     } catch (err) {
       console.error("[Sion] Failed to edit message:", err);
+      throw err;
     }
   },
 
-  deleteMessage: async (channelId, eventId) => {
-    try {
-      // redactMessage resolves a local-echo id ("~…") to its server id (or
-      // throws if the message hasn't been acked yet), so deleting your own
-      // just-sent message works.
-      await matrixService.redactMessage(channelId, eventId);
-      // Remove from local state immediately (the store still holds it under the
-      // id the UI passed).
-      set((s) => ({
-        messages: {
-          ...s.messages,
-          [channelId]: (s.messages[channelId] || []).filter((m) => m.id !== eventId && m.eventId !== eventId),
-        },
-      }));
-    } catch (err) {
-      console.error("[Sion] Failed to delete message:", err);
-    }
+  deleteMessage: (channelId, eventId) => {
+    const userId = get().currentUserId;
+    const target = eventId.startsWith("$") ? eventId : matrixService.resolveServerEventId(channelId, eventId) ?? eventId;
+    return supprimerUneFois(channelId, target, async (scope) => {
+      if (get().currentUserId !== userId) return;
+      const started = performance.now();
+      try {
+        if (!suppressionConfirmee(channelId, target)) await matrixService.redactMessage(channelId, target);
+        if (!sessionSuppressionActuelle(scope) || get().currentUserId !== userId) return;
+        noterSuppression(channelId, target, scope);
+        noterSuppression(channelId, eventId, scope);
+        set((s) => ({ messages: { ...s.messages, [channelId]: filtrerSuppressions(channelId, s.messages[channelId] ?? []) } }));
+        void import("@tauri-apps/plugin-log").then(({ info }) => info(
+          `[Sion][suppression] confirmée salon=${channelId} événement=${target} après ${Math.round(performance.now() - started)} ms`,
+        )).catch(() => {});
+      } catch (err) {
+        console.error("[Sion] Failed to delete message:", err);
+        throw err;
+      }
+    });
   },
 
   setChannels: (channels) => set({ channels }),
   setConnectionStatus: (status) => set({ connectionStatus: status }),
   dismissVerification: () => set({ needsVerification: false }),
-  reset: () => set({
+  reset: () => { reinitialiserSuppressions(); set({
     channels: [], messages: {}, roomHasMore: {}, roomLoadingHistory: {},
     connectionStatus: "disconnected", currentUserId: null,
     needsVerification: false, isRestoringKeys: false, hasUndecryptableMessages: false, pinnedVersion: 0,
     bootstrapStep: "idle", generatedRecoveryKey: null,
     verificationStep: "idle", verificationEmojis: [], verificationError: null, verificationQr: null, verificationScanner: false,
-  }),
+  }); },
 }));
 
 // Dev helper: expose matrix client + a couple of one-shot admin actions

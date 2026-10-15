@@ -63,6 +63,13 @@ quelque chose. C'est la seule pièce à déplacer.
 5. **Synchronisation** : horloge audio maîtresse, présentation des images sur
    leurs PTS. Méthode classique.
 
+Les sons d'interface, préécoutes et pièces jointes audio utilisent désormais
+le chemin contrôlable décrit dans [audio-local-natif.md](audio-local-natif.md).
+La vidéo garde sa sortie native indépendante et son horloge audio. Elle ne
+passe donc pas par la webview ; la raccorder au mixeur vocal demanderait de
+conserver la cadence de son décodeur et sa position lors des changements de
+route, ainsi que le fonctionnement hors appel et en sourdine.
+
 Conséquence directe : on peut **supprimer** la sonde `dav1d`, le remux
 préventif, la conversion conditionnelle, le chien de garde et le bouton ffmpeg
 de lecture. Le code redevient simple, et l'AV1 reste le format d'envoi.

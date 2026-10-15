@@ -40,7 +40,7 @@ import {
 import { MemeTrimmer } from "./MemeTrimmer";
 import { EmojiGridPanel } from "./EmojiGridPanel";
 import { definirLecteurActif, libererLecteurActif } from "../../services/lecteurActif";
-import { adresseDeReprise } from "../../services/repriseImages";
+import { ApercuMeme } from "./ApercuMeme";
 import { SUR_ANDROID } from "../../utils/plateforme";
 import { buildTree, findNode, sortedChildren, parentPath, normaliserCategorie } from "../../utils/categories";
 import { FiltreBoardCompact } from "./FiltreBoardCompact";
@@ -224,81 +224,6 @@ function MemeEditModal({ meme, categories, onClose, onModifie }: { meme: MemeEnt
       </div>
     </div>,
     document.body,
-  );
-}
-
-/** Aperçu d'une tuile : la première image, figée dans un canvas, et le WebP
- *  animé seulement au survol. Tous animés, les aperçus (12 images/s) faisaient
- *  redessiner la grille en permanence, tuiles hors écran comprises : 26 memes
- *  = ~1 700 dessins en 6,7 s et un cœur à moitié occupé par le pilote GPU,
- *  mesuré le 26/09. Chargement différé jusqu'à l'approche de l'écran, comme le
- *  `loading="lazy"` d'avant. */
-function ApercuMeme({ src, anime }: { src: string; anime: boolean }) {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    let annule = false;
-    let image: HTMLImageElement | null = null;
-    let chargement = false;
-    const dessiner = (img: HTMLImageElement) => {
-      const cote = Math.min(img.naturalWidth, img.naturalHeight);
-      if (annule || !cote) return;
-      // Recadrage « cover » au carré, comme l'<img> qu'il remplace.
-      canvas.width = cote;
-      canvas.height = cote;
-      canvas.getContext("2d")?.drawImage(
-        img, (img.naturalWidth - cote) / 2, (img.naturalHeight - cote) / 2, cote, cote, 0, 0, cote, cote,
-      );
-    };
-    const figer = () => {
-      if (image) return dessiner(image);
-      if (chargement) return;
-      chargement = true;
-      charger(src);
-    };
-    const charger = (adresse: string) => {
-      const img = new Image();
-      img.src = adresse;
-      // Détachée du document, une image animée n'avance pas : on dessine sa
-      // première image. Le canvas est « teinté » (autre origine) mais s'affiche.
-      img.decode().then(() => {
-        image = img;
-        dessiner(img);
-      }).catch(() => {
-        // Image du cœur Rust déjà chargée dans la page : voir repriseImages.ts.
-        const reprise = adresseDeReprise(adresse);
-        if (reprise && !annule) charger(reprise);
-        else chargement = false;
-      });
-    };
-    // Redessiné à CHAQUE retour à l'écran, pas seulement au premier : WebKitGTK
-    // vide un canvas qu'on a masqué, et les tuiles survolées redevenaient
-    // grises (26/09). L'image décodée est gardée, redessiner coûte 220 px.
-    const observateur = new IntersectionObserver((entrees) => {
-      if (entrees.some((e) => e.isIntersecting)) figer();
-    }, { rootMargin: "200px" });
-    observateur.observe(canvas);
-    return () => {
-      annule = true;
-      observateur.disconnect();
-    };
-  }, [src]);
-
-  // Le canvas n'est jamais masqué : au survol, l'aperçu animé se pose
-  // par-dessus.
-  return (
-    <div style={{ position: 'relative', width: '100%', height: '100%' }}>
-      <canvas ref={canvasRef} style={{ display: 'block', width: '100%', height: '100%' }} />
-      {anime && (
-        <img
-          src={src}
-          alt=""
-          style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
-        />
-      )}
-    </div>
   );
 }
 

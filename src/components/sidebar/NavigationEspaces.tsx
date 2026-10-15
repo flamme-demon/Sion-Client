@@ -3,7 +3,7 @@ import { choisirEspace } from "../../hooks/useEspaces";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
-import { DirectMessagesIcon, PlusIcon, SettingsIcon, ShareIcon } from "../icons";
+import { DirectMessagesIcon, PlusIcon, SettingsIcon, ShareIcon, UsersIcon } from "../icons";
 import { useMatrixStore } from "../../stores/useMatrixStore";
 import { useAppStore } from "../../stores/useAppStore";
 import { useSettingsStore } from "../../stores/useSettingsStore";
@@ -157,6 +157,11 @@ export function NavigationEspaces({ rail = false, horizontal = false, mobile = f
         if (mobile) useAppStore.getState().setMobileView("sidebar");
         useEspacesStore.getState().ouvrir("gerer");
       } },
+      ...(espaceMenu.membership === "invite" ? [] : [{ label: t("spaces.members"), icon: <UsersIcon />, action: () => {
+        choisirEspace(espaceMenu.id);
+        if (mobile) useAppStore.getState().setMobileView("sidebar");
+        useEspacesStore.getState().ouvrir("gerer", "membres");
+      } }]),
     ]} />}
     {retour && createPortal(<div className={`sion-espace-retour${retour.erreur ? " sion-espace-retour--erreur" : ""}`}
       role={retour.erreur ? "alert" : "status"}>{retour.texte}</div>, document.body)}

@@ -7,7 +7,12 @@ import { useMatrixStore } from "../../stores/useMatrixStore";
 import { useAppStore } from "../../stores/useAppStore";
 import type { Channel } from "../../types/matrix";
 
-const appels = vi.hoisted(() => ({ leave: vi.fn(), vocal: vi.fn(), admin: false, responsable: false, bibliotheque: vi.fn(), modifier: vi.fn(), creerSalon: vi.fn(), invitations: vi.fn(), membres: vi.fn(), inviter: vi.fn(), rechercher: vi.fn(), rejoindre: vi.fn() }));
+const appels = vi.hoisted(() => ({ leave: vi.fn(), vocal: vi.fn(), admin: false, responsable: false, bibliotheque: vi.fn(), modifier: vi.fn(), creerSalon: vi.fn(), invitations: vi.fn(), membres: vi.fn(), inviter: vi.fn(), rechercher: vi.fn(), rejoindre: vi.fn(), changerRole: vi.fn(), inviterBibliotheque: vi.fn() }));
+vi.mock("../../services/bibliothequeEspaceService", () => ({
+  chargerBibliothequeEspace: async (id: string) => ({ salon: useMatrixStore.getState().channels.find((c) => c.id === id)?.boardRoomId ?? null,
+    administrateur: appels.admin, peutInviter: appels.admin, membres: [], invitations: [], exclus: [], manquants: [{ userId: "@alice:hs", displayName: "Alice", powerLevel: 0 }] }),
+  inviterBibliothequeEspace: appels.inviterBibliotheque, modererBibliothequeEspace: vi.fn(),
+}));
 vi.mock("../../hooks/useVoiceChannel", () => ({ useVoiceChannel: () => ({ leaveVoiceChannel: appels.vocal }) }));
 vi.mock("./ParcourirSalonsEspace", () => ({ ParcourirSalonsEspace: ({ espaceId }: { espaceId: string }) => <div data-choix-salons={espaceId} /> }));
 vi.mock("../../i18n", () => ({ default: { t: (cle: string) => cle, changeLanguage: vi.fn() } }));
@@ -21,6 +26,7 @@ vi.mock("../../services/espacesService", () => ({
   modifierEspace: appels.modifier,
   creerSalonDansEspace: appels.creerSalon,
   membresEspace: appels.membres,
+  changerRoleEspace: appels.changerRole,
   invitationsEspace: appels.invitations,
   hierarchieEspace: async () => [{ room_id: "!equipe", room_type: "m.space" }, { room_id: "!salon", name: "Général", join_rule: "restricted" }],
   lienEspace: (id: string) => `https://matrix.to/#/${id}`,
@@ -49,7 +55,9 @@ beforeEach(() => {
   appels.inviter.mockReset().mockResolvedValue(undefined);
   appels.rechercher.mockReset().mockResolvedValue({ utilisateurs: [{ userId: "@alice:hs", displayName: "Alice", avatarUrl: "/photo-test.png" }], limite: false });
   appels.rejoindre.mockReset().mockResolvedValue({ id: "!equipe" });
-  useEspacesStore.setState({ utilisateur: "@membre:hs", espaceActif: "!equipe", fenetre: "gerer", salonsQuittes: [], hierarchies: {} });
+  appels.changerRole.mockReset().mockResolvedValue([]);
+  appels.inviterBibliotheque.mockReset().mockResolvedValue({ invitedCount: 1, echecs: [] });
+  useEspacesStore.setState({ utilisateur: "@membre:hs", espaceActif: "!equipe", fenetre: "gerer", rubrique: "general", salonsQuittes: [], hierarchies: {} });
   useMatrixStore.setState({ channels: salons, currentUserId: "@membre:hs" });
   useAppStore.setState({ activeChannel: "!salon", connectedVoiceChannel: null, connectingVoiceChannel: null, pendingAutoJoinVoice: null, reconnexionVocale: null });
 });
@@ -63,6 +71,25 @@ it("l'acceptation d'une invitation à un espace propose ensuite le choix de ses 
   expect(document.querySelector('[data-choix-salons="!equipe"]')).not.toBeNull();
 });
 afterEach(() => vi.useRealTimers());
+it.each([false, true])("l'accès direct aux membres regroupe la liste, les rôles et les invitations selon les droits (%s)", async (responsable) => {
+  appels.responsable = responsable;
+  appels.invitations.mockResolvedValue([{ userId: "@alice:hs", displayName: "Alice", avatarUrl: null }]);
+  useEspacesStore.getState().ouvrir("gerer", "membres");
+  await vue.render(<GestionEspaces />);
+  expect(document.querySelector('[role="tab"][aria-selected="true"]')?.id).toBe("espace-onglet-membres");
+  expect(document.querySelector('[role="tabpanel"]')?.textContent).toContain("@membre:hs");
+  expect(document.querySelector('.sion-espaces-invitations')?.textContent).toContain("@alice:hs");
+  expect(appels.membres).toHaveBeenCalledExactlyOnceWith("!equipe");
+  const roles = document.querySelector<HTMLSelectElement>('[role="tabpanel"] select');
+  expect(!!roles).toBe(responsable);
+  expect(!!document.querySelector('[role="tabpanel"] [role="combobox"]')).toBe(responsable);
+  if (roles) {
+    await act(async () => { roles.value = "50"; roles.dispatchEvent(new Event("change", { bubbles: true })); });
+    expect(appels.changerRole).toHaveBeenCalledExactlyOnceWith("!equipe", "@membre:hs", 50);
+  }
+  await act(async () => useEspacesStore.getState().ouvrir("gerer"));
+  expect(document.querySelector('[role="tab"][aria-selected="true"]')?.id).toBe("espace-onglet-general");
+});
 it.each([false, true])("creates an encrypted room in the selected space (voice: %s)", async (vocal) => {
   appels.responsable = true;
   await vue.render(<GestionEspaces />);
@@ -117,7 +144,8 @@ it.each([false, true])("un administrateur de l'espace gère sa bibliothèque (ex
   const bouton = Array.from(document.querySelectorAll<HTMLButtonElement>("button")).find((b) => b.textContent === (existante ? "spaces.syncLibrary" : "spaces.createLibrary"))!;
   expect(bouton).toBeDefined();
   await act(async () => bouton.click());
-  expect(appels.bibliotheque).toHaveBeenCalledExactlyOnceWith("!equipe");
+  if (existante) expect(appels.inviterBibliotheque).toHaveBeenCalledExactlyOnceWith("!equipe", "!board", undefined);
+  else expect(appels.bibliotheque).toHaveBeenCalledExactlyOnceWith("!equipe");
 });
 it("un simple membre peut quitter l'espace avec confirmation en conservant ses salons", async () => {
   await vue.render(<GestionEspaces />);

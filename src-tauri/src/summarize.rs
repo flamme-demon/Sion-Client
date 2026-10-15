@@ -16,7 +16,9 @@
 
 #![cfg(not(target_os = "android"))]
 
+use crate::inference_job::{self, Engine, InferenceJob};
 use std::io::Write;
+use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
 use tauri::{Emitter, Manager};
@@ -86,11 +88,13 @@ pub(crate) fn host_has_vulkan() -> bool {
     }
     #[cfg(target_os = "linux")]
     {
-        return hidden_command("ldconfig")
-            .arg("-p")
-            .output()
-            .map(|o| String::from_utf8_lossy(&o.stdout).contains("libvulkan.so"))
-            .unwrap_or(false);
+        return crate::process_output::output(
+            hidden_command("ldconfig").arg("-p"),
+            Duration::from_secs(10),
+            &AtomicBool::new(false),
+        )
+        .map(|o| String::from_utf8_lossy(&o.stdout).contains("libvulkan.so"))
+        .unwrap_or(false);
     }
     #[allow(unreachable_code)]
     false
@@ -105,7 +109,9 @@ fn llama_runs(bin: &std::path::Path) -> bool {
     if let Some(parent) = bin.parent() {
         cmd.env("LD_LIBRARY_PATH", parent);
     }
-    cmd.output().map(|o| o.status.success()).unwrap_or(false)
+    crate::process_output::output(&mut cmd, Duration::from_secs(10), &AtomicBool::new(false))
+        .map(|o| o.status.success())
+        .unwrap_or(false)
 }
 
 /// Locate a working completion binary in the install dir, upgrade-gate aside.
@@ -152,13 +158,17 @@ pub struct SummaryAssets {
 }
 
 #[tauri::command]
-pub fn detect_summary_assets(app: tauri::AppHandle<TauriRuntime>) -> SummaryAssets {
-    SummaryAssets {
+pub async fn detect_summary_assets(
+    app: tauri::AppHandle<TauriRuntime>,
+) -> Result<SummaryAssets, String> {
+    tauri::async_runtime::spawn_blocking(move || SummaryAssets {
         llama: find_llama(&app).map(|p| p.to_string_lossy().into_owned()),
         model: summary_model_path(&app)
             .filter(|p| p.exists())
             .map(|p| p.to_string_lossy().into_owned()),
-    }
+    })
+    .await
+    .map_err(|e| e.to_string())
 }
 
 /// Download the latest prebuilt llama.cpp from the official GitHub releases
@@ -269,13 +279,13 @@ async fn fetch_and_install_llama(
     // binary needs its shared libs (libllama.so / .dll) next to it.
     let _ = std::fs::remove_dir_all(dir);
     std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-    let out = hidden_command("tar")
-        .arg("-xf")
-        .arg(&archive)
-        .arg("-C")
-        .arg(dir)
-        .output()
-        .map_err(|e| format!("tar introuvable: {e}"))?;
+    let mut cmd = hidden_command("tar");
+    cmd.arg("-xf").arg(&archive).arg("-C").arg(dir);
+    let out = tauri::async_runtime::spawn_blocking(move || {
+        crate::process_output::output(&mut cmd, Duration::from_secs(120), &AtomicBool::new(false))
+    })
+    .await
+    .map_err(|e| e.to_string())??;
     let _ = std::fs::remove_file(&archive);
     if !out.status.success() {
         return Err(format!(
@@ -321,7 +331,12 @@ pub async fn llama_versions(app: tauri::AppHandle<TauriRuntime>) -> Result<Strin
         if let Some(parent) = bin.parent() {
             cmd.env("LD_LIBRARY_PATH", parent);
         }
-        let out = cmd.output().ok()?;
+        let out = crate::process_output::output(
+            &mut cmd,
+            Duration::from_secs(10),
+            &AtomicBool::new(false),
+        )
+        .ok()?;
         // "version: 10059 (11fd0a6fb)" — printed on stdout or stderr
         // depending on the build.
         let text = format!(
@@ -424,107 +439,52 @@ const LLAMA_TIMEOUT: Duration = Duration::from_secs(20 * 60);
 /// in RAM took the whole app down).
 const LLAMA_MAX_OUTPUT: usize = 2 * 1024 * 1024;
 
-/// Run the command with closed stdin, a hard timeout, and a cap on captured
-/// stdout, so a misbehaving llama build can never OOM the app. Returns stdout.
-fn run_bounded(mut cmd: std::process::Command) -> Result<String, String> {
-    use std::io::Read;
-    use std::process::Stdio;
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::{Arc, Mutex};
-
-    let mut child = cmd
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("lancement llama: {e}"))?;
-    let mut stdout = child.stdout.take().expect("stdout piped");
-    let mut stderr = child.stderr.take().expect("stderr piped");
-    let child = Arc::new(Mutex::new(child));
-    let finished = Arc::new(AtomicBool::new(false));
-
-    // Watchdog: kill the child once the deadline passes, unblocking the reads.
-    let watchdog = {
-        let child = Arc::clone(&child);
-        let finished = Arc::clone(&finished);
-        std::thread::spawn(move || {
-            let deadline = std::time::Instant::now() + LLAMA_TIMEOUT;
-            while std::time::Instant::now() < deadline {
-                if finished.load(Ordering::Relaxed) {
-                    return false;
-                }
-                std::thread::sleep(Duration::from_millis(500));
-            }
-            let _ = child.lock().unwrap().kill();
-            true
-        })
-    };
-
-    // Drain stderr concurrently (avoids pipe deadlock), keep only a tail.
-    let stderr_tail = std::thread::spawn(move || {
-        let mut tail: Vec<u8> = Vec::new();
-        let mut buf = [0u8; 8192];
-        while let Ok(n) = stderr.read(&mut buf) {
-            if n == 0 {
-                break;
-            }
-            tail.extend_from_slice(&buf[..n]);
-            if tail.len() > 4096 {
-                tail.drain(..tail.len() - 4096);
-            }
-        }
-        String::from_utf8_lossy(&tail).into_owned()
-    });
-
-    let mut out: Vec<u8> = Vec::new();
-    let mut buf = [0u8; 65536];
-    let mut overflow = false;
-    loop {
-        match stdout.read(&mut buf) {
-            Ok(0) | Err(_) => break,
-            Ok(n) => {
-                if out.len() + n > LLAMA_MAX_OUTPUT {
-                    overflow = true;
-                    let _ = child.lock().unwrap().kill();
-                    break;
-                }
-                out.extend_from_slice(&buf[..n]);
-            }
-        }
-    }
-
-    let status = child.lock().unwrap().wait();
-    finished.store(true, Ordering::Relaxed);
-    let timed_out = watchdog.join().unwrap_or(false);
-    let stderr_tail = stderr_tail.join().unwrap_or_default();
-
-    if overflow {
-        return Err(
-            "llama produit une sortie anormalement volumineuse (binaire incompatible ?)".into(),
-        );
-    }
-    if timed_out {
-        return Err(format!(
-            "llama n'a pas terminé en {} min",
-            LLAMA_TIMEOUT.as_secs() / 60
-        ));
-    }
-    match status {
-        Ok(s) if s.success() => Ok(String::from_utf8_lossy(&out).into_owned()),
-        Ok(s) => Err(format!("llama a échoué ({s}): {stderr_tail}")),
-        Err(e) => Err(format!("attente llama: {e}")),
+/// Bound output and lifetime, then reap the entire process tree.
+fn run_bounded(mut cmd: std::process::Command, cancel: &AtomicBool) -> Result<String, String> {
+    let out = crate::process_output::output_with_limits(
+        &mut cmd,
+        LLAMA_TIMEOUT,
+        cancel,
+        LLAMA_MAX_OUTPUT,
+        4096,
+    )?;
+    if out.status.success() {
+        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    } else {
+        Err(format!(
+            "llama a échoué ({}): {}",
+            out.status,
+            String::from_utf8_lossy(&out.stderr)
+        ))
     }
 }
 
-/// Summarize a meeting transcript with the local LLM. Blocking by design —
-/// Tauri runs sync commands off the main thread, and generation takes tens
-/// of seconds on CPU. Returns the markdown compte-rendu.
+/// Reserve the engine before dispatching blocking model loading and inference.
 #[tauri::command]
-pub fn summarize_transcript(
+pub async fn summarize_transcript(
     app: tauri::AppHandle<TauriRuntime>,
     transcript: String,
     lang: String,
+    request_id: Option<String>,
 ) -> Result<String, String> {
+    let job = inference_job::reserve(Engine::Summary, request_id)?;
+    tauri::async_runtime::spawn_blocking(move || generate_summary(app, transcript, lang, job))
+        .await
+        .map_err(|e| format!("tâche interrompue: {e}"))?
+}
+
+#[tauri::command]
+pub fn cancel_summary_generation(request_id: String) {
+    inference_job::cancel(Engine::Summary, request_id);
+}
+
+fn generate_summary(
+    app: tauri::AppHandle<TauriRuntime>,
+    transcript: String,
+    lang: String,
+    job: InferenceJob,
+) -> Result<String, String> {
+    job.ensure_active()?;
     let bin = find_llama(&app).ok_or("llama-cli non installé")?;
     let model = summary_model_path(&app)
         .filter(|p| p.exists())
@@ -582,7 +542,7 @@ pub fn summarize_transcript(
         transcript.len()
     );
     let started = std::time::Instant::now();
-    let out = run_bounded(cmd);
+    let out = run_bounded(cmd, job.cancelled());
     let _ = std::fs::remove_file(&prompt_file);
     let out = out?;
     let raw = out.replace("<|im_end|>", "").replace("[end of text]", "");
@@ -615,24 +575,30 @@ mod tests {
     // the capture cap is hit, instead of buffering unbounded RAM.
     #[test]
     fn run_bounded_kills_runaway_output() {
+        let _test = crate::process_output::TEST_GATE.lock().unwrap();
         let mut cmd = Command::new("yes");
         cmd.arg("> ");
-        let err = run_bounded(cmd).expect_err("runaway output must fail");
+        let err = run_bounded(cmd, &AtomicBool::new(false)).expect_err("runaway output must fail");
         assert!(err.contains("volumineuse"), "unexpected error: {err}");
     }
 
     #[test]
     fn run_bounded_returns_stdout_on_success() {
+        let _test = crate::process_output::TEST_GATE.lock().unwrap();
         let mut cmd = Command::new("sh");
         cmd.args(["-c", "printf 'resume ok'"]);
-        assert_eq!(run_bounded(cmd).unwrap(), "resume ok");
+        assert_eq!(
+            run_bounded(cmd, &AtomicBool::new(false)).unwrap(),
+            "resume ok"
+        );
     }
 
     #[test]
     fn run_bounded_reports_failure_with_stderr_tail() {
+        let _test = crate::process_output::TEST_GATE.lock().unwrap();
         let mut cmd = Command::new("sh");
         cmd.args(["-c", "echo boom >&2; exit 3"]);
-        let err = run_bounded(cmd).expect_err("non-zero exit must fail");
+        let err = run_bounded(cmd, &AtomicBool::new(false)).expect_err("non-zero exit must fail");
         assert!(err.contains("boom"), "stderr tail missing: {err}");
     }
 
@@ -640,8 +606,9 @@ mod tests {
     // exit immediately rather than hanging until the watchdog.
     #[test]
     fn run_bounded_closes_stdin() {
+        let _test = crate::process_output::TEST_GATE.lock().unwrap();
         let mut cmd = Command::new("sh");
         cmd.args(["-c", "cat; printf done"]);
-        assert_eq!(run_bounded(cmd).unwrap(), "done");
+        assert_eq!(run_bounded(cmd, &AtomicBool::new(false)).unwrap(), "done");
     }
 }

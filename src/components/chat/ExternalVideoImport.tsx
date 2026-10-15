@@ -1,4 +1,4 @@
-import { useEffect, useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import { probeUrlFormats, importUrlVideo, annulerImportVideo, type UrlFormatsInfo } from "../../services/ytdlpService";
@@ -51,6 +51,8 @@ export function ExternalVideoImport({ onImported, onClose }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [limit, setLimit] = useState<number | null>(null);
   const [progress, setProgress] = useState<{ phase: string; pct: number } | null>(null);
+  const probe = useRef<AbortController | null>(null);
+  useEffect(() => () => { probe.current?.abort(); probe.current = null; }, []);
 
   useEffect(() => { detectYtdlp().then((p) => setReady(!!p)).catch(() => setReady(false)); }, []);
   useEffect(() => { getMaxUploadSize().then(setLimit).catch(() => setLimit(null)); }, []);
@@ -80,8 +82,12 @@ export function ExternalVideoImport({ onImported, onClose }: Props) {
     setInfo(null);
     setHeight(null);
     setPhase("probing");
+    const controller = new AbortController();
+    probe.current?.abort();
+    probe.current = controller;
     try {
-      const res = await probeUrlFormats(url.trim());
+      const res = await probeUrlFormats(url.trim(), controller.signal);
+      if (probe.current !== controller || controller.signal.aborted) return;
       setInfo(res);
       // Préférer la meilleure source qui passe telle quelle. Si aucune ne
       // passe, proposer la compression à la meilleure résolution disponible.
@@ -89,9 +95,10 @@ export function ExternalVideoImport({ onImported, onClose }: Props) {
       const pick = (fitting.length ? fitting : res.options).slice(-1)[0] || res.options[0];
       setHeight(pick ? pick.height : null);
     } catch (e) {
+      if (probe.current !== controller || controller.signal.aborted) return;
       setError(e instanceof Error ? e.message : String(e));
     } finally {
-      setPhase("idle");
+      if (probe.current === controller) { probe.current = null; setPhase("idle"); }
     }
   };
 
@@ -127,6 +134,8 @@ export function ExternalVideoImport({ onImported, onClose }: Props) {
   // Fermer pendant l'import l'arrête vraiment : la fenêtre se fermait, et
   // la conversion continuait des minutes en arrière-plan (02/10).
   const fermer = () => {
+    probe.current?.abort();
+    probe.current = null;
     if (phase === "importing") void annulerImportVideo();
     onClose();
   };
@@ -149,7 +158,10 @@ export function ExternalVideoImport({ onImported, onClose }: Props) {
           ) : (
             <>
               <div className="sion-import-video-lien">
-                <input value={url} onChange={(e) => { setUrl(e.target.value); setInfo(null); }}
+                <input value={url} onChange={(e) => {
+                  if (probe.current) { probe.current.abort(); probe.current = null; setPhase("idle"); }
+                  setUrl(e.target.value); setInfo(null);
+                }}
                   onKeyDown={(e) => { if (e.key === "Enter") analyze(); }}
                   placeholder={t("extAudio.urlPlaceholder")} style={{ ...inputStyle, flex: 1, minWidth: 0 }} />
                 <button type="button" onClick={analyze} disabled={!url.trim() || phase !== "idle"}

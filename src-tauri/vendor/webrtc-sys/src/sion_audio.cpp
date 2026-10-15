@@ -63,21 +63,41 @@ class SoundboardRenderProcessor : public webrtc::CustomProcessing {
     resampler_ = frames_ == 480
         ? nullptr
         : std::make_unique<webrtc::PushResampler<float>>(480, frames_, 1);
+    for (size_t c = 0; c < 2; ++c) {
+      local_native_[c].assign(frames_, 0.0f);
+      local_resampler_[c] = frames_ == 480 ? nullptr
+          : std::make_unique<webrtc::PushResampler<float>>(480, frames_, 1);
+    }
   }
   void Process(webrtc::AudioBuffer* audio) override {
     if (audio->num_frames() != frames_ || audio->num_channels() == 0) return;
     soundboard_48k_.fill(0.0f);
     mix_soundboard_render(rust::Slice<float>(soundboard_48k_.data(), 480));
+    for (auto& channel : local_48k_) channel.fill(0.0f);
+    mix_local_render(rust::Slice<float>(local_48k_[0].data(), 480),
+                     rust::Slice<float>(local_48k_[1].data(), 480));
+    for (size_t c = 0; c < 2; ++c) {
+      if (local_resampler_[c]) {
+        local_resampler_[c]->Resample(webrtc::MonoView<const float>(local_48k_[c].data(), 480),
+                                      webrtc::MonoView<float>(local_native_[c].data(), frames_));
+      }
+    }
     const float* soundboard = soundboard_48k_.data();
     if (resampler_) {
       resampler_->Resample(webrtc::MonoView<const float>(soundboard_48k_.data(), 480),
                            webrtc::MonoView<float>(soundboard_native_.data(), frames_));
       soundboard = soundboard_native_.data();
     }
+    const bool interrupted = device_audio_interrupted();
     for (size_t channel = 0; channel < audio->num_channels(); ++channel) {
       float* out = audio->channels()[channel];
+      const float* left = frames_ == 480 ? local_48k_[0].data() : local_native_[0].data();
+      const float* right = frames_ == 480 ? local_48k_[1].data() : local_native_[1].data();
       for (size_t frame = 0; frame < frames_; ++frame) {
-        out[frame] = std::clamp(out[frame] + soundboard[frame], -32768.0f, 32767.0f);
+        const float local = audio->num_channels() == 1 ? (left[frame] + right[frame]) * 0.5f
+            : (channel == 0 ? left[frame] : right[frame]);
+        out[frame] = interrupted ? 0.0f
+            : std::clamp(out[frame] + soundboard[frame] + local, -32768.0f, 32767.0f);
       }
     }
   }
@@ -87,6 +107,9 @@ class SoundboardRenderProcessor : public webrtc::CustomProcessing {
   std::array<float, 480> soundboard_48k_{};
   std::vector<float> soundboard_native_;
   std::unique_ptr<webrtc::PushResampler<float>> resampler_;
+  std::array<std::array<float, 480>, 2> local_48k_{};
+  std::array<std::vector<float>, 2> local_native_;
+  std::array<std::unique_ptr<webrtc::PushResampler<float>>, 2> local_resampler_;
 };
 
 struct ProcessingState {

@@ -13,6 +13,7 @@ import { useIsMobile } from "../../hooks/useIsMobile";
 import { useVideoMasqueeStore } from "../../stores/useVideoMasqueeStore";
 import { attachTouchSharePointer } from "../../services/touchSharePointer";
 import { subscribeVideoFrames } from "../../services/videoFramesService";
+import { toggleShareFullscreen } from "../../services/shareFullscreen";
 
 /** Partage affichable : les pixels arrivent par le WebSocket binaire natif,
  *  il n'y a plus d'objet piste LiveKit dans la webview. */
@@ -34,15 +35,6 @@ function screenShareAudioState(identity: string): { muted: boolean; volume: numb
  *  mosaïque) n'est pas une surface de l'app — les pixels média ne sont pas
  *  thémés. Marquée `theme-exempt` pour le garde anti-couleurs-en-dur. */
 const LETTERBOX_BLACK = "#000"; // theme-exempt — letterbox média
-
-/** Le cadre garde les contrôles et les calques de pointage en plein écran. */
-function toggleShareFullscreen(canvas: HTMLCanvasElement) {
-  const frame = canvas.parentElement;
-  if (!frame) return;
-  const action = document.fullscreenElement === frame
-    ? document.exitFullscreen() : frame.requestFullscreen();
-  void action.catch((err) => console.warn("[Sion] requestFullscreen failed:", err));
-}
 
 /** Speaker with an X — the muted counterpart to the maison SpeakerIcon,
  *  matched in stroke/size so the toggle doesn't jump. */

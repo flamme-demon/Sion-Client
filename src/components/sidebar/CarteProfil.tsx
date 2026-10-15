@@ -11,6 +11,7 @@ import { useMatrixStore } from "../../stores/useMatrixStore";
 import { useAuthStore } from "../../stores/useAuthStore";
 import { useVoiceChannel, republishVoicePresence } from "../../hooks/useVoiceChannel";
 import { preloadHeavyScreens } from "../../services/lazyScreens";
+import { VoiceAudioSelector } from "../mobile/VoiceAudioSelector";
 
 export function CarteProfil({ compact = false }: { compact?: boolean }) {
   const { t } = useTranslation();
@@ -84,6 +85,7 @@ export function CarteProfil({ compact = false }: { compact?: boolean }) {
           {(e2eeUnhealthy || republished) && <button type="button" onClick={handleRepublish} aria-label={t("voice.republishPresence")} title={t("voice.republishPresence")} style={audioBouton(e2eeUnhealthy)}><RefreshIcon /></button>}
         </div>}
       </>}
+      <VoiceAudioSelector connected={inVoice} compact={compact} />
     </div>
   );
 }

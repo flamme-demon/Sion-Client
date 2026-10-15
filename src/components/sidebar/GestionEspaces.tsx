@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
-import { useEspacesStore } from "../../stores/useEspacesStore";
+import { useEspacesStore, type RubriqueEspace } from "../../stores/useEspacesStore";
 import { useMatrixStore } from "../../stores/useMatrixStore";
 import { choisirEspace } from "../../hooks/useEspaces";
 import * as espaces from "../../services/espacesService";
@@ -15,6 +15,7 @@ import { InvitationEspace } from "./InvitationEspace";
 import { ConservationPanel } from "./ConservationPanel";
 import { ParcourirSalonsEspace } from "./ParcourirSalonsEspace";
 import { DepartEspace } from "./DepartEspace";
+import { BibliothequeEspace } from "./BibliothequeEspace";
 import "./GestionEspaces.css";
 
 function CaseEspace({ cochee, onChange }: { cochee: boolean; onChange: (cochee: boolean) => void }) {
@@ -24,7 +25,6 @@ function CaseEspace({ cochee, onChange }: { cochee: boolean; onChange: (cochee: 
   </span>;
 }
 
-type RubriqueEspace = "general" | "salons" | "bibliotheque" | "membres" | "conservation" | "acces";
 const rubriques = [
   { id: "general", cle: "spaces.general", Icone: SettingsIcon },
   { id: "salons", cle: "spaces.rooms", Icone: HashIcon },
@@ -53,7 +53,7 @@ function FenetreEspaces({ vue, espaceId }: { vue: "ajouter" | "gerer"; espaceId:
   const espaceConnu = !!espace;
   const adhesion = espace?.membership;
   const [onglet, setOnglet] = useState<"creer" | "rejoindre">("rejoindre");
-  const [rubrique, setRubrique] = useState<RubriqueEspace>("general");
+  const rubrique = useEspacesStore((s) => s.rubrique);
   const [nom, setNom] = useState(vue === "gerer" ? espace?.name ?? "" : "");
   const [nomModifie, setNomModifie] = useState(false);
   const [sujet, setSujet] = useState(vue === "gerer" ? espace?.topic ?? "" : "");
@@ -68,7 +68,6 @@ function FenetreEspaces({ vue, espaceId }: { vue: "ajouter" | "gerer"; espaceId:
   const [migrationBoard, setMigrationBoard] = useState<string | null>(null);
   const [migrerBoard, setMigrerBoard] = useState(premier);
   const [gestion, setGestion] = useState(false);
-  const [adminEspace, setAdminEspace] = useState(false);
   const [membres, setMembres] = useState<{ userId: string; displayName?: string; powerLevel: number }[]>([]);
   const [invitations, setInvitations] = useState<UtilisateurAnnuaire[] | null>(null);
   const [hierarchie, setHierarchie] = useState<espaces.SalonHierarchie[]>([]);
@@ -102,8 +101,8 @@ function FenetreEspaces({ vue, espaceId }: { vue: "ajouter" | "gerer"; espaceId:
       void findSoundboardRoom().then((id) => { if (vivant) setMigrationBoard(id); }).catch(() => {});
     }
     if (vue === "gerer" && espaceId && espaceConnu && adhesion !== "invite") {
-      void Promise.all([espaces.responsables(espaceId), espaces.membresEspace(espaceId), espaces.hierarchieEspace(espaceId), espaces.administrateurEspace(espaceId), espaces.invitationsEspace(espaceId)])
-        .then(([g, m, h, a, i]) => { if (vivant) { setGestion(g); setMembres(m); setHierarchie(h); setAdminEspace(a); setInvitations(i); setErreur(""); } })
+      void Promise.all([espaces.responsables(espaceId), espaces.membresEspace(espaceId), espaces.hierarchieEspace(espaceId), espaces.invitationsEspace(espaceId)])
+        .then(([g, m, h, i]) => { if (vivant) { setGestion(g); setMembres(m); setHierarchie(h); setInvitations(i); setErreur(""); } })
         .catch((e) => { if (vivant) setErreur(String(e)); });
     }
     return () => { vivant = false; };
@@ -154,7 +153,7 @@ function FenetreEspaces({ vue, espaceId }: { vue: "ajouter" | "gerer"; espaceId:
   const invitesEspace = espace?.membership === "invite";
   const enfants = hierarchie.filter((r) => r.room_id !== espaceId && r.room_type !== "m.space");
   const changerRubrique = (id: RubriqueEspace) => {
-    setRubrique(id); setConfirmerDepart(false);
+    useEspacesStore.getState().ouvrir("gerer", id); setConfirmerDepart(false);
     const contenu = dialog.current?.querySelector<HTMLElement>('.sion-espaces-contenu');
     if (contenu) contenu.scrollTop = 0;
   };
@@ -260,10 +259,7 @@ function FenetreEspaces({ vue, espaceId }: { vue: "ajouter" | "gerer"; espaceId:
               <label>{t("spaces.existingRoom")}<select required value={ajoutSalon} onChange={(e) => setAjoutSalon(e.target.value)}><option value="">{t("spaces.chooseRoom")}</option>{candidats.filter((c) => !(espace?.spaceChildren ?? []).includes(c.id)).map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</select></label>
               <div className="sion-espaces-actions"><button type="submit">{t("spaces.link")}</button></div></form></section></>}
         </>}
-        {rubrique === "bibliotheque" && <section><h3>{t("spaces.library")}</h3><p>{t(espace?.boardRoomId ? "spaces.libraryShared" : "spaces.noLibrary")}</p>
-          {adminEspace ? <button onClick={() => void action(async () => { const resultat = await espaces.creerBibliotheque(espaceId); await actualiser(); if (resultat.echecs.length) throw new Error(t("spaces.librarySyncPartial", { count: resultat.echecs.length })); setInfo(t("spaces.saved")); })}>{t(espace?.boardRoomId ? "spaces.syncLibrary" : "spaces.createLibrary")}</button>
-            : <p>{t("spaces.libraryAdminOnly")}</p>}
-        </section>}
+        {rubrique === "bibliotheque" && <BibliothequeEspace espaceId={espaceId} onBusyChange={(busy) => { enCours.current = busy; setOccupe(busy); }} />}
         {rubrique === "membres" && <><section><div className="sion-espaces-titre-liste"><h3>{t("spaces.members")}</h3>
           <button type="button" aria-label={t("spaces.refreshMembers")} onClick={() => void action(actualiser)}><RefreshIcon />{t("spaces.refresh")}</button></div>
           <div className="sion-espaces-liste">{membres.map((m) => <div className="sion-espaces-ligne" key={m.userId}><span>{m.displayName ?? m.userId}<small>{m.userId}</small></span>

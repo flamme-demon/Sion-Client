@@ -5,16 +5,7 @@ import { useMatrixStore } from "../../stores/useMatrixStore";
 import { useVoiceChannel } from "../../hooks/useVoiceChannel";
 import { useLatence } from "../../hooks/useLatence";
 import { setVoiceNativeCaptureMaintenue } from "../../services/voiceNativeService";
-
-async function requestMicPermission(): Promise<boolean> {
-  try {
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    stream.getTracks().forEach((t) => t.stop());
-    return true;
-  } catch {
-    return false;
-  }
-}
+import { VoiceAudioSelector } from "./VoiceAudioSelector";
 
 export const MOBILE_VOICE_BAR_HEIGHT = 120;
 
@@ -32,12 +23,6 @@ export function MobileVoiceBar() {
   const pttTimeout = useRef<ReturnType<typeof setTimeout>>(undefined);
 
   const activeVoice = channels.find((c) => c.id === connectedVoice);
-
-  useEffect(() => {
-    if (connectedVoice) {
-      requestMicPermission();
-    }
-  }, [connectedVoice]);
 
   // Push-to-talk : capture gardée ouverte pendant l'appel, sinon chaque appui
   // relance le micro Android et le début de la phrase se perd (29/09).
@@ -107,6 +92,8 @@ export function MobileVoiceBar() {
         }} />
         <span style={{
           fontSize: 11,
+          flex: 1,
+          minWidth: 0,
           color: 'var(--color-green)',
           fontWeight: 600,
           overflow: 'hidden',
@@ -120,6 +107,7 @@ export function MobileVoiceBar() {
             · {latence} ms
           </span>
         )}
+        <VoiceAudioSelector connected={!!connectedVoice} />
       </div>
 
       {/* Bottom row: controls + PTT + disconnect */}

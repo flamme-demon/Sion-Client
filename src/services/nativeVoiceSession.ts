@@ -97,6 +97,13 @@ export async function connectNativeSession(options: SessionOptions): Promise<nat
     await register(native.onVoiceNativeStatus((status) => {
       if (!isCurrent() || (status.room_name && status.room_name !== options.room)) return;
       latestStatus = status;
+      if (status.android_control && ready) {
+        void Promise.all([import("../stores/useAppStore"), import("./matrixService")]).then(([{ useAppStore }, matrix]) => {
+          if (!isCurrent() || latestStatus !== status || useAppStore.getState().connectedVoiceChannel !== options.room) return;
+          useAppStore.setState({ isMuted: status.muted, isDeafened: status.deafened });
+          matrix.publishLocalVoiceState({ muted: status.muted, deafened: status.deafened });
+        });
+      }
       if (status.state === "disconnected") {
         terminal = true;
         if (ready) void disconnectNativeSession(true).catch((err) => {

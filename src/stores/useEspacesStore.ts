@@ -2,10 +2,12 @@ import { create } from "zustand";
 import type { EspaceVocalConserve } from "../utils/bibliotheque";
 
 type VueEspaces = "ajouter" | "gerer" | "parcourir" | null;
+export type RubriqueEspace = "general" | "salons" | "bibliotheque" | "membres" | "conservation" | "acces";
 interface EtatEspaces {
   utilisateur: string | null;
   espaceActif: string | null;
   fenetre: VueEspaces;
+  rubrique: RubriqueEspace;
   derniersSalons: Record<string, string>;
   salonsQuittes: string[];
   hierarchies: Record<string, string[]>;
@@ -13,7 +15,7 @@ interface EtatEspaces {
   espaceVocalConserve: EspaceVocalConserve | null;
   initialiser: (utilisateur: string | null) => void;
   choisir: (espace: string | null) => void;
-  ouvrir: (fenetre: VueEspaces) => void;
+  ouvrir: (fenetre: VueEspaces, rubrique?: RubriqueEspace) => void;
   memoriserSalon: (espace: string | null, salon: string) => void;
   marquerSalonQuitte: (salon: string) => void;
   oublierSalonQuitte: (salon: string) => void;
@@ -28,7 +30,7 @@ function sauverDeparts(utilisateur: string | null, salons: string[]) {
   } catch { /* Respect the departure choice throughout this session. */ }
 }
 export const useEspacesStore = create<EtatEspaces>((set, get) => ({
-  utilisateur: null, espaceActif: null, fenetre: null, derniersSalons: {}, salonsQuittes: [], hierarchies: {}, espaceVocalConserve: null,
+  utilisateur: null, espaceActif: null, fenetre: null, rubrique: "general", derniersSalons: {}, salonsQuittes: [], hierarchies: {}, espaceVocalConserve: null,
   initialiser: (utilisateur) => {
     if (utilisateur === get().utilisateur) return;
     let espaceActif: string | null = null;
@@ -46,7 +48,7 @@ export const useEspacesStore = create<EtatEspaces>((set, get) => ({
           .slice(-128).map(([id, ids]) => [id, (ids as unknown[]).filter((v): v is string => typeof v === "string" && v.startsWith("!"))]));
       }
     } catch { /* Reload the catalog on the next opening. */ }
-    set({ utilisateur, espaceActif, fenetre: null, derniersSalons: {}, salonsQuittes, hierarchies, espaceVocalConserve: null });
+    set({ utilisateur, espaceActif, fenetre: null, rubrique: "general", derniersSalons: {}, salonsQuittes, hierarchies, espaceVocalConserve: null });
   },
   choisir: (espaceActif) => {
     const utilisateur = get().utilisateur;
@@ -58,7 +60,7 @@ export const useEspacesStore = create<EtatEspaces>((set, get) => ({
     } catch { /* Selection remains usable without storage. */ }
     set({ espaceActif });
   },
-  ouvrir: (fenetre) => set({ fenetre }),
+  ouvrir: (fenetre, rubrique = "general") => set({ fenetre, rubrique }),
   memoriserSalon: (espace, salon) => {
     const key = espace ?? "serveur";
     if (get().derniersSalons[key] !== salon) set((s) => ({ derniersSalons: { ...s.derniersSalons, [key]: salon } }));

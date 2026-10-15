@@ -24,7 +24,9 @@
 
 #![cfg(not(target_os = "android"))]
 
+use crate::inference_job::{self, Engine, InferenceJob};
 use std::io::Write;
+use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
 use tauri::{Emitter, Manager};
@@ -205,33 +207,48 @@ fn engine_bin_name() -> &'static str {
 
 /// Le binaire répond-il ? Sonde `--help` plutôt que `--version` : le CLI
 /// d'audio.cpp n'expose pas de `--version` et sortirait en erreur.
-fn engine_runs(bin: &std::path::Path) -> bool {
-    hidden_command(bin)
-        .arg("--help")
-        .output()
-        .map(|o| {
-            o.status.success()
-                || String::from_utf8_lossy(&o.stdout).contains("--task")
-                || String::from_utf8_lossy(&o.stderr).contains("--task")
-        })
-        .unwrap_or(false)
+fn engine_runs(bin: &std::path::Path, cancel: &AtomicBool) -> bool {
+    crate::process_output::output(
+        hidden_command(bin).arg("--help"),
+        Duration::from_secs(10),
+        cancel,
+    )
+    .map(|o| {
+        o.status.success()
+            || String::from_utf8_lossy(&o.stdout).contains("--task")
+            || String::from_utf8_lossy(&o.stderr).contains("--task")
+    })
+    .unwrap_or(false)
 }
 
 /// Chemin du moteur : d'abord celui choisi manuellement (Linux/macOS, où
 /// l'amont ne publie pas de binaire), sinon l'installation gérée.
 #[tauri::command]
-pub fn detect_tts_engine(
+pub async fn detect_tts_engine(
     app: tauri::AppHandle<TauriRuntime>,
     custom_path: Option<String>,
 ) -> Option<String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        detect_engine(&app, custom_path, &AtomicBool::new(false))
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
+fn detect_engine(
+    app: &tauri::AppHandle<TauriRuntime>,
+    custom_path: Option<String>,
+    cancel: &AtomicBool,
+) -> Option<String> {
     if let Some(p) = custom_path.filter(|p| !p.is_empty()) {
         let path = std::path::PathBuf::from(&p);
-        if path.exists() && engine_runs(&path) {
+        if path.exists() && engine_runs(&path, cancel) {
             return Some(p);
         }
     }
     let bin = crate::find_file(&engine_dir(&app)?, engine_bin_name())?;
-    engine_runs(&bin).then(|| bin.to_string_lossy().into_owned())
+    engine_runs(&bin, cancel).then(|| bin.to_string_lossy().into_owned())
 }
 
 /// Dossier `model_specs/` associé à un binaire donné.
@@ -346,30 +363,30 @@ pub async fn download_tts_engine(app: tauri::AppHandle<TauriRuntime>) -> Result<
     }
     drop(out);
 
-    // Décompression déléguée aux outils du système : pas de crate d'archive
-    // dans l'arbre, et `tar` est présent partout (y compris Windows 10+, mais
-    // PowerShell y gère mieux les zip).
-    let status = if is_zip {
-        hidden_command("powershell")
-            .args([
-                "-NoProfile",
-                "-Command",
-                &format!(
-                    "Expand-Archive -Force -LiteralPath '{}' -DestinationPath '{}'",
-                    archive.display(),
-                    dir.display()
-                ),
-            ])
-            .status()
+    // Extraction uses the same owned process tree as inference and probes.
+    let mut cmd = if is_zip {
+        let mut cmd = hidden_command("powershell");
+        cmd.args([
+            "-NoProfile",
+            "-Command",
+            &format!(
+                "Expand-Archive -Force -LiteralPath '{}' -DestinationPath '{}'",
+                archive.display().to_string().replace('\'', "''"),
+                dir.display().to_string().replace('\'', "''")
+            ),
+        ]);
+        cmd
     } else {
-        hidden_command("tar")
-            .arg("-xzf")
-            .arg(&archive)
-            .arg("-C")
-            .arg(&dir)
-            .status()
-    }
-    .map_err(|e| e.to_string())?;
+        let mut cmd = hidden_command("tar");
+        cmd.arg("-xzf").arg(&archive).arg("-C").arg(&dir);
+        cmd
+    };
+    let status = tauri::async_runtime::spawn_blocking(move || {
+        crate::process_output::output(&mut cmd, Duration::from_secs(120), &AtomicBool::new(false))
+    })
+    .await
+    .map_err(|e| e.to_string())??
+    .status;
     let _ = std::fs::remove_file(&archive);
     if !status.success() {
         return Err("décompression échouée".into());
@@ -472,95 +489,23 @@ const TTS_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 /// audio.cpp écrit peu sur stdout ; au-delà, c'est qu'il boucle.
 const TTS_MAX_OUTPUT: usize = 1024 * 1024;
 
-/// Lance le moteur avec stdin fermé, un délai maximal et une sortie plafonnée.
-/// Même garde-fou que `summarize::run_bounded` : un binaire qui déraille ne doit
-/// jamais saturer la RAM de l'app.
-fn run_bounded(mut cmd: std::process::Command) -> Result<String, String> {
-    use std::io::Read;
-    use std::process::Stdio;
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::{Arc, Mutex};
-
-    let mut child = cmd
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("lancement audiocpp: {e}"))?;
-    let mut stdout = child.stdout.take().expect("stdout piped");
-    let mut stderr = child.stderr.take().expect("stderr piped");
-    let child = Arc::new(Mutex::new(child));
-    let finished = Arc::new(AtomicBool::new(false));
-
-    let watchdog = {
-        let child = Arc::clone(&child);
-        let finished = Arc::clone(&finished);
-        std::thread::spawn(move || {
-            let deadline = std::time::Instant::now() + TTS_TIMEOUT;
-            while std::time::Instant::now() < deadline {
-                if finished.load(Ordering::Relaxed) {
-                    return false;
-                }
-                std::thread::sleep(Duration::from_millis(500));
-            }
-            let _ = child.lock().unwrap().kill();
-            true
-        })
-    };
-
-    // Drainer stderr en parallèle évite l'interblocage du tube quand ggml y
-    // déverse ses lignes d'init Vulkan.
-    let stderr_tail = std::thread::spawn(move || {
-        let mut tail: Vec<u8> = Vec::new();
-        let mut buf = [0u8; 8192];
-        while let Ok(n) = stderr.read(&mut buf) {
-            if n == 0 {
-                break;
-            }
-            tail.extend_from_slice(&buf[..n]);
-            if tail.len() > 4096 {
-                tail.drain(..tail.len() - 4096);
-            }
-        }
-        String::from_utf8_lossy(&tail).into_owned()
-    });
-
-    let mut out: Vec<u8> = Vec::new();
-    let mut buf = [0u8; 65536];
-    let mut overflow = false;
-    loop {
-        match stdout.read(&mut buf) {
-            Ok(0) | Err(_) => break,
-            Ok(n) => {
-                if out.len() + n > TTS_MAX_OUTPUT {
-                    overflow = true;
-                    let _ = child.lock().unwrap().kill();
-                    break;
-                }
-                out.extend_from_slice(&buf[..n]);
-            }
-        }
-    }
-
-    let status = child.lock().unwrap().wait();
-    finished.store(true, Ordering::Relaxed);
-    let timed_out = watchdog.join().unwrap_or(false);
-    let tail = stderr_tail.join().unwrap_or_default();
-
-    if timed_out {
-        return Err("génération interrompue (délai dépassé)".into());
-    }
-    if overflow {
-        return Err("sortie anormalement longue, génération interrompue".into());
-    }
-    match status {
-        Ok(s) if s.success() => Ok(String::from_utf8_lossy(&out).into_owned()),
-        Ok(s) => Err(format!(
+/// Bound output and lifetime, then reap the entire process tree before retrying.
+fn run_bounded(mut cmd: std::process::Command, cancel: &AtomicBool) -> Result<String, String> {
+    let out = crate::process_output::output_with_limits(
+        &mut cmd,
+        TTS_TIMEOUT,
+        cancel,
+        TTS_MAX_OUTPUT,
+        4096,
+    )?;
+    if out.status.success() {
+        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    } else {
+        Err(format!(
             "audiocpp a échoué ({}): {}",
-            s.code().unwrap_or(-1),
-            tail.trim()
-        )),
-        Err(e) => Err(e.to_string()),
+            out.status.code().unwrap_or(-1),
+            String::from_utf8_lossy(&out.stderr).trim()
+        ))
     }
 }
 
@@ -623,7 +568,41 @@ pub async fn tts_generate(
     reference_text: Option<String>,
     language: Option<String>,
     engine_path: Option<String>,
+    request_id: Option<String>,
 ) -> Result<String, String> {
+    let job = inference_job::reserve(Engine::Tts, request_id)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        generate(
+            app,
+            model,
+            text,
+            voice_ref,
+            reference_text,
+            language,
+            engine_path,
+            job,
+        )
+    })
+    .await
+    .map_err(|e| format!("tâche interrompue: {e}"))?
+}
+
+#[tauri::command]
+pub fn cancel_tts_generation(request_id: String) {
+    inference_job::cancel(Engine::Tts, request_id);
+}
+
+fn generate(
+    app: tauri::AppHandle<TauriRuntime>,
+    model: String,
+    text: String,
+    voice_ref: String,
+    reference_text: Option<String>,
+    language: Option<String>,
+    engine_path: Option<String>,
+    job: InferenceJob,
+) -> Result<String, String> {
+    job.ensure_active()?;
     let m = find_model(&model).ok_or("modèle inconnu")?;
     if text.trim().is_empty() {
         return Err("texte vide".into());
@@ -639,7 +618,7 @@ pub async fn tts_generate(
         ));
     }
 
-    let engine = detect_tts_engine(app.clone(), engine_path).ok_or(
+    let engine = detect_engine(&app, engine_path, job.cancelled()).ok_or(
         "moteur audio.cpp introuvable — installez-le ou indiquez son chemin dans les réglages",
     )?;
     if !model_installed(&app, m) {
@@ -700,9 +679,7 @@ pub async fn tts_generate(
     let first = backend();
     log::info!("[Sion][tts] génération {} sur {}", m.id, first);
     let cmd = build(first);
-    let mut stdout = tauri::async_runtime::spawn_blocking(move || run_bounded(cmd))
-        .await
-        .map_err(|e| format!("tâche interrompue: {e}"))?;
+    let mut stdout = run_bounded(cmd, job.cancelled());
 
     // L'échec n'est PAS une question de mémoire libre. Ces modèles demandent
     // ~1 Go d'un seul tenant dans le tas à la fois DEVICE_LOCAL et HOST_VISIBLE,
@@ -717,9 +694,7 @@ pub async fn tts_generate(
         if is_runaway(err) {
             log::warn!("[Sion][tts] génération sans marque de fin — nouvelle tentative");
             let cmd = build(first);
-            stdout = tauri::async_runtime::spawn_blocking(move || run_bounded(cmd))
-                .await
-                .map_err(|e| format!("tâche interrompue: {e}"))?;
+            stdout = run_bounded(cmd, job.cancelled());
         }
     }
 
@@ -731,13 +706,21 @@ pub async fn tts_generate(
                 // longtemps, et une attente inexpliquée passe pour un blocage.
                 let _ = app.emit("tts-cpu-fallback", ());
                 let cmd = build("cpu");
-                stdout = tauri::async_runtime::spawn_blocking(move || run_bounded(cmd))
-                    .await
-                    .map_err(|e| format!("tâche interrompue: {e}"))?;
+                stdout = run_bounded(cmd, job.cancelled());
             }
         }
     }
-    let stdout = stdout?;
+    let stdout = match stdout {
+        Ok(out) => out,
+        Err(err) => {
+            let _ = std::fs::remove_file(&out_file);
+            return Err(err);
+        }
+    };
+    if let Err(err) = job.ensure_active() {
+        let _ = std::fs::remove_file(&out_file);
+        return Err(err);
+    }
     if !out_file.exists() {
         return Err(format!(
             "aucun fichier produit — sortie: {}",

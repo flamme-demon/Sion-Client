@@ -133,9 +133,9 @@ it.each([0, 50])("le niveau %s de l'espace ne permet pas de créer ou synchronis
   expect(mock.envoyer).not.toHaveBeenCalled();
 });
 it("la synchronisation par un admin d'espace invite uniquement les membres de cette équipe dans sa bibliothèque", async () => {
-  mock.details.mockResolvedValue({ moi: 100, niveauEtat: 50, membres: [
-    { userId: "@moi:sionchat.fr" }, { userId: "@alice:hs" },
-  ] });
+  mock.details.mockImplementation(async (salon: string) => ({ moi: 100, niveauEtat: 50, membres: salon === "!A"
+    ? [{ userId: "@moi:sionchat.fr" }, { userId: "@alice:hs" }]
+    : [{ userId: "@moi:sionchat.fr", powerLevel: 100 }] }));
   mock.etats.mockResolvedValue([{ stateKey: "", content: { board_room_id: "!boardA" } }]);
   mock.inviter.mockResolvedValue(undefined);
   expect(await creerBibliotheque("!A")).toMatchObject({ roomId: "!boardA", alreadyExisted: true, echecs: [] });
@@ -147,6 +147,19 @@ it("la création par un admin désigne la nouvelle bibliothèque dans cet espace
   expect(resultat).toMatchObject({ roomId: "!nouveau", alreadyExisted: false, echecs: [] });
   expect(mock.creerSalon).toHaveBeenCalledWith("Soundboard & Memeboard", false, true, false, "!A", true);
   expect(mock.envoyer).toHaveBeenCalledWith("!A", "com.sion.space", "", { board_room_id: "!nouveau" });
+});
+
+it("partage la création en cours et réutilise le salon après un échec de désignation", async () => {
+  let rejeter = true;
+  mock.envoyer.mockImplementation(async (_salon: string, type: string) => {
+    if (type === "com.sion.space" && rejeter) throw new Error("publication refusée");
+  });
+  const tentatives = [creerBibliotheque("!creation-test"), creerBibliotheque("!creation-test")];
+  await Promise.all(tentatives.map((p) => expect(p).rejects.toThrow("publication refusée")));
+  expect(mock.creerSalon).toHaveBeenCalledTimes(1);
+  rejeter = false;
+  expect(await creerBibliotheque("!creation-test")).toMatchObject({ roomId: "!nouveau", echecs: [] });
+  expect(mock.creerSalon).toHaveBeenCalledTimes(1);
 });
 
 it("arrête les jointures automatiques si le compte change pendant la lecture de l'Espace", async () => {

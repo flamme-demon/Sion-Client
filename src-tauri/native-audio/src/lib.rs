@@ -2,9 +2,10 @@
 //! The WebRTC post-processing callback owns each channel; the UI only updates
 //! one atomic settings word, never transports PCM or locks the audio callback.
 use nnnoiseless::DenoiseState;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{LazyLock, Mutex, OnceLock};
 use std::time::Instant;
+pub mod playback;
 
 pub const FRAME_SIZE: usize = 480;
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -56,6 +57,23 @@ static PORTE_OUVERTE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicB
 pub fn set_capture_gate(ouverte: bool) {
     PORTE_OUVERTE.store(ouverte, Ordering::Relaxed);
 }
+
+static DEVICE_INTERRUPTED: AtomicBool = AtomicBool::new(false);
+static DEVICE_CAPTURE_ALLOWED: AtomicBool = AtomicBool::new(true);
+static DEVICE_INTERRUPT_GENERATION: AtomicU64 = AtomicU64::new(0);
+pub fn set_device_interrupted(value: bool) {
+    if value && !DEVICE_INTERRUPTED.swap(value, Ordering::AcqRel) {
+        DEVICE_INTERRUPT_GENERATION.fetch_add(1, Ordering::AcqRel);
+        clear_soundboard_audio();
+        playback::interrupt_sources();
+    } else if !value {
+        DEVICE_INTERRUPTED.store(false, Ordering::Release);
+    }
+}
+pub fn device_interrupted() -> bool { DEVICE_INTERRUPTED.load(Ordering::Acquire) }
+pub fn device_interrupt_generation() -> u64 { DEVICE_INTERRUPT_GENERATION.load(Ordering::Acquire) }
+pub fn set_device_capture_allowed(value: bool) { DEVICE_CAPTURE_ALLOWED.store(value, Ordering::Release); }
+pub fn device_capture_allowed() -> bool { DEVICE_CAPTURE_ALLOWED.load(Ordering::Acquire) }
 
 /// Silence la trame quand la porte est fermée.
 fn appliquer_porte(samples: &mut [f32], ouverte: bool) {
@@ -341,7 +359,8 @@ impl CaptureProcessor {
             };
             // Après la mesure : le niveau reste celui de la vraie voix (alerte
             // « vous parlez micro coupé »), mais rien ne part.
-            appliquer_porte(samples, PORTE_OUVERTE.load(Ordering::Relaxed));
+            appliquer_porte(samples, PORTE_OUVERTE.load(Ordering::Relaxed)
+                && DEVICE_CAPTURE_ALLOWED.load(Ordering::Acquire) && !device_interrupted());
             if channel == 0 {
                 CAPTURE_RMS.store(rms.to_bits(), Ordering::Relaxed);
                 CAPTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
@@ -355,6 +374,46 @@ impl CaptureProcessor {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn repeated_device_interruptions_silence_capture_without_resetting_ptt_intent() {
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                super::set_device_interrupted(false);
+                super::set_device_capture_allowed(true);
+                super::set_capture_gate(true);
+            }
+        }
+        let _reset = Reset;
+        let settings = super::settings();
+        super::configure(super::Settings { noise_suppression: false, ..settings });
+        for _ in 0..32 {
+            let mut processor = super::new_capture_processor();
+            processor.initialize(1);
+            super::set_capture_gate(true);
+            super::set_device_capture_allowed(true);
+            super::set_device_interrupted(true);
+            let mut samples = [1000.0; 480];
+            processor.process_channel(0, &mut samples);
+            assert!(samples.iter().all(|&v| v == 0.0));
+            super::set_device_interrupted(false);
+            samples.fill(1000.0);
+            processor.process_channel(0, &mut samples);
+            assert!(samples.iter().any(|&v| v != 0.0));
+            super::set_capture_gate(false);
+            super::set_device_interrupted(true);
+            super::set_device_interrupted(false);
+            samples.fill(1000.0);
+            processor.process_channel(0, &mut samples);
+            assert!(samples.iter().all(|&v| v == 0.0));
+            super::set_capture_gate(true);
+            super::set_device_capture_allowed(false);
+            samples.fill(1000.0);
+            processor.process_channel(0, &mut samples);
+            assert!(samples.iter().all(|&v| v == 0.0));
+        }
+        super::configure(settings);
+    }
     use super::*;
 
     #[test]

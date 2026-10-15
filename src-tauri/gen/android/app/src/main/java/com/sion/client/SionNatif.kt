@@ -18,4 +18,9 @@ object SionNatif {
   /** Appli tuée en plein appel : départ propre, avant l'arrêt du processus. */
   @JvmStatic
   external fun quitterVoix()
+
+  @JvmStatic external fun sessionVoix(): Long
+  @JvmStatic external fun microCoupe(session: Long): Boolean
+  @JvmStatic external fun interruptionVoix(session: Long, interrupted: Boolean)
+  @JvmStatic external fun actionCasque(session: Long, action: Int)
 }

@@ -80,9 +80,19 @@ impl CoeurMatrix {
 
     /// Édition d'un message (`editMessage`) — chiffrée dans un salon chiffré.
     pub async fn editer(&self, salon: &str, cible: &str, texte: &str) -> Resultat<String> {
+        // Keep the SDK's deeply nested future layout inside the Matrix crate.
+        Box::pin(self.editer_(salon, cible, texte)).await
+    }
+
+    async fn editer_(&self, salon: &str, cible: &str, texte: &str) -> Resultat<String> {
         let cible = id_evenement(cible)?;
         let salon = self.salon(salon).await?;
-        envoyer(&salon, "m.room.message", envoi::edition(cible.as_str(), texte)).await
+        let evenement = salon.load_or_fetch_event(&cible, None).await?;
+        let original = crate::fil::brut(&evenement)
+            .filter(|ev| ev.type_ == "m.room.message" && !ev.echec_dechiffrement && !ev.supprime)
+            .ok_or_else(|| Erreur::Autre("Message original indisponible ou indéchiffrable".into()))?;
+        let contenu = envoi::edition(cible.as_str(), texte, &original.contenu).map_err(Erreur::Autre)?;
+        envoyer(&salon, "m.room.message", contenu).await
     }
 
     /// Suppression (`redactMessage`) : message, réaction, vote…

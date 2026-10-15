@@ -12,6 +12,22 @@
 //!   l'appli.
 
 use std::sync::Mutex;
+static AUDIO_VM: std::sync::OnceLock<jni::JavaVM> = std::sync::OnceLock::new();
+static AUDIO_CONTEXT: std::sync::OnceLock<jni::objects::GlobalRef> = std::sync::OnceLock::new();
+pub(crate) fn audio_vm() -> Option<&'static jni::JavaVM> { AUDIO_VM.get() }
+
+/// Check before constructing a recorder: OpenSL ES cannot safely tear down a
+/// recorder whose initialization failed because Android denied microphone access.
+pub(crate) fn verifier_permission_micro() -> Result<(), String> {
+    let vm = audio_vm().ok_or("interface audio Android indisponible")?;
+    let context = AUDIO_CONTEXT.get().ok_or("contexte audio Android indisponible")?;
+    let mut env = vm.attach_current_thread().map_err(|e| e.to_string())?;
+    let permission = env.new_string("android.permission.RECORD_AUDIO").map_err(|e| e.to_string())?;
+    let status = env.call_method(context.as_obj(), "checkSelfPermission", "(Ljava/lang/String;)I",
+        &[jni::objects::JValue::Object(permission.as_ref())])
+        .and_then(|v| v.i()).map_err(|e| e.to_string())?;
+    if status == 0 { Ok(()) } else { Err("autorisation du micro refusée".into()) }
+}
 
 use jni::objects::{JClass, JObject};
 use jni::JNIEnv;
@@ -38,6 +54,12 @@ pub extern "system" fn Java_com_sion_client_SionNatif_initialiser<'local>(
     _classe: JClass<'local>,
     contexte: JObject<'local>,
 ) {
+    if let Ok(vm) = env.get_java_vm() { let _ = AUDIO_VM.set(vm); }
+    // Keep only the application context for process-wide permission checks.
+    if let Ok(context) = env.call_method(&contexte, "getApplicationContext", "()Landroid/content/Context;", &[])
+        .and_then(|v| v.l()).and_then(|context| env.new_global_ref(context)) {
+        let _ = AUDIO_CONTEXT.set(context);
+    }
     initialiser_tls(&env, &contexte);
     #[cfg(feature = "native-voice")]
     initialiser_webrtc(&env, &contexte);
@@ -92,4 +114,25 @@ pub extern "system" fn Java_com_sion_client_SionNatif_quitterVoix<'local>(_env: 
     // puis la session LiveKit (départ propre au SFU).
     crate::matrix_pont::quitter_voix_bloquant(std::time::Duration::from_millis(1500));
     crate::voice_native::couper_voix_native();
+    crate::audio_playback::shutdown();
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_sion_client_SionNatif_sessionVoix(_env: JNIEnv, _class: JClass) -> jni::sys::jlong {
+    crate::voice_native::android_voice_token() as jni::sys::jlong
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_sion_client_SionNatif_microCoupe(_env: JNIEnv, _class: JClass, token: jni::sys::jlong) -> jni::sys::jboolean {
+    crate::voice_native::android_voice_muted(token as u64) as jni::sys::jboolean
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_sion_client_SionNatif_interruptionVoix(_env: JNIEnv, _class: JClass, token: jni::sys::jlong, interrupted: jni::sys::jboolean) {
+    crate::voice_native::android_set_interrupted(token as u64, interrupted != 0);
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_sion_client_SionNatif_actionCasque(_env: JNIEnv, _class: JClass, token: jni::sys::jlong, action: jni::sys::jint) {
+    crate::voice_native::android_headset_action(token as u64, action);
 }

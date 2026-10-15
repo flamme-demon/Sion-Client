@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import { useMemePopStore, type MemeAffiche } from "../../stores/useMemePopStore";
 import { MEME_DUREE_MAX_MS } from "../../services/memeboardService";
+import { playMemeVideo } from "../../services/memeAudio";
 
 /** Un meme reçu, posé par-dessus Sion (téléphone). Retiré à la fin de la
  *  vidéo, ou au bout de 10 s comme sur PC. */
@@ -8,10 +9,12 @@ function Meme({ meme }: { meme: MemeAffiche }) {
   const video = useRef<HTMLVideoElement>(null);
   const retirer = useMemePopStore((s) => s.retirer);
   useEffect(() => {
-    if (video.current) video.current.volume = Math.max(0, Math.min(1, meme.volume));
+    const stop = video.current
+      ? playMemeVideo(video.current, meme.url, Math.max(0, Math.min(1, meme.volume)), MEME_DUREE_MAX_MS / 1000)
+      : undefined;
     const fin = window.setTimeout(() => retirer(meme.id), MEME_DUREE_MAX_MS);
-    return () => window.clearTimeout(fin);
-  }, [meme.id, meme.volume, retirer]);
+    return () => { window.clearTimeout(fin); stop?.(); };
+  }, [meme.id, meme.url, meme.volume, retirer]);
   return (
     <div style={{
       position: "fixed", left: `${meme.x}%`, top: `${meme.y}%`, zIndex: 950,
@@ -22,7 +25,7 @@ function Meme({ meme }: { meme: MemeAffiche }) {
       <video
         ref={video}
         src={meme.url}
-        autoPlay
+        muted
         playsInline
         onEnded={() => retirer(meme.id)}
         onError={() => retirer(meme.id)}

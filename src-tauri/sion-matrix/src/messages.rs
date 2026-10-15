@@ -19,7 +19,7 @@
 //!   d'origine, le JS la perdait ;
 //! - une « édition » envoyée par quelqu'un d'autre que l'auteur est ignorée :
 //!   le JS en affichait le texte (usurpation possible).
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use serde::Serialize;
 use serde_json::Value;
@@ -42,6 +42,9 @@ pub(crate) struct EvenementBrut {
     pub ts: i64,
     /// Échec de déchiffrement (clé manquante).
     pub echec_dechiffrement: bool,
+    /// Redaction metadata survives even when an old bundled edit is present.
+    pub supprime: bool,
+    pub redacts: Option<String>,
     /// Dernière édition, groupée par le serveur dans `unsigned`.
     pub edition_groupee: Option<Box<EvenementBrut>>,
 }
@@ -54,20 +57,31 @@ fn cible_edition(contenu: &Value) -> Option<&str> {
 }
 
 fn est_message(ev: &EvenementBrut) -> bool {
-    ev.type_ == "m.room.message" || vrai(ev.contenu.get("msgtype"))
+    !ev.supprime && (ev.type_ == "m.room.message" || vrai(ev.contenu.get("msgtype")))
+}
+
+fn evenements_supprimes(evenements: &[EvenementBrut]) -> HashSet<&str> {
+    let mut ids: HashSet<&str> = evenements.iter().filter(|ev| ev.supprime).map(|ev| ev.id.as_str()).collect();
+    for ev in evenements.iter().filter(|ev| ev.type_ == "m.room.redaction") {
+        if let Some(id) = ev.redacts.as_deref().or_else(|| ev.contenu.get("redacts").and_then(Value::as_str)) {
+            ids.insert(id);
+        }
+    }
+    ids
 }
 
 /// Contenu en vigueur de chaque message édité : le `m.new_content` de la
 /// dernière édition de son auteur (à égalité d'horodatage, la plus tardive
 /// dans le fil), comme `Relations.getLastReplacement` de matrix-js-sdk.
 fn contenus_en_vigueur(evenements: &[EvenementBrut]) -> HashMap<&str, &Value> {
-    let auteurs: HashMap<&str, &str> = evenements.iter().map(|e| (e.id.as_str(), e.expediteur.as_str())).collect();
+    let supprimes = evenements_supprimes(evenements);
+    let auteurs: HashMap<&str, &str> = evenements.iter().filter(|e| !supprimes.contains(e.id.as_str())).map(|e| (e.id.as_str(), e.expediteur.as_str())).collect();
     let mut retenues: HashMap<&str, (i64, &Value)> = HashMap::new();
     let groupees = evenements.iter().filter_map(|e| e.edition_groupee.as_deref());
     // Les éditions groupées d'abord : celles du fil, plus récentes ou égales,
     // passent devant.
     for edition in groupees.chain(evenements.iter()) {
-        if !est_message(edition) {
+        if !est_message(edition) || supprimes.contains(edition.id.as_str()) {
             continue;
         }
         let Some(cible) = cible_edition(&edition.contenu) else { continue };
@@ -351,6 +365,9 @@ fn remplacer(ev: &EvenementBrut, nouveau: &Value) -> Value {
 
 /// Contenu affiché d'un événement du fil, éditions appliquées.
 pub(crate) fn contenu_affiche(evenements: &[EvenementBrut], ev: &EvenementBrut) -> Value {
+    if ev.supprime || evenements_supprimes(evenements).contains(ev.id.as_str()) {
+        return Value::Object(Default::default());
+    }
     match contenus_en_vigueur(evenements).get(ev.id.as_str()) {
         Some(nouveau) if est_message(ev) => remplacer(ev, nouveau),
         _ => ev.contenu.clone(),
@@ -360,8 +377,10 @@ pub(crate) fn contenu_affiche(evenements: &[EvenementBrut], ev: &EvenementBrut) 
 pub(crate) fn extraire(evenements: &[EvenementBrut], ctx: &Contexte) -> Vec<Message> {
     let mut msgs: Vec<Message> = Vec::new();
     let en_vigueur = contenus_en_vigueur(evenements);
+    let supprimes = evenements_supprimes(evenements);
     let mut edites: Vec<&str> = Vec::new();
     for ev in evenements {
+        if supprimes.contains(ev.id.as_str()) { continue; }
         let type_ = ev.type_.as_str();
         let remplace = en_vigueur.get(ev.id.as_str()).filter(|_| est_message(ev)).map(|nouveau| remplacer(ev, nouveau));
         if remplace.is_some() {
@@ -544,7 +563,7 @@ pub(crate) fn extraire(evenements: &[EvenementBrut], ctx: &Contexte) -> Vec<Mess
     }
 
     // Réactions (m.annotation), rattachées aux messages chargés.
-    for ev in evenements.iter().filter(|e| e.type_ == "m.reaction") {
+    for ev in evenements.iter().filter(|e| e.type_ == "m.reaction" && !supprimes.contains(e.id.as_str())) {
         let relation = ev.contenu.get("m.relates_to");
         if relation.and_then(|r| r.get("rel_type")).and_then(Value::as_str) != Some("m.annotation") {
             continue;
@@ -610,6 +629,8 @@ mod tests {
             expediteur: "@alice:hs".into(),
             ts: 1_700_000_000_000,
             echec_dechiffrement: false,
+            supprime: false,
+            redacts: None,
             edition_groupee: None,
         }
     }
@@ -696,6 +717,34 @@ mod tests {
         );
         let m = extraire_(&[orig, edit]);
         assert_eq!((m.len(), m[0].text.as_str(), m[0].edited), (1, "corrigé", Some(true)));
+    }
+
+    #[test]
+    fn edited_media_keeps_its_attachment_after_serialization_and_history_reload() {
+        for type_ in ["m.image", "m.video", "m.audio", "m.file"] {
+            for encrypted in [false, true] {
+                let mut original = json!({ "msgtype": type_, "filename": "photo.png", "body": "old caption",
+                    "info": { "mimetype": "image/png", "size": 42, "w": 640, "h": 480 },
+                    "m.relates_to": { "m.in_reply_to": { "event_id": "$question" } } });
+                original[if encrypted { "file" } else { "url" }] = if encrypted {
+                    json!({ "url": "mxc://hs/photo", "key": { "k": "key" }, "iv": "iv", "hashes": { "sha256": "hash" }, "v": "v2" })
+                } else { "mxc://hs/photo".into() };
+                let wire = crate::envoi::edition("$photo", "Quel fumier ce chat !", &original).unwrap();
+                let wire: Value = serde_json::from_str(&serde_json::to_string(&wire).unwrap()).unwrap();
+                let orig = avec_id(ev("m.room.message", original), "$photo");
+                let mut replacement = ev("m.room.message", wire);
+                replacement.ts += 1;
+                let messages = extraire_(&[orig.clone(), replacement.clone()]);
+                let photo = &messages[0];
+                assert_eq!((messages.len(), photo.text.as_str(), photo.msgtype.as_deref(), photo.edited), (1, "Quel fumier ce chat !", Some(type_), Some(true)));
+                let attachment = &photo.attachments.as_ref().unwrap()[0];
+                assert_eq!((attachment.id.as_str(), attachment.name.as_str(), attachment.url.as_str(), attachment.size), ("$photo", "photo.png", "https://hs.test/media/hs/photo", 42));
+                assert_eq!(photo.reply_to.as_ref().unwrap().event_id, "$question");
+                let mut reloaded = orig;
+                reloaded.edition_groupee = Some(Box::new(replacement));
+                assert_eq!(extraire_(&[reloaded]), messages);
+            }
+        }
     }
 
     #[test]

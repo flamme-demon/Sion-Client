@@ -20,7 +20,7 @@ export type VoiceCue =
   | "mute" | "unmute" | "deafen" | "undeafen";
 
 /** A custom voice-channel cue sound: a picked file, trimmed to [start,end]
- *  seconds, played at `gain` (Web Audio). null = use the bundled default. */
+ *  seconds, played at `gain`. null = use the bundled default. */
 export interface VoiceSoundCfg {
   path: string;
   start: number;

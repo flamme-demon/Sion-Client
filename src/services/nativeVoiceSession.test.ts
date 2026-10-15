@@ -6,7 +6,10 @@ import type { VoiceNativeStatus } from "./voiceNativeService";
 const mocks = vi.hoisted(() => ({
   connect: vi.fn(), disconnect: vi.fn(), status: vi.fn(), participants: vi.fn(), data: vi.fn(), e2ee: vi.fn(), shareFailed: vi.fn(),
   participantLeft: vi.fn(), sessionPerdue: vi.fn(),
+  app: { connectedVoiceChannel: "room" as string | null, isMuted: false, isDeafened: false }, appUpdate: vi.fn(), publish: vi.fn(),
 }));
+vi.mock("../stores/useAppStore", () => ({ useAppStore: { getState: () => mocks.app, setState: mocks.appUpdate } }));
+vi.mock("./matrixService", () => ({ publishLocalVoiceState: mocks.publish }));
 // La logique des sons (et le magasin qu'elle charge) n'est pas l'objet ici.
 vi.mock("./voiceChannelSounds", () => ({ noteRaisonDepart: vi.fn() }));
 vi.mock("./voiceNativeService", () => ({
@@ -40,6 +43,8 @@ function options() {
 let unlisten: ReturnType<typeof vi.fn>[];
 beforeEach(() => {
   vi.clearAllMocks();
+  Object.assign(mocks.app, { connectedVoiceChannel: "room", isMuted: false, isDeafened: false });
+  mocks.appUpdate.mockImplementation((value) => Object.assign(mocks.app, value));
   useLiveKitStore.getState().disconnect();
   unlisten = [];
   for (const listener of [mocks.status, mocks.participants, mocks.data, mocks.e2ee, mocks.shareFailed, mocks.participantLeft, mocks.sessionPerdue]) {
@@ -53,6 +58,24 @@ beforeEach(() => {
 afterEach(async () => { await disconnectNativeSession(); });
 
 describe("native session lifecycle", () => {
+  it("mirrors native headset mute without sending another microphone command", async () => {
+    await connectNativeSession(options());
+    mocks.status.mock.calls[0][0]({ ...status, muted: true, android_control: true });
+    await vi.waitFor(() => expect(mocks.app.isMuted).toBe(true));
+    expect(mocks.appUpdate).toHaveBeenCalledWith({ isMuted: true, isDeafened: false });
+    expect(mocks.publish).toHaveBeenCalledWith({ muted: true, deafened: false });
+  });
+
+  it("ignores headset state from an ended call or a different voice room", async () => {
+    await connectNativeSession(options());
+    const listener = mocks.status.mock.calls[0][0];
+    listener({ ...status, room_name: "other", muted: true, android_control: true });
+    await disconnectNativeSession();
+    listener({ ...status, muted: true, android_control: true });
+    await Promise.resolve();
+    expect(mocks.appUpdate).not.toHaveBeenCalled();
+    expect(mocks.publish).not.toHaveBeenCalled();
+  });
   it("subscribes before connecting and receives participants emitted during connect", async () => {
     const opts = options();
     const participants = [{ identity: "already-present" }];

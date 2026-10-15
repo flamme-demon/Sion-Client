@@ -17,7 +17,9 @@ vi.hoisted(() => {
 const native = vi.hoisted(() => ({
   available: vi.fn(), devices: vi.fn(), switchDevice: vi.fn(), processing: vi.fn(), active: vi.fn(),
   startMicTest: vi.fn(), stopAudioTest: vi.fn(), audioLevel: vi.fn(), speakerTest: vi.fn(), quality: vi.fn(),
+  permission: vi.fn(),
 }));
+vi.mock("../../services/androidVoiceService", () => ({ autoriserMicro: native.permission }));
 vi.mock("../../services/voiceNativeService", () => ({
   isVoiceNativeAvailable: native.available, getVoiceNativeAudioDevices: native.devices,
   setVoiceNativeAudioProcessing: native.processing,
@@ -34,6 +36,7 @@ beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.clearAllMocks();
   native.available.mockResolvedValue(true);
+  native.permission.mockResolvedValue(true);
   native.devices.mockResolvedValue({
     recording: [{ id: "native-mic", name: "USB mic", index: 1 }],
     playout: [{ id: "native-speaker", name: "Headphones", index: 1 }],
@@ -58,6 +61,22 @@ afterEach(async () => {
   vi.unstubAllGlobals();
 });
 async function render() { await act(async () => root.render(<NativeAudioSettings />)); }
+
+it("n'ouvre aucun microphone si Android refuse l'autorisation", async () => {
+  native.permission.mockResolvedValue(false);
+  await render();
+  expect(native.startMicTest).not.toHaveBeenCalled();
+  expect(container.querySelector('[role="alert"]')).not.toBeNull();
+});
+
+it("n'ouvre pas le microphone après fermeture pendant la demande d'autorisation", async () => {
+  let allow!: (granted: boolean) => void;
+  native.permission.mockReturnValue(new Promise<boolean>((resolve) => { allow = resolve; }));
+  await render();
+  await act(async () => root.render(null));
+  await act(async () => { allow(true); });
+  expect(native.startMicTest).not.toHaveBeenCalled();
+});
 async function select(index: number, value: string) {
   await act(async () => {
     const element = container.querySelectorAll("select")[index];

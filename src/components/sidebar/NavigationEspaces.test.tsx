@@ -33,7 +33,7 @@ const message = (id: number, senderId = "@alice:sion", ts = APP_SESSION_START_TS
 beforeEach(() => {
   contexte.mobile = false;
   contexte.partager.mockClear();
-  useEspacesStore.setState({ espaceActif: null, fenetre: null, derniersSalons: {} });
+  useEspacesStore.setState({ espaceActif: null, fenetre: null, rubrique: "general", derniersSalons: {} });
   useSettingsStore.setState({ sidebarView: "channels", channelSort: "name" });
   useLayoutStore.setState({ sidebarMode: "rail" });
   useAppStore.setState({ activeChannel: "!general", connectedVoiceChannel: "!vocal", connectingVoiceChannel: null, lastReadMessageId: {} });
@@ -164,15 +164,16 @@ it("le bouton plus ouvre la création et la jointure d'Espaces", async () => {
   expect(useEspacesStore.getState().fenetre).toBe("ajouter");
 });
 
-async function clicDroitEspace() {
+async function clicDroitEspace(mobile = false) {
+  contexte.mobile = mobile;
   useMatrixStore.setState({ channels: [...salons, { ...salon("!espace"), name: "Équipe", isSpace: true, spaceChildren: ["!jeux"] }] });
-  await vue.render(<NavigationEspaces rail />);
+  await vue.render(<NavigationEspaces rail mobile={mobile} />);
   await act(async () => vue.container.querySelector('[data-space-id="!espace"]')!.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 20, clientY: 40 })));
 }
 
-it("le clic droit affiche partager et gérer sans changer la conversation ou l'espace", async () => {
+it("le clic droit affiche partager, gérer et membres sans changer la conversation ou l'espace", async () => {
   await clicDroitEspace();
-  expect(Array.from(document.querySelectorAll('[role="menuitem"]')).map(b => b.textContent)).toEqual(["spaces.shareInvitation", "spaces.manageSpace"]);
+  expect(Array.from(document.querySelectorAll('[role="menuitem"]')).map(b => b.textContent)).toEqual(["spaces.shareInvitation", "spaces.manageSpace", "spaces.members"]);
   expect(useEspacesStore.getState().fenetre).toBeNull();
   expect(useEspacesStore.getState().espaceActif).toBeNull();
   expect(useAppStore.getState().activeChannel).toBe("!general");
@@ -189,6 +190,23 @@ it("gérer l'espace ouvre la bonne équipe seulement après le choix dans le men
   await act(async () => (document.querySelectorAll('[role="menuitem"]')[1] as HTMLButtonElement).click());
   expect(useEspacesStore.getState().espaceActif).toBe("!espace");
   expect(useEspacesStore.getState().fenetre).toBe("gerer");
+  expect(useEspacesStore.getState().rubrique).toBe("general");
+});
+
+it.each([false, true])("ouvre directement les membres du bon espace depuis son menu (mobile : %s)", async (mobile) => {
+  useAppStore.setState({ mobileView: "chat" });
+  await clicDroitEspace(mobile);
+  await act(async () => Array.from(document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')).find((b) => b.textContent === "spaces.members")!.click());
+  expect(useEspacesStore.getState()).toMatchObject({ espaceActif: "!espace", fenetre: "gerer", rubrique: "membres" });
+  expect(document.querySelector('[role="menu"]')).toBeNull();
+  expect(useAppStore.getState().connectedVoiceChannel).toBe("!vocal");
+  if (mobile) expect(useAppStore.getState().mobileView).toBe("sidebar");
+});
+
+it("attend l'acceptation de l'invitation avant de proposer la liste des membres", async () => {
+  await clicDroitEspace();
+  await act(async () => useMatrixStore.setState((s) => ({ channels: s.channels.map((c) => c.isSpace ? { ...c, membership: "invite" } : c) })));
+  expect(Array.from(document.querySelectorAll('[role="menuitem"]')).map((b) => b.textContent)).toEqual(["spaces.shareInvitation", "spaces.manageSpace"]);
 });
 
 it("l'appui long affiche le menu et ne sélectionne pas l'espace au relâcher", async () => {

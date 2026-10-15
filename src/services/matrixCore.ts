@@ -253,6 +253,7 @@ export interface MembreSalon {
  *  `canSendMessage`, règle d'accès). */
 export interface DetailsSalon {
   membres: MembreSalon[];
+  adhesions?: { stateKey: string; content: Record<string, unknown>; sender?: string }[];
   moi: number;
   niveauEtat: number;
   niveauInvitation: number;
@@ -266,8 +267,8 @@ export interface DetailsSalon {
  *  donne `Infinity`. */
 const niveauJs = (n: number) => (n >= Number.MAX_SAFE_INTEGER ? Infinity : n);
 
-export async function detailsSalon(salon: string): Promise<DetailsSalon> {
-  const d = await invoquer<DetailsSalon>("matrix_details_salon", { salon });
+export async function detailsSalon(salon: string, membresComplets = false): Promise<DetailsSalon> {
+  const d = await invoquer<DetailsSalon>("matrix_details_salon", { salon, membresComplets });
   return { ...d, moi: niveauJs(d.moi), membres: d.membres.map((m) => ({ ...m, powerLevel: niveauJs(m.powerLevel) })) };
 }
 export const adminsServeur = () => invoquer<string[]>("matrix_admins_serveur");
@@ -279,6 +280,7 @@ export const expulser = (salon: string, utilisateur: string, raison?: string) =>
   invoquer<void>("matrix_expulser", { salon, utilisateur, raison: raison ?? null });
 export const bannir = (salon: string, utilisateur: string, raison?: string) =>
   invoquer<void>("matrix_bannir", { salon, utilisateur, raison: raison ?? null });
+export const debannir = (salon: string, utilisateur: string) => invoquer<void>("matrix_debannir", { salon, utilisateur });
 export const changerNiveau = (salon: string, utilisateur: string, niveau: number) =>
   invoquer<void>("matrix_changer_niveau", { salon, utilisateur, niveau });
 
@@ -577,7 +579,7 @@ export const envoyerEvenement = (salon: string, typeEvenement: string, contenu: 
 export const envoyerEtat = (salon: string, typeEvenement: string, cle: string, contenu: Record<string, unknown>) =>
   invoquer<void>("matrix_envoyer_etat", { salon, typeEvenement, cle, contenu });
 export const etats = (salon: string, typeEvenement: string) =>
-  invoquer<{ stateKey: string; content: Record<string, unknown> }[]>("matrix_etats", { salon, typeEvenement });
+  invoquer<{ stateKey: string; content: Record<string, unknown>; sender?: string }[]>("matrix_etats", { salon, typeEvenement });
 /** Historique filtré par types, du plus ancien au plus récent (`backfillTranscript`). */
 export const historiqueFiltre = (salon: string, types: string[]) => invoquer<EvenementSion[]>("matrix_historique_filtre", { salon, types });
 
