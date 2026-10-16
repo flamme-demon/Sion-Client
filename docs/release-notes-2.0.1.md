@@ -61,7 +61,7 @@ fixes background processes that could remain after a failed media import.
 
 ## Android
 
-- Automatic headset routing and a manual output selector support switching
+- Automatic headset routing and a themed manual output selector support switching
   between Bluetooth, supported wired/USB devices and the phone's outputs.
 - Android 14 and newer use Telecom call integration for supported headset
   call controls. Hanging up from the headset leaves the Sion voice room;

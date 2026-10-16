@@ -1,4 +1,22 @@
+// @vitest-environment node
 import { describe, expect, it } from "vitest";
+
+// Keep Node bindings local: the browser TypeScript project excludes Node globals.
+type Fs = {
+  mkdtempSync(prefix: string): string;
+  mkdirSync(path: string): void;
+  readFileSync(path: string, encoding: "utf8"): string;
+  readdirSync(path: string, options: { withFileTypes: true }): {
+    name: string; isDirectory(): boolean; isFile(): boolean;
+  }[];
+  rmSync(path: string, options: { recursive: true; force: true }): void;
+  writeFileSync(path: string, data: string): void;
+};
+const { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } =
+  (await import(/* @vite-ignore */ "node:fs" as string)) as Fs;
+const { tmpdir } = (await import(/* @vite-ignore */ "node:os" as string)) as { tmpdir(): string };
+const { join } = (await import(/* @vite-ignore */ "node:path" as string)) as { join(...paths: string[]): string };
+const { fileURLToPath } = (await import(/* @vite-ignore */ "node:url" as string)) as { fileURLToPath(url: URL): string };
 
 /**
  * Garde anti-couleurs-en-dur (§3.3 de `docs/roadmap-2.0.0.md`).
@@ -26,11 +44,24 @@ const THEME_COLOR_CALL = /themeColor\(\s*["'`][^"'`]*["'`]\s*,\s*["'`][^"'`]*["'
 /** Toute couleur hexadécimale : #fff, #a8c7fa, #11223344. */
 const HARDCODED_HEX = /#[0-9a-fA-F]{3,8}\b/g;
 
-/** Sources balayées : tout `src/`, moins les tests et les thèmes eux-mêmes. */
-const SOURCES = import.meta.glob<string>(
-  ["../**/*.{ts,tsx}", "!../**/*.test.{ts,tsx}", "!../themes/**"],
-  { query: "?raw", import: "default", eager: true },
-);
+const SOURCE_ROOT = fileURLToPath(new URL("../", import.meta.url));
+
+// Read current files on every scan, independently of Vite's transformed modules.
+function readSources(root: string): Record<string, string> {
+  const sources: Record<string, string> = {};
+  function visit(relative: string) {
+    for (const entry of readdirSync(join(root, relative), { withFileTypes: true })) {
+      const path = relative ? `${relative}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) {
+        if (path !== "themes") visit(path);
+      } else if (entry.isFile() && /\.(ts|tsx)$/.test(path) && !/\.test\.(ts|tsx)$/.test(path)) {
+        sources[`../${path}`] = readFileSync(join(root, path), "utf8");
+      }
+    }
+  }
+  visit("");
+  return sources;
+}
 
 export interface Offender {
   file: string;
@@ -76,11 +107,31 @@ describe("garde anti-couleurs-en-dur", () => {
   });
 
   it("le balayage voit bien les sources de l'app", () => {
-    expect(Object.keys(SOURCES).length).toBeGreaterThan(80);
+    expect(Object.keys(readSources(SOURCE_ROOT)).length).toBeGreaterThan(80);
+  });
+
+  it("reads new and edited files on each scan while excluding tests and theme definitions", () => {
+    const root = mkdtempSync(join(tmpdir(), "sion-theme-guard-"));
+    try {
+      mkdirSync(join(root, "components"));
+      mkdirSync(join(root, "themes"));
+      writeFileSync(join(root, "themes", "palette.ts"), 'const color = "#123456";');
+      writeFileSync(join(root, "components", "example.test.tsx"), 'const color = "#123456";');
+      expect(readSources(root)).toEqual({});
+      const component = join(root, "components", "route.tsx");
+      writeFileSync(component, 'const shadow = "0 6px 24px #0006";');
+      expect(findHardcodedColors(readSources(root))).toEqual([
+        { file: "../components/route.tsx", line: 1, text: "#0006" },
+      ]);
+      writeFileSync(component, 'const color = "var(--color-outline)";');
+      expect(findHardcodedColors(readSources(root))).toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("aucune couleur en dur sous src/ (hors src/themes/)", () => {
-    const offenders = findHardcodedColors(SOURCES).map(
+    const offenders = findHardcodedColors(readSources(SOURCE_ROOT)).map(
       (o) => `${o.file.replace(/^.*\/src\//, "")}:${o.line} — ${o.text}`,
     );
     expect(offenders).toEqual([]);

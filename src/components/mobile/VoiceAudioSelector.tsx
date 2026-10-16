@@ -60,7 +60,7 @@ export function VoiceAudioSelector({ connected, compact = false }: { connected: 
       <HeadphoneIcon />{!compact && <span style={{ fontSize: 11, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{label(current)}</span>}
     </button>
     {open && createPortal(<div ref={panel} id={id} role="dialog" aria-label={t("voiceAudio.choose")}
-      style={{ position: "fixed", ...position, zIndex: 150, boxSizing: "border-box", width: "min(300px, calc(100vw - 32px))", overflowY: "auto", background: "var(--color-surface-container-high)", color: "var(--color-on-surface)", border: "1px solid var(--color-outline-variant)", borderRadius: 14, padding: 12, boxShadow: "0 6px 24px #0006" }}>
+      style={{ position: "fixed", ...position, zIndex: 150, boxSizing: "border-box", width: "min(300px, calc(100vw - 32px))", overflowY: "auto", background: "var(--color-surface-container-high)", color: "var(--color-on-surface)", border: "1px solid var(--color-outline-variant)", borderRadius: 14, padding: 12, boxShadow: "0 6px 24px color-mix(in srgb, var(--color-outline) 40%, transparent)" }}>
       <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>{t("voiceAudio.choose")}</div>
       {[{ id: "auto", type: "automatic", name: "" }, ...state.devices].map((d) => <label key={d.id} style={{ display: "flex", gap: 8, alignItems: "center", padding: "8px 0", fontSize: 13 }}>
         <input type="radio" name="sion-audio-route" value={d.id} checked={state.selected === d.id} disabled={!state.running} onChange={() => choose(d.id)} />

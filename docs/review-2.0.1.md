@@ -64,3 +64,20 @@ it does not yet feed the shared local-source AEC registry.
 The release workflow is launched as an artifact build without publication.
 Linux/Windows/Android packaging, signing and bundled-resource checks run in
 their respective CI jobs before a final release tag is published.
+
+## CI follow-up on 2026-10-16
+
+The initial [artifact build](https://github.com/flamme-demon/Sion-Client/actions/runs/38806917023)
+passed for Linux, Windows and Android. The separate
+[CI run](https://github.com/flamme-demon/Sion-Client/actions/runs/38806917774)
+failed its theme guard on a hardcoded shadow in the Android output selector;
+its Rust checks passed.
+
+The shadow now uses a theme token. The local guard had missed the violation
+when reading sources through Vite's eager raw imports. It now scans source
+files directly from disk at test time. Before fixing the shadow, this scan
+reproduced the exact CI violation locally. A regression test checks newly
+created and edited source files and preserves the test/theme exclusions.
+
+Follow-up validation: 1,083 frontend tests passed, four skipped. The production
+TypeScript/Vite build, ESLint and Knip pass.
