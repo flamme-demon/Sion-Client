@@ -48,12 +48,19 @@ mod incrustation_lecteur;
 mod lecteur_audio;
 #[cfg(not(target_os = "android"))]
 mod lecteur_video;
+#[cfg(not(target_os = "android"))]
+mod video_timing;
 mod matrix_pont;
 mod media_cache;
 mod media_server;
 #[cfg(not(target_os = "android"))]
 mod meme_pop;
 mod mises_a_jour;
+mod diagnostic;
+#[cfg(target_os = "linux")]
+mod diagnostic_linux;
+#[cfg(target_os = "windows")]
+pub mod diagnostic_windows;
 #[cfg(all(test, feature = "native-voice"))]
 mod native_audio_tests;
 #[cfg(not(target_os = "android"))]
@@ -3558,6 +3565,16 @@ pub fn run() {
     let builder = builder.manage(shortcuts_managed);
 
     let builder = builder.invoke_handler(tauri::generate_handler![
+        #[cfg(not(target_os = "android"))]
+        diagnostic::diagnostic_etat,
+        #[cfg(not(target_os = "android"))]
+        diagnostic::diagnostic_configurer,
+        #[cfg(target_os = "windows")]
+        diagnostic::diagnostic_configurer_capture,
+        #[cfg(not(target_os = "android"))]
+        diagnostic::diagnostic_ouvrir_dossier,
+        #[cfg(not(target_os = "android"))]
+        diagnostic::diagnostic_exporter,
         mises_a_jour::update_platform,
         mises_a_jour::update_download,
         #[cfg(not(target_os = "android"))]
@@ -3928,24 +3945,30 @@ pub fn run() {
     let builder = builder
         .plugin(tauri_plugin_notification::init())
         .setup(move |app| {
+            #[cfg(not(target_os = "android"))]
+            diagnostic::initialiser(app.handle());
             // Enable logging in debug and release. Windows GUI builds have no terminal.
             // Write logs under app-data rather than the installation directory so they
             // remain writable and are not mixed with files replaced by the installer.
             app.handle().plugin(
                 tauri_plugin_log::Builder::default()
-                    .level(log::LevelFilter::Info)
+                    .level(log::LevelFilter::Debug)
+                    .filter(diagnostic::filtrer)
                     // Use a larger log file than the 40 KB default; WebRTC can otherwise
                     // rotate away relevant diagnostics within seconds during a share.
                     .max_file_size(20 * 1024 * 1024)
-                    .rotation_strategy(tauri_plugin_log::RotationStrategy::KeepOne)
-                    // Send only warnings and errors to release webviews to reduce script
-                    // execution overhead; retain the full log in the file.
+                    .rotation_strategy(tauri_plugin_log::RotationStrategy::KeepSome(3))
+                    // Les erreurs du runtime restent dans le fichier : les
+                    // renvoyer vers une webview défaillante relance la même erreur.
                     .target(
                         tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Webview)
-                            .filter(|meta| cfg!(debug_assertions) || meta.level() <= log::Level::Warn),
+                            .filter(diagnostic::vers_console),
                     )
                     .build(),
             )?;
+            log::set_max_level(if diagnostic::actif() { log::LevelFilter::Debug } else { log::LevelFilter::Info });
+            #[cfg(not(target_os = "android"))]
+            diagnostic::demarrer(app.handle());
             // Report Android TLS/WebRTC initialization details captured before logging started.
             #[cfg(target_os = "android")]
             android_natif::journaliser_initialisation();

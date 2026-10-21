@@ -7486,7 +7486,7 @@ dependencies = [
 
 [[package]]
 name = "sion-client"
-version = "2.0.1"
+version = "2.0.2"
 dependencies = [
  "ab_glyph",
  "arboard",
@@ -7548,6 +7548,7 @@ dependencies = [
  "windows",
  "windows-core",
  "winit",
+ "winreg",
  "wl-clipboard-rs",
  "x11rb 0.14.0",
  "xkeysym",

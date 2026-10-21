@@ -2,6 +2,12 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
+    // La confirmation Windows lance uniquement ce petit auxiliaire élevé,
+    // sans ouvrir une deuxième interface ni reprendre la session de l'admin.
+    #[cfg(target_os = "windows")]
+    if let Some(code) = app_lib::diagnostic_windows::gerer_commande() {
+        std::process::exit(code);
+    }
     // ── Backend graphique sous Linux : Wayland par défaut (2026-09-13) ──────
     // On ne force PLUS X11. La fenêtre principale tourne en Wayland natif quand
     // la session en propose un (sinon GDK retombe seul sur X11).

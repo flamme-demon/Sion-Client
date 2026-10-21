@@ -132,7 +132,7 @@ export function ExternalAudioImport({ onImported }: Props) {
             setUrl(e.target.value); setInfo(null);
           }}
           onKeyDown={(e) => { if (e.key === "Enter") analyze(); }}
-          placeholder={t("extAudio.urlPlaceholder")} style={{ ...inputStyle, flex: 1 }}
+          placeholder={t("extAudio.urlPlaceholder")} style={{ ...inputStyle, flex: 1, minWidth: 0 }}
         />
         <button type="button" onClick={analyze} disabled={!url.trim() || phase !== "idle"}
           style={{ padding: '8px 14px', borderRadius: 10, border: 'none', cursor: (!url.trim() || phase !== "idle") ? 'default' : 'pointer', background: 'var(--color-surface-container-highest)', color: 'var(--color-on-surface)', fontSize: 13, fontFamily: 'inherit', whiteSpace: 'nowrap', opacity: (!url.trim() || phase !== "idle") ? 0.5 : 1 }}>
@@ -141,7 +141,7 @@ export function ExternalAudioImport({ onImported }: Props) {
       </div>
 
       {info && (
-        <div style={{ fontSize: 12, color: 'var(--color-on-surface-variant)' }}>
+        <div style={{ fontSize: 12, color: 'var(--color-on-surface-variant)', overflowWrap: 'anywhere' }}>
           {info.title ? `${info.title} · ` : ""}{info.duration > 0 ? fmt(info.duration) : "?"}
         </div>
       )}
@@ -151,7 +151,7 @@ export function ExternalAudioImport({ onImported }: Props) {
           <div style={{ fontSize: 11, color: 'var(--color-on-surface-variant)' }}>
             {t("extAudio.longHint", { dur: fmt(info!.duration) })}
           </div>
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
             <span style={{ fontSize: 12, color: 'var(--color-on-surface-variant)' }}>{t("extAudio.start")}</span>
             <input value={startStr} onChange={(e) => setStartStr(e.target.value)} placeholder="1:30" style={{ ...inputStyle, width: 80 }} />
             <span style={{ fontSize: 12, color: 'var(--color-on-surface-variant)' }}>{t("extAudio.end")}</span>

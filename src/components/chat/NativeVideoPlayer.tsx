@@ -13,7 +13,8 @@
 // clics, du survol et du clavier.
 //
 // Voir docs/lecteur-video-natif.md et src-tauri/src/incrustation_lecteur.rs.
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import {
   SENDER_LECTEUR,
@@ -46,6 +47,10 @@ interface Props {
   /** Hauteur maximale hors plein écran, en pixels : 340 dans le fil, moins
    *  dans une zone d'aperçu plus basse. */
   hauteurMax?: number;
+  /** Position initiale pour la préécoute d'une source dans le découpeur. */
+  departMs?: number;
+  /** Retour de lecture pour le curseur du découpeur. */
+  onEtatChange?: (etat: EtatLecteurVideo) => void;
 }
 
 /** Voile de téléchargement, posé sur les pixels de la vidéo : il doit rester
@@ -72,7 +77,7 @@ function conteneurDefilant(element: HTMLElement | null): HTMLElement | null {
   return null;
 }
 
-export function NativeVideoPlayer({ source, onClose, ratio, hauteurMax = 340 }: Props) {
+export function NativeVideoPlayer({ source, onClose, ratio, hauteurMax = 340, departMs = 0, onEtatChange }: Props) {
   const { t } = useTranslation();
   const surfaceRef = useRef<HTMLCanvasElement>(null);
   const cadreRef = useRef<HTMLDivElement>(null);
@@ -83,6 +88,9 @@ export function NativeVideoPlayer({ source, onClose, ratio, hauteurMax = 340 }: 
   const [pleinFenetre, setPleinFenetre] = useState(false);
   const pleinFenetreRef = useRef(false);
   const [etat, setEtat] = useState<EtatLecteurVideo | null>(null);
+  const onEtatChangeRef = useRef(onEtatChange);
+  useEffect(() => { onEtatChangeRef.current = onEtatChange; }, [onEtatChange]);
+  useEffect(() => { if (etat) onEtatChangeRef.current?.(etat); }, [etat]);
   const [erreur, setErreur] = useState<string | null>(null);
   // Avancement du rapatriement, avant que la moindre image existe.
   const [progres, setProgres] = useState<ProgresVideo | null>(null);
@@ -101,7 +109,7 @@ export function NativeVideoPlayer({ source, onClose, ratio, hauteurMax = 340 }: 
     setEtat((precedent) => {
       if (!precedent?.actif) return precedent;
       const versPause = !precedent.en_pause;
-      // Reprendre relance le film côté Rust : on prend l'état qu'il rend.
+      // Rust garde l'horloge de lecture : on prend l'état qu'il rend.
       void pauseLecteurVideo(versPause).then(setEtat).catch(() => { /* lecteur fermé */ });
       return { ...precedent, en_pause: versPause };
     });
@@ -129,8 +137,19 @@ export function NativeVideoPlayer({ source, onClose, ratio, hauteurMax = 340 }: 
         setProgres(null);
         // Le niveau d'abord : Rust l'applique dès le premier échantillon.
         // Réglé après l'ouverture, un son coupé jouait un instant à fond.
-        await volumeLecteurVideo(useSettingsStore.getState().videoVolume);
-        const e = await ouvrirLecteurVideo(source);
+        const volumeInitial = useSettingsStore.getState().videoVolume;
+        // Le déplacement initial doit rester muet : la source s'ouvre à zéro
+        // avant de rejoindre le curseur du découpeur.
+        await volumeLecteurVideo(departMs > 0 ? 0 : volumeInitial);
+        if (!vivant) return;
+        let e: EtatLecteurVideo;
+        try {
+          e = await ouvrirLecteurVideo(source);
+          if (!vivant) return;
+          if (departMs > 0) e = await seekLecteurVideo(departMs);
+        } finally {
+          if (departMs > 0 && vivant) await volumeLecteurVideo(volumeInitial);
+        }
         if (!vivant) return;
         setEtat(e);
       } catch (err) {
@@ -143,7 +162,7 @@ export function NativeVideoPlayer({ source, onClose, ratio, hauteurMax = 340 }: 
       void fermerLecteurVideo();
       liberer?.();
     };
-  }, [source]);
+  }, [source, departMs]);
 
   /**
    * Déclare l'échelle d'affichage et récupère la découpe du bandeau.
@@ -312,9 +331,18 @@ export function NativeVideoPlayer({ source, onClose, ratio, hauteurMax = 340 }: 
   // lecteur flotte désormais dans le coin de la liste, et regagne sa bulle
   // quand elle réapparaît.
   //
-  // C'est le MÊME cadre qui passe en position fixe : le déplacer ailleurs
-  // dans le DOM remonterait le composant, donc fermerait la lecture.
+  // Le cadre garde son hôte de portail pendant ses déplacements dans le DOM :
+  // le composant et la surface restent montés pendant toute la lecture.
   const placeRef = useRef<HTMLDivElement>(null);
+  // Le même hôte suit le lecteur : changer la cible du portail remonterait
+  // le canvas et arrêterait la lecture. Hors du fil, `contain: strict` ne
+  // détourne plus le repère des coordonnées fixes du mini-lecteur.
+  const [hote] = useState(() => {
+    const element = document.createElement("div");
+    element.style.width = "100%";
+    element.style.height = "100%";
+    return element;
+  });
   const [horsChamp, setHorsChamp] = useState(false);
   useEffect(() => {
     const place = placeRef.current;
@@ -329,6 +357,11 @@ export function NativeVideoPlayer({ source, onClose, ratio, hauteurMax = 340 }: 
     return () => io.disconnect();
   }, []);
   const flottant = horsChamp && actif && !pleinEcran && !pleinFenetre;
+  useLayoutEffect(() => {
+    (flottant || pleinFenetre ? document.body : placeRef.current)?.appendChild(hote);
+    mesurer(true);
+  }, [hote, flottant, pleinFenetre, mesurer]);
+  useLayoutEffect(() => () => hote.remove(), [hote]);
   // Coin bas droit de la liste des messages, recalculé si la fenêtre change.
   const [coin, setCoin] = useState({ droite: MINI_MARGE, bas: MINI_MARGE, largeurMax: MINI_LARGEUR });
   useEffect(() => {
@@ -343,8 +376,14 @@ export function NativeVideoPlayer({ source, onClose, ratio, hauteurMax = 340 }: 
       });
     };
     placer();
+    const liste = conteneurDefilant(placeRef.current);
+    const observateur = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(placer);
+    if (liste) observateur?.observe(liste);
     window.addEventListener("resize", placer);
-    return () => window.removeEventListener("resize", placer);
+    return () => {
+      observateur?.disconnect();
+      window.removeEventListener("resize", placer);
+    };
   }, [flottant]);
   const mini = (() => {
     const proportions = etat?.largeur && etat.hauteur ? etat.largeur / etat.hauteur : 16 / 9;
@@ -544,7 +583,7 @@ export function NativeVideoPlayer({ source, onClose, ratio, hauteurMax = 340 }: 
           {t("chat.videoInMiniPlayer", { defaultValue: "Lecture dans le mini-lecteur" })}
         </div>
       )}
-      <div
+      {createPortal(<div
         ref={cadreRef}
         style={{
           position: 'relative',
@@ -743,7 +782,7 @@ export function NativeVideoPlayer({ source, onClose, ratio, hauteurMax = 340 }: 
             style={styleFermer}
           />
         )}
-      </div>
+      </div>, hote)}
 
     </div>
   );

@@ -5,7 +5,7 @@ resolver = "2"
 
 [package]
 name = "sion-client"
-version = "2.0.1"
+version = "2.0.2"
 description = "Sion Client - Voice/Text client based on Matrix + LiveKit"
 authors = ["Sion"]
 license = "MIT OR Apache-2.0"
@@ -229,6 +229,7 @@ jni22 = { package = "jni", version = "0.22" }
 # audio that excludes Sion's own output — Windows 11 / Server 2022 build
 # 20348+ via AUDCLNT_PROCESSLOOPBACK_EXCLUDE_TARGET_PROCESS_TREE).
 [target.'cfg(target_os = "windows")'.dependencies]
+winreg = "0.56"
 windows = { version = "0.62", features = [
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_WindowsAndMessaging",
@@ -244,6 +245,8 @@ windows = { version = "0.62", features = [
     "Win32_System_Com_StructuredStorage",
     "Win32_System_LibraryLoader",
     "Win32_System_Threading",
+    "Win32_System_ProcessStatus",
+    "Win32_System_Registry",
     "Win32_System_JobObjects",
     "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_Variant",

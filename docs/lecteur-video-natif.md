@@ -56,8 +56,9 @@ quelque chose. C'est la seule pièce à déplacer.
 3. **Décodage** : `ffmpeg` en **processus séparé**, et surtout pas en
    bibliothèque — voir l'avertissement ci-dessous. Il débite du `rawvideo
    yuv420p` sur un tube, découpé en plans I420 et poussé dans la surface
-   native existante. Le drapeau `-re` le fait débiter à la vitesse réelle du
-   média : c'est lui qui cadence, il n'y a pas d'horloge à tenir.
+   native existante. `showinfo=checksum=0` transmet en parallèle les PTS et
+   durées des images sur stderr. Le lecteur présente chaque image à son PTS
+   sur l'horloge audio, ou une horloge monotone pour les vidéos muettes.
 4. **Audio** : la même bibliothèque décode la piste audio en PCM, rendu par
    `cpal` — déjà présent dans `cue_playback.rs`.
 5. **Synchronisation** : horloge audio maîtresse, présentation des images sur
@@ -118,7 +119,7 @@ démultiplexeur MP4 et un décodeur AAC pour lire l'historique du salon.
 | 0. Faisabilité du décodage (Linux) | **fait** — voir les mesures ci-dessus |
 | 1. Compilation de `ffmpeg-sys` sous Windows | **fait** — voir ci-dessous |
 | 2. Décodage → surface native, sans audio | **fait** — validé à l'écran le 21/09 |
-| 3. Audio + synchronisation | **fait** (21/09) — le son fait foi ; reprendre relance ffmpeg à la position atteinte |
+| 3. Audio + synchronisation | **fait** — présentation sur les PTS, pause sans relancer ffmpeg, attente de la restitution du dernier tampon audio (21/10) |
 | 4. Contrôles : lecture, pause, position, volume | **fait** (22-23/09) — incrustés par Rust, volume gardé, mini-lecteur, croix |
 | 5. Aperçu dans le fil | **fait autrement** (22/09) — l'affiche est extraite par ffmpeg chez celui qui regarde et mise en cache, pas envoyée en `info.thumbnail_url` |
 | 6. Suppression de la machinerie webview | **fait** (24/09) — plus aucune balise `<video>` (la dernière, dans les épinglés), `transcode_video` et `remux_video_mp4` retirées |

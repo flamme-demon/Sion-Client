@@ -29,8 +29,8 @@
 //! gagne, et cette archive vient d'une build pré-compilée de LiveKit.
 //!
 //! On lance donc ffmpeg comme processus séparé, qui a son propre espace de
-//! symboles. `-re` le fait débiter à la vitesse réelle du média : c'est lui
-//! qui cadence, nous n'avons plus d'horloge à tenir ni de dérive possible. Le
+//! symboles. Les images attendent leur PTS sur l'horloge audio : limiter la
+//! lecture avec `-re` ne cadence pas la sortie du décodeur. Le
 //! prix est un déplacement coûteux dans le film — relancer le processus avec
 //! `-ss` — ce qui reste acceptable pour regarder un clip.
 //!
@@ -103,7 +103,7 @@ struct Lecture {
     /// chaque image, écrit par les commandes du front.
     incrustation: Arc<Mutex<crate::incrustation_lecteur::EtatIncrustation>>,
     /// Le fichier lu reste protégé du ménage du cache tant que la lecture
-    /// existe : une pause, un déplacement ou le plein écran relancent ffmpeg
+    /// existe : un déplacement ou le plein écran relancent ffmpeg
     /// sur ce même fichier.
     _bail: crate::media_cache::Reader,
 }
@@ -186,7 +186,7 @@ fn dimensions_affichees(l: u32, h: u32, boite: Option<(u32, u32)>) -> (u32, u32)
 /// Volume du lecteur, de 0 à 1,5.
 ///
 /// Hors de `Lecture`, pour la même raison que l'affichage : chaque
-/// déplacement, et chaque reprise après une pause, relance ffmpeg et crée une
+/// déplacement relance ffmpeg et crée une
 /// nouvelle lecture. Rangé là-dedans, le volume revenait à 100 % à chaque fois
 /// (22/09) — et un son coupé se remettait à jouer.
 fn volume_lecteur() -> &'static Mutex<f32> {
@@ -706,7 +706,7 @@ fn demarrer(
     crate::native_video_surface::announce_source_dimensions(SENDER_LECTEUR, toile_l, toile_h);
 
     let mut commande = crate::hidden_command(&ffmpeg);
-    commande.args(["-hide_banner", "-loglevel", "error", "-re"]);
+    commande.args(["-hide_banner", "-nostats", "-loglevel", "level+info"]);
     // `-ss` AVANT `-i` : ffmpeg saute à l'image clé la plus proche au lieu de
     // décoder depuis le début pour tout jeter.
     if depart_ms > 0 {
@@ -734,6 +734,7 @@ fn demarrer(
             "pad={toile_l}:{toile_h}:({toile_l}-iw)/2:0:color=black"
         ));
     }
+    filtres.push("showinfo=checksum=0".into());
     commande.args(["-vf", &filtres.join(",")]);
     commande
         .args([
@@ -758,7 +759,9 @@ fn demarrer(
         .stdout
         .take()
         .ok_or_else(|| "sortie de ffmpeg indisponible".to_string())?;
-    let erreurs = enfant.stderr.take();
+    let erreurs = enfant.stderr.take().ok_or("horodatages vidéo indisponibles")?;
+    let horodatages = crate::video_timing::horodatages(erreurs)
+        .map_err(|e| format!("horodatage vidéo : {e}"))?;
 
     let arret = Arc::new(AtomicBool::new(false));
     let position_ms = Arc::new(AtomicU64::new(0));
@@ -790,20 +793,6 @@ fn demarrer(
         a_du_son,
     }));
 
-    // Les plaintes de ffmpeg dans notre journal : sans cela, un échec de
-    // lecture serait totalement muet.
-    if let Some(mut flux) = erreurs {
-        std::thread::Builder::new()
-            .name("sion-lecteur-erreurs".into())
-            .spawn(move || {
-                let mut texte = String::new();
-                if flux.read_to_string(&mut texte).is_ok() && !texte.trim().is_empty() {
-                    log::warn!("[Sion][lecteur] ffmpeg : {}", texte.trim());
-                }
-            })
-            .ok();
-    }
-
     let arret_fil = Arc::clone(&arret);
     let position_fil = Arc::clone(&position_ms);
     let enfant_fil = Arc::clone(&enfant);
@@ -811,145 +800,6 @@ fn demarrer(
     let audio_fil = audio.clone();
     let incrustation_fil = Arc::clone(&incrustation);
     let octets = taille_image(toile_l, toile_h);
-
-    std::thread::Builder::new()
-        .name("sion-lecteur-video".into())
-        .spawn(move || {
-            let depart = std::time::Instant::now();
-            let mut tampon = vec![0u8; octets];
-            let mut images = 0u64;
-            // Tampon BGRA réutilisé d'une image à l'autre : le chemin non
-            // planaire alloue sinon quatre octets par pixel à chaque frame.
-            let mut recyclage: Option<Vec<u8>> = None;
-            let mut calque: Option<crate::incrustation_lecteur::Calque> = None;
-            // Ce que montre le calque en place. L'affichage en fait partie :
-            // changer la taille du lecteur doit redessiner le bandeau, pas
-            // seulement le remettre tel quel.
-            let mut calque_cle: Option<crate::incrustation_lecteur::Cle> = None;
-
-            // À l'arrêt, plus aucune image n'arrive : il faut pouvoir
-            // repeindre la dernière, sinon le bandeau resterait figé sur
-            // l'icône d'avant la pause et le bouton paraîtrait déconnecté de
-            // la vidéo (21/09). `tampon` contient encore cette image — la
-            // recopier à chaque tour, pour un cas qui survient une fois par
-            // pause, revenait à déplacer 4,4 Mo soixante fois par seconde.
-            let mut a_une_image = false;
-            // Temps passé à l'arrêt, à retirer de l'horloge murale quand le
-            // média est muet et qu'aucune carte son ne compte à notre place.
-            let mut pause_cumulee_ms = 0u64;
-
-            while !arret_fil.load(Ordering::Relaxed) {
-                // En pause, on cesse de lire : le tube se remplit, ffmpeg
-                // s'arrête tout seul, et rien ne s'accumule chez nous. On
-                // continue en revanche de repeindre la dernière image quand
-                // le bandeau change — mise en pause, volume, position.
-                let debut_pause = std::time::Instant::now();
-                // Pas de pause avant la première image : relancé à l'arrêt, le
-                // lecteur doit montrer où il en est plutôt qu'un cadre noir.
-                let etait_en_pause = a_une_image && pause_fil.load(Ordering::Relaxed);
-                while a_une_image
-                    && pause_fil.load(Ordering::Relaxed)
-                    && !arret_fil.load(Ordering::Relaxed)
-                {
-                    let voulu = *incrustation_fil.lock().unwrap_or_else(|e| e.into_inner());
-                    let vue = *affichage().lock().unwrap_or_else(|e| e.into_inner());
-                    let cle = crate::incrustation_lecteur::cle(toile_l, toile_h, &vue, &voulu);
-                    if calque_cle != Some(cle) {
-                        calque =
-                            crate::incrustation_lecteur::dessiner(toile_l, toile_h, &vue, &voulu);
-                        calque_cle = Some(cle);
-                        if let (Some(c), true) = (calque.as_ref(), a_une_image) {
-                            if let Some((mut y, mut u, mut v)) =
-                                decouper_plans(&tampon, toile_l, toile_h)
-                            {
-                                crate::incrustation_lecteur::composer_sur_i420(
-                                    c, &mut y, &mut u, &mut v, toile_l, toile_h,
-                                );
-                                presenter(toile_l, toile_h, y, u, v, &mut recyclage);
-                            }
-                        }
-                    }
-                    std::thread::sleep(std::time::Duration::from_millis(30));
-                }
-                if etait_en_pause {
-                    pause_cumulee_ms += debut_pause.elapsed().as_millis() as u64;
-                }
-                if arret_fil.load(Ordering::Relaxed) {
-                    break;
-                }
-                // Une lecture incomplète signe la fin du flux : ffmpeg a
-                // terminé, ou il a été arrêté.
-                if sortie.read_exact(&mut tampon).is_err() {
-                    break;
-                }
-                let Some((mut y, mut u, mut v)) = decouper_plans(&tampon, toile_l, toile_h) else {
-                    break;
-                };
-                a_une_image = true;
-
-                // Les contrôles sont peints DANS l'image : rien du DOM ne peut
-                // s'afficher devant la surface native. Le calque n'est
-                // redessiné que lorsque son contenu change — sinon on le
-                // recompose tel quel, ce qui évite une rastérisation par
-                // image.
-                let voulu = *incrustation_fil.lock().unwrap_or_else(|e| e.into_inner());
-                let vue = *affichage().lock().unwrap_or_else(|e| e.into_inner());
-                let cle = crate::incrustation_lecteur::cle(toile_l, toile_h, &vue, &voulu);
-                if calque_cle != Some(cle) {
-                    calque =
-                        crate::incrustation_lecteur::dessiner(toile_l, toile_h, &vue, &voulu);
-                    calque_cle = Some(cle);
-                }
-                if let Some(c) = calque.as_ref() {
-                    crate::incrustation_lecteur::composer_sur_i420(
-                        c, &mut y, &mut u, &mut v, toile_l, toile_h,
-                    );
-                }
-                presenter(toile_l, toile_h, y, u, v, &mut recyclage);
-                images += 1;
-                // L'heure vient de la carte son : elle compte ce qui a
-                // RÉELLEMENT été joué, donc elle s'arrête d'elle-même en
-                // pause. L'horloge murale, employée ici jusqu'au 22/09,
-                // continuait de courir : après six secondes d'arrêt le
-                // bandeau affichait « 0:18 / 0:12 ».
-                //
-                // Sans son, il faut retrancher le temps passé en pause.
-                let ecoule = match audio_fil.as_ref() {
-                    Some(a) => a.position_ms(),
-                    None => (depart.elapsed().as_millis() as u64).saturating_sub(pause_cumulee_ms),
-                };
-                position_fil.store(ecoule, Ordering::Relaxed);
-                {
-                    let mut etat = incrustation_fil.lock().unwrap_or_else(|e| e.into_inner());
-                    etat.position_ms = depart_ms + ecoule;
-                }
-            }
-
-            log::info!(
-                "[Sion][lecteur] fin de lecture — {images} images en {:.1} s",
-                depart.elapsed().as_secs_f64()
-            );
-            if let Some(mut proc) = enfant_fil.lock().unwrap_or_else(|e| e.into_inner()).take() {
-                let _ = proc.kill();
-                let _ = proc.wait();
-            }
-            // Uniquement si personne n'a pris la place entre-temps.
-            let mut garde = lecture().lock().unwrap_or_else(|e| e.into_inner());
-            if garde.as_ref().is_some_and(|l| l.numero == numero) {
-                let finie = garde.take();
-                drop(garde);
-                // Le son s'arrête avec l'image. Sa sortie ne se ferme que sur
-                // `arreter` : lâchée sans lui, elle restait ouverte à vide —
-                // un flux et un fil de plus par vidéo vue jusqu'au bout —, et
-                // une bande-son plus longue que l'image continuait sans que
-                // rien ne puisse plus l'arrêter.
-                if let Some(audio) = finie.as_ref().and_then(|l| l.audio.as_ref()) {
-                    audio.arreter();
-                }
-                crate::native_video_surface::remove(SENDER_LECTEUR);
-            }
-        })
-        .map_err(|e| format!("fil de lecture : {e}"))?;
 
     *lecture().lock().unwrap_or_else(|e| e.into_inner()) = Some(Lecture {
         arret,
@@ -968,6 +818,137 @@ fn demarrer(
         incrustation,
         _bail: bail,
     });
+
+    std::thread::Builder::new()
+        .name("sion-lecteur-video".into())
+        .spawn(move || {
+            let depart = std::time::Instant::now();
+            let mut tampon = vec![0u8; octets];
+            let mut attente = vec![0u8; octets];
+            let mut images = 0u64;
+            // Tampon BGRA réutilisé d'une image à l'autre : le chemin non
+            // planaire alloue sinon quatre octets par pixel à chaque frame.
+            let mut recyclage: Option<Vec<u8>> = None;
+            let mut calque: Option<crate::incrustation_lecteur::Calque> = None;
+            // Ce que montre le calque en place. L'affichage en fait partie :
+            // changer la taille du lecteur doit redessiner le bandeau, pas
+            // seulement le remettre tel quel.
+            let mut calque_cle: Option<crate::incrustation_lecteur::Cle> = None;
+
+            // À l'arrêt, plus aucune image n'arrive : il faut pouvoir
+            // repeindre la dernière, sinon le bandeau resterait figé sur
+            // l'icône d'avant la pause et le bouton paraîtrait déconnecté de
+            // la vidéo (21/09). `tampon` contient encore cette image — la
+            // recopier à chaque tour, pour un cas qui survient une fois par
+            // pause, revenait à déplacer 4,4 Mo soixante fois par seconde.
+            let mut a_une_image = false;
+            let mut horloge = crate::video_timing::Horloge::new();
+            let mut prochaine = None;
+            let mut fin_flux = false;
+            let mut fin_image = std::time::Duration::ZERO;
+            let mut dernier_rendu = std::time::Instant::now();
+            let fin_media = std::time::Duration::from_millis(duree_ms.saturating_sub(depart_ms));
+
+            while !arret_fil.load(Ordering::Relaxed) {
+                if prochaine.is_none() && !fin_flux {
+                    if sortie.read_exact(&mut attente).is_ok() {
+                        prochaine = horodatages.recv_timeout(std::time::Duration::from_secs(2)).ok();
+                        fin_flux = prochaine.is_none();
+                    } else {
+                        fin_flux = true;
+                    }
+                }
+                if fin_flux && !a_une_image { break; }
+
+                let en_pause = pause_fil.load(Ordering::Relaxed);
+                horloge.pause(en_pause);
+                if !en_pause {
+                    if let Some(a) = audio_fil.as_ref().filter(|a| !a.terminee()) {
+                        horloge.synchroniser(std::time::Duration::from_millis(a.position_ms()));
+                    }
+                }
+                let ecoule = horloge.position();
+                let nouvelle_image = prochaine.is_some_and(|t| !a_une_image || (!en_pause && ecoule >= t.position));
+                if nouvelle_image {
+                    let temps = prochaine.take().unwrap();
+                    std::mem::swap(&mut tampon, &mut attente);
+                    fin_image = temps.position + temps.duree;
+                    if !a_une_image {
+                        horloge = crate::video_timing::Horloge::new();
+                        horloge.pause(en_pause);
+                        if let Some(a) = audio_fil.as_ref() { a.pause(en_pause); }
+                    }
+                    a_une_image = true;
+                    images += 1;
+                }
+                position_fil.store(ecoule.as_millis() as u64, Ordering::Relaxed);
+                incrustation_fil.lock().unwrap_or_else(|e| e.into_inner()).position_ms =
+                    depart_ms + ecoule.as_millis() as u64;
+
+                // Les contrôles sont peints DANS l'image : rien du DOM ne peut
+                // s'afficher devant la surface native. Le calque n'est
+                // redessiné que lorsque son contenu change — sinon on le
+                // recompose tel quel, ce qui évite une rastérisation par
+                // image.
+                let voulu = *incrustation_fil.lock().unwrap_or_else(|e| e.into_inner());
+                let vue = *affichage().lock().unwrap_or_else(|e| e.into_inner());
+                let cle = crate::incrustation_lecteur::cle(toile_l, toile_h, &vue, &voulu);
+                let repeindre = nouvelle_image || (calque_cle != Some(cle)
+                    && dernier_rendu.elapsed() >= std::time::Duration::from_millis(30));
+                if repeindre && calque_cle != Some(cle) {
+                    calque =
+                        crate::incrustation_lecteur::dessiner(toile_l, toile_h, &vue, &voulu);
+                    calque_cle = Some(cle);
+                }
+                if repeindre && a_une_image {
+                    if let Some((mut y, mut u, mut v)) = decouper_plans(&tampon, toile_l, toile_h) {
+                        if let Some(c) = calque.as_ref() {
+                            crate::incrustation_lecteur::composer_sur_i420(
+                                c, &mut y, &mut u, &mut v, toile_l, toile_h,
+                            );
+                        }
+                        presenter(toile_l, toile_h, y, u, v, &mut recyclage);
+                        dernier_rendu = std::time::Instant::now();
+                    }
+                }
+                // EOF signifie « tout est décodé ». La dernière image reste
+                // affichée pendant sa durée et jusqu'à la fin réelle du son.
+                if fin_flux && !en_pause && ecoule >= fin_media.max(fin_image)
+                    && audio_fil.as_ref().is_none_or(|a| a.terminee())
+                {
+                    break;
+                }
+                if !nouvelle_image {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+            }
+
+            log::info!(
+                "[Sion][lecteur] fin de lecture — {images} images en {:.1} s",
+                depart.elapsed().as_secs_f64()
+            );
+            if let Some(mut proc) = enfant_fil.lock().unwrap_or_else(|e| e.into_inner()).take() {
+                let _ = proc.kill();
+                let _ = proc.wait();
+            }
+            // Uniquement si personne n'a pris la place entre-temps.
+            let mut garde = lecture().lock().unwrap_or_else(|e| e.into_inner());
+            if garde.as_ref().is_some_and(|l| l.numero == numero) {
+                let finie = garde.take();
+                drop(garde);
+                // La sortie audio ne se ferme que sur `arreter` : lâchée
+                // sans lui, elle restait ouverte à vide —
+                // un flux et un fil de plus par vidéo vue jusqu'au bout.
+                if let Some(audio) = finie.as_ref().and_then(|l| l.audio.as_ref()) {
+                    audio.arreter();
+                }
+                crate::native_video_surface::remove(SENDER_LECTEUR);
+            }
+        })
+        .map_err(|e| {
+            lecteur_video_fermer();
+            format!("fil de lecture : {e}")
+        })?;
 
     Ok(EtatLecteur {
         actif: true,
@@ -1179,44 +1160,16 @@ pub fn lecteur_video_zones(
 /// Met la lecture en pause, ou la reprend.
 #[tauri::command]
 pub fn lecteur_video_pause(en_pause: bool) -> Result<EtatLecteur, String> {
-    if en_pause {
-        let garde = lecture().lock().unwrap_or_else(|e| e.into_inner());
-        let l = garde.as_ref().ok_or_else(|| "aucune lecture".to_string())?;
-        l.pause.store(true, Ordering::Relaxed);
-        if let Some(audio) = l.audio.as_ref() {
-            audio.pause(true);
-        }
-        l.incrustation
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .en_pause = true;
-        return Ok(etat_depuis(l));
+    let garde = lecture().lock().unwrap_or_else(|e| e.into_inner());
+    let l = garde.as_ref().ok_or_else(|| "aucune lecture".to_string())?;
+    // Le décodeur attend maintenant les PTS : reprendre ne nécessite plus
+    // de relancer ffmpeg, ni de déplacer la lecture près de la fin du film.
+    l.pause.store(en_pause, Ordering::Relaxed);
+    if let Some(audio) = l.audio.as_ref() {
+        audio.pause(en_pause);
     }
-
-    // Reprendre, c'est RELANCER à la position atteinte.
-    //
-    // `-re` fait cadencer ffmpeg sur son horloge de départ. Pendant la pause
-    // nous cessons de lire le tube, donc il se bloque — mais à la reprise il
-    // se croit en retard de toute la durée de l'arrêt et débite ses images à
-    // pleine vitesse pour rattraper. L'image sautait alors en avant tandis
-    // que le son restait à sa place : après une pause de quatre secondes, la
-    // vidéo se terminait quatre secondes avant la fin du son (22/09).
-    //
-    // Reprendre coûte donc le même prix qu'un déplacement, quelques dixièmes
-    // de seconde, et la synchronisation reste exacte.
-    let (source, ffmpeg, reprise) = {
-        let garde = lecture().lock().unwrap_or_else(|e| e.into_inner());
-        let l = garde.as_ref().ok_or_else(|| "aucune lecture".to_string())?;
-        let position = l.depart_ms
-            + l.audio
-                .as_ref()
-                .map_or_else(|| l.position_ms.load(Ordering::Relaxed), |a| a.position_ms());
-        // Bornée comme un déplacement : en pause sur la dernière image,
-        // ffmpeg relancé à la fin exacte ne produisait rien, et le lecteur
-        // se fermait au lieu de reprendre.
-        (l.source.clone(), l.ffmpeg.clone(), position.min(l.duree_ms.saturating_sub(500)))
-    };
-    demarrer(&ffmpeg, &source, reprise, false)
+    l.incrustation.lock().unwrap_or_else(|e| e.into_inner()).en_pause = en_pause;
+    Ok(etat_depuis(l))
 }
 
 /// Vue de l'état courant, sans reprendre le verrou.
@@ -1226,12 +1179,9 @@ fn etat_depuis(l: &Lecture) -> EtatLecteur {
         largeur: l.largeur,
         hauteur: l.hauteur,
         duree_ms: l.duree_ms,
-        // La carte son compte ce qui a réellement été joué : c'est elle qui
-        // fait foi, l'horloge système ne servant qu'à un média muet.
-        position_ms: l.depart_ms
-            + l.audio
-                .as_ref()
-                .map_or_else(|| l.position_ms.load(Ordering::Relaxed), |a| a.position_ms()),
+        // L'horloge de présentation suit le son, puis continue si sa piste
+        // est plus courte que la vidéo.
+        position_ms: l.depart_ms + l.position_ms.load(Ordering::Relaxed),
         en_pause: l.pause.load(Ordering::Relaxed),
         a_du_son: l.audio.is_some(),
     }
@@ -1316,8 +1266,43 @@ pub fn lecteur_video_volume(valeur: f32) {
 mod tests {
     use super::*;
 
-    /// Le volume vit hors de la lecture : chaque déplacement et chaque
-    /// reprise relancent ffmpeg, et le niveau choisi doit y survivre. Il doit
+    #[test]
+    fn la_lecture_va_jusqu_au_bout_et_reprend_sans_redemarrage() {
+        use std::time::{Duration, Instant};
+        let source = std::env::temp_dir().join(format!("sion-video-horloge-{}.mkv", std::process::id()));
+        assert!(crate::hidden_command("ffmpeg").args([
+            "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
+            "color=c=red:s=32x32:r=20:d=1.2", "-c:v", "ffv1",
+        ]).arg(&source).status().unwrap().success());
+        struct Nettoyer(std::path::PathBuf);
+        impl Drop for Nettoyer {
+            fn drop(&mut self) { lecteur_video_fermer(); let _ = std::fs::remove_file(&self.0); }
+        }
+        let _nettoyer = Nettoyer(source.clone());
+        let debut = Instant::now();
+        demarrer("ffmpeg", source.to_str().unwrap(), 0, false).unwrap();
+        while lecteur_video_etat().position_ms < 100 {
+            assert!(lecteur_video_etat().actif);
+            assert!(debut.elapsed() < Duration::from_secs(5));
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        lecteur_video_pause(true).unwrap();
+        std::thread::sleep(Duration::from_millis(30));
+        let avant = lecteur_video_etat().position_ms;
+        let numero = lecture().lock().unwrap().as_ref().unwrap().numero;
+        std::thread::sleep(Duration::from_millis(150));
+        assert_eq!(lecteur_video_etat().position_ms, avant);
+        lecteur_video_pause(false).unwrap();
+        assert_eq!(lecture().lock().unwrap().as_ref().unwrap().numero, numero);
+        while lecteur_video_etat().actif {
+            assert!(debut.elapsed() < Duration::from_secs(5));
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(debut.elapsed() >= Duration::from_millis(1_350), "fin prématurée : {:?}", debut.elapsed());
+    }
+
+    /// Le volume vit hors de la lecture : un déplacement ou un changement de
+    /// résolution relance ffmpeg, et le niveau choisi doit y survivre. Il doit
     /// aussi être retenu sans lecture en cours — le front le déclare avant
     /// d'ouvrir le fichier.
     #[test]

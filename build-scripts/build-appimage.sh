@@ -99,6 +99,9 @@ mkdir -p "$APPDIR/usr/share/icons/hicolor/128x128/apps"
 
 # Copy binary
 cp "$RELEASE_DIR/$APP_NAME" "$APPDIR/usr/bin/$APP_NAME"
+# Les symboles du build de release restent dans target/release pour les
+# diagnostics. Les retirer de la copie distribuée évite de grossir l'AppImage.
+strip --strip-debug "$APPDIR/usr/bin/$APP_NAME"
 
 # Variantes CPU de ggml + transcribe (moteur ASR). Sans elles le binaire ne
 # demarre pas : il est lie dynamiquement pour que ggml choisisse son noyau selon

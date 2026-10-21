@@ -1,53 +1,86 @@
-// Découpe d'un meme : l'image de la vidéo, un curseur de début, un curseur de
-// fin.
-//
-// L'image est celle de l'instant sous le curseur qu'on déplace, extraite par
-// ffmpeg : la balise vidéo de la vue web ne lit pas tout, selon les greffons
-// de la machine. « Tester » joue l'extrait préparé au même endroit, avec le
-// lecteur natif du fil.
-import { lazy, Suspense, useEffect, useRef, useState } from "react";
+// Découpe des mèmes : vue d'ensemble, zoom et curseur de lecture.
+// Les images et la lecture utilisent ffmpeg et le lecteur natif du fil.
+import { lazy, Suspense, useCallback, useEffect, useId, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { blobPrepare, imageMeme, MEME_DUREE_MAX_MS } from "../../services/memeboardService";
+import { definirLecteurActif, libererLecteurActif, useEstLecteurActif } from "../../services/lecteurActif";
+import { etatLecteurVideo, pauseLecteurVideo, type EtatLecteurVideo } from "../../services/voiceNativeService";
+import { PisteMeme, type GlissementMeme, type RegionMeme } from "./PisteMeme";
 
-const NativeVideoPlayer = lazy(() =>
-  import("./NativeVideoPlayer").then((m) => ({ default: m.NativeVideoPlayer })),
-);
+const NativeVideoPlayer = lazy(() => import("./NativeVideoPlayer").then((m) => ({ default: m.NativeVideoPlayer })));
 
 interface Props {
-  /** Chemin de la source déposée sur le disque. */
   source: string;
   dureeMs: number;
   onChange: (debutMs: number, finMs: number) => void;
-  /** Extrait préparé à jouer dans la zone d'image, ou `null`. */
   essai: string | null;
-  /** L'essai est fini, fermé, ou interrompu par un curseur. */
   onFinEssai: () => void;
+  onTesterSelection?: () => void;
+  occupe?: boolean;
 }
 
-/** Hauteur de la zone d'image — et du lecteur pendant l'essai. */
 const HAUTEUR_ZONE = 240;
-
-/** Écart minimal entre les deux curseurs. */
 const DUREE_MIN_MS = 500;
+const MARGE_ZOOM_MS = 2_000;
+const LIBELLES_EDITEUR = {
+  editorOverview: "Vue d’ensemble — clique pour positionner, glisse la sélection",
+  editorZoom: "Vue zoomée",
+  editorZoomIn: "Zoomer",
+  editorZoomOut: "Dézoomer",
+  editorCenter: "Recentrer",
+  editorHint: "Clique dans le zoom pour placer le curseur, lis ou mets en pause, puis fixe le début ou la fin. Tu peux aussi glisser les bords.",
+  editorPlayCursor: "Lire (curseur)",
+  editorPlaySelection: "Sélection",
+  editorFixStart: "Fixer le début",
+  editorFixEnd: "Fixer la fin",
+  editorFixHint: "Caler cette borne sur le curseur ; Alt + flèches ajuste les poignées à la milliseconde.",
+};
+const borner = (v: number, min: number, max: number) => Math.max(min, Math.min(v, max));
 
-/** m:ss.d */
 function temps(ms: number): string {
-  const s = ms / 1000;
-  const m = Math.floor(s / 60);
-  return `${m}:${(s - m * 60).toFixed(1).padStart(4, "0")}`;
+  const total = Math.max(0, Math.round(ms));
+  const secondes = Math.floor(total / 1000);
+  return `${Math.floor(secondes / 60)}:${String(secondes % 60).padStart(2, "0")}.${String(total % 1000).padStart(3, "0")}`;
 }
 
-export function MemeTrimmer({ source, dureeMs, onChange, essai, onFinEssai }: Props) {
+function fenetreAutour(centre: number, largeur: number, duree: number): RegionMeme {
+  const taille = Math.min(duree, Math.max(250, largeur));
+  const debut = Math.round(borner(centre - taille / 2, 0, Math.max(0, duree - taille)));
+  return { debut, fin: debut + taille };
+}
+
+interface Geste {
+  mode: GlissementMeme | "curseur";
+  x: number;
+  region: RegionMeme;
+  curseur: number;
+  msParPixel: number;
+  suivreZoom: boolean;
+  largeurZoom: number;
+}
+
+export function MemeTrimmer({ source, dureeMs, onChange, essai, onFinEssai, onTesterSelection, occupe = false }: Props) {
   const { t } = useTranslation();
+  const libelle = (cle: keyof typeof LIBELLES_EDITEUR) => t(`memeboard.${cle}`, { defaultValue: LIBELLES_EDITEUR[cle] });
   const duree = Math.max(1, dureeMs);
-  const [region, setRegion] = useState({ debut: 0, fin: Math.min(MEME_DUREE_MAX_MS, duree) });
-  // Le curseur touché en dernier : c'est son image qu'on montre.
-  const [vise, setVise] = useState<"debut" | "fin">("debut");
+  const minimum = Math.min(DUREE_MIN_MS, duree);
+  const maximum = Math.min(MEME_DUREE_MAX_MS, duree);
+  const [region, setRegion] = useState<RegionMeme>({ debut: 0, fin: maximum });
+  const regionRef = useRef(region);
+  const [zoom, setZoom] = useState(() => fenetreAutour(maximum / 2, maximum + 2 * MARGE_ZOOM_MS, duree));
+  const [curseur, setCurseur] = useState<number | null>(null);
+  const curseurRef = useRef<number | null>(null);
+  const [apercu, setApercu] = useState<{ debut: number; fin?: number }>({ debut: 0 });
   const [image, setImage] = useState<string | null>(null);
   const imageRef = useRef<string | null>(null);
-  const regionRef = useRef(region);
-  const piste = useRef<HTMLDivElement>(null);
-  const glisse = useRef<"debut" | "fin" | null>(null);
+  const glisse = useRef<Geste | null>(null);
+  const [lecture, setLecture] = useState<{ depart: number; numero: number } | null>(null);
+  const numeroLecture = useRef(0);
+  const [enPause, setEnPause] = useState(false);
+  const idLecture = useId();
+  const lecteurActif = useEstLecteurActif(idLecture);
+  const lectureSource = lecture !== null && lecteurActif && !essai;
+  const enLecture = !!essai || lectureSource;
   const onChangeRef = useRef(onChange);
   const onFinEssaiRef = useRef(onFinEssai);
   const essaiRef = useRef(essai);
@@ -56,140 +89,224 @@ export function MemeTrimmer({ source, dureeMs, onChange, essai, onFinEssai }: Pr
     onFinEssaiRef.current = onFinEssai;
     essaiRef.current = essai;
   });
+  useEffect(() => () => libererLecteurActif(idLecture), [idLecture]);
 
-  const instant = vise === "debut" ? region.debut : Math.max(region.debut, region.fin - 40);
+  const retenirCurseur = useCallback((ms: number) => {
+    const point = Math.round(borner(ms, 0, duree));
+    curseurRef.current = point;
+    setCurseur(point);
+    return point;
+  }, [duree]);
 
-  // L'image de l'instant visé, une fois le curseur posé : un glissement
-  // produit des dizaines de positions, on n'extrait que la dernière.
+  const stopper = useCallback(() => {
+    if (essaiRef.current) onFinEssaiRef.current();
+    libererLecteurActif(idLecture);
+    setLecture(null);
+    setEnPause(false);
+  }, [idLecture]);
+
+  const placerCurseur = useCallback((ms: number) => {
+    stopper();
+    const point = retenirCurseur(ms);
+    setApercu(point >= duree
+      ? { debut: Math.max(0, duree - 1000), fin: duree }
+      : { debut: point });
+  }, [duree, retenirCurseur, stopper]);
+
+  const commettre = useCallback((suivant: RegionMeme, borne: "debut" | "fin" = "debut") => {
+    stopper();
+    const r = { debut: Math.round(suivant.debut), fin: Math.round(suivant.fin) };
+    const precedent = regionRef.current;
+    regionRef.current = r;
+    setRegion(r);
+    retenirCurseur(r[borne]);
+    setApercu(borne === "fin" ? { debut: r.debut, fin: r.fin } : { debut: r.debut });
+    if (r.debut !== precedent.debut || r.fin !== precedent.fin) onChangeRef.current(r.debut, r.fin);
+  }, [retenirCurseur, stopper]);
+
+  // Une seule image après le geste ; aucune extraction pendant la lecture.
   useEffect(() => {
+    if (enLecture) return;
     let vivant = true;
-    let url: string | null = null;
     const minuterie = window.setTimeout(() => {
-      void imageMeme(source, instant)
+      void imageMeme(source, apercu.debut, apercu.fin)
         .then((chemin) => blobPrepare(chemin, "image/jpeg"))
-        .then((b) => {
+        .then((blob) => {
           if (!vivant) return;
-          url = URL.createObjectURL(b);
+          const url = URL.createObjectURL(blob);
           if (imageRef.current) URL.revokeObjectURL(imageRef.current);
           imageRef.current = url;
           setImage(url);
-        })
-        .catch(() => { /* instant sans image */ });
+        }).catch(() => { /* instant sans image */ });
     }, 120);
-    return () => {
-      vivant = false;
-      window.clearTimeout(minuterie);
-    };
-  }, [source, instant]);
+    return () => { vivant = false; window.clearTimeout(minuterie); };
+  }, [source, apercu.debut, apercu.fin, enLecture]);
   useEffect(() => () => { if (imageRef.current) URL.revokeObjectURL(imageRef.current); }, []);
 
-  /** Place un curseur, en gardant l'extrait entre 0,5 et 10 s : l'autre
-   *  curseur suit quand on dépasse. */
-  const placer = (quel: "debut" | "fin", ms: number) => {
-    const max = Math.min(MEME_DUREE_MAX_MS, duree);
-    let { debut, fin } = regionRef.current;
-    if (quel === "debut") {
-      debut = Math.max(0, Math.min(ms, duree - DUREE_MIN_MS));
-      if (fin - debut > max) fin = debut + max;
-      if (fin - debut < DUREE_MIN_MS) fin = Math.min(duree, debut + DUREE_MIN_MS);
-    } else {
-      fin = Math.min(duree, Math.max(ms, DUREE_MIN_MS));
-      if (fin - debut > max) debut = fin - max;
-      if (fin - debut < DUREE_MIN_MS) debut = Math.max(0, fin - DUREE_MIN_MS);
-    }
-    const suivant = { debut: Math.round(debut), fin: Math.round(fin) };
-    // Toucher un curseur pendant l'essai l'arrête : l'extrait joué ne serait
-    // plus celui qu'on règle.
-    if (essaiRef.current) onFinEssaiRef.current();
-    regionRef.current = suivant;
-    setRegion(suivant);
-    setVise(quel);
-    onChangeRef.current(suivant.debut, suivant.fin);
-  };
+  const centrerSelection = (r = regionRef.current) => setZoom(fenetreAutour(
+    (r.debut + r.fin) / 2, r.fin - r.debut + 2 * MARGE_ZOOM_MS, duree,
+  ));
 
-  const msSous = (clientX: number): number => {
-    const boite = piste.current?.getBoundingClientRect();
-    if (!boite?.width) return 0;
-    return Math.min(1, Math.max(0, (clientX - boite.left) / boite.width)) * duree;
-  };
-
-  const saisir = (e: React.PointerEvent, quel: "debut" | "fin") => {
+  const saisir = (e: React.PointerEvent, mode: GlissementMeme, msParPixel: number, suivreZoom: boolean) => {
     e.preventDefault();
     e.stopPropagation();
-    glisse.current = quel;
-    setVise(quel);
-    (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
+    stopper();
+    const r = regionRef.current;
+    glisse.current = { mode, x: e.clientX, region: { ...r }, curseur: curseurRef.current ?? r.debut, msParPixel, suivreZoom, largeurZoom: zoom.fin - zoom.debut };
+    if (mode !== "selection") {
+      retenirCurseur(r[mode]);
+      setApercu(mode === "fin" ? { debut: r.debut, fin: r.fin } : { debut: r.debut });
+    }
+    e.currentTarget.setPointerCapture?.(e.pointerId);
   };
 
-  // Un clic sur la piste amène le curseur le plus proche.
-  const cliquerPiste = (e: React.PointerEvent) => {
-    const ms = msSous(e.clientX);
-    const quel = Math.abs(ms - region.debut) <= Math.abs(ms - region.fin) ? "debut" : "fin";
-    placer(quel, ms);
-    glisse.current = quel;
-    (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
+  const positionnerSelection = (e: React.PointerEvent, instant: number, msParPixel: number) => {
+    e.preventDefault();
+    const r = regionRef.current;
+    const longueur = r.fin - r.debut;
+    const debut = borner(instant - longueur / 2, 0, duree - longueur);
+    const suivant = { debut, fin: debut + longueur };
+    commettre(suivant);
+    centrerSelection(suivant);
+    glisse.current = { mode: "selection", x: e.clientX, region: suivant, curseur: debut, msParPixel, suivreZoom: true, largeurZoom: zoom.fin - zoom.debut };
+    e.currentTarget.setPointerCapture?.(e.pointerId);
   };
 
-  const bouger = (e: React.PointerEvent) => {
-    if (glisse.current) placer(glisse.current, msSous(e.clientX));
+  const viser = (e: React.PointerEvent, instant: number, msParPixel: number) => {
+    e.preventDefault();
+    placerCurseur(instant);
+    glisse.current = { mode: "curseur", x: e.clientX, region: { ...regionRef.current }, curseur: instant, msParPixel, suivreZoom: false, largeurZoom: zoom.fin - zoom.debut };
+    e.currentTarget.setPointerCapture?.(e.pointerId);
   };
-  const lacher = () => { glisse.current = null; };
 
-  const gauche = (region.debut / duree) * 100;
-  const droite = (region.fin / duree) * 100;
-  const curseur = (quel: "debut" | "fin", pct: number) => (
-    <div
-      onPointerDown={(e) => saisir(e, quel)}
-      title={quel === "debut" ? t("memeboard.startFrame") : t("memeboard.endFrame")}
-      style={{
-        position: 'absolute', top: -6, bottom: -6, left: `${pct}%`, width: 14, marginLeft: -7,
-        borderRadius: 7, cursor: 'ew-resize', touchAction: 'none',
-        background: 'var(--color-primary)',
-        boxShadow: vise === quel ? '0 0 0 3px var(--color-primary-container)' : 'none',
-      }}
-    />
-  );
+  useEffect(() => {
+    const bouger = (e: PointerEvent) => {
+      const geste = glisse.current;
+      if (!geste || occupe) return;
+      const delta = (e.clientX - geste.x) * geste.msParPixel;
+      const r = geste.region;
+      if (geste.mode === "curseur") { placerCurseur(geste.curseur + delta); return; }
+      let suivant: RegionMeme;
+      if (geste.mode === "selection") {
+        const debut = borner(r.debut + delta, 0, duree - (r.fin - r.debut));
+        suivant = { debut, fin: debut + r.fin - r.debut };
+      } else if (geste.mode === "debut") {
+        suivant = { debut: borner(r.debut + delta, Math.max(0, r.fin - maximum), r.fin - minimum), fin: r.fin };
+      } else {
+        suivant = { debut: r.debut, fin: borner(r.fin + delta, r.debut + minimum, Math.min(duree, r.debut + maximum)) };
+      }
+      commettre(suivant, geste.mode === "fin" ? "fin" : "debut");
+      if (geste.suivreZoom) setZoom(fenetreAutour((suivant.debut + suivant.fin) / 2, geste.largeurZoom, duree));
+    };
+    const relacher = () => { glisse.current = null; };
+    const terminer = (e: PointerEvent) => { bouger(e); relacher(); };
+    window.addEventListener("pointermove", bouger);
+    window.addEventListener("pointerup", terminer);
+    window.addEventListener("pointercancel", relacher);
+    window.addEventListener("blur", relacher);
+    return () => {
+      window.removeEventListener("pointermove", bouger);
+      window.removeEventListener("pointerup", terminer);
+      window.removeEventListener("pointercancel", relacher);
+      window.removeEventListener("blur", relacher);
+    };
+  }, [duree, minimum, maximum, occupe, commettre, placerCurseur]);
 
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-      <div style={{
-        position: 'relative', height: HAUTEUR_ZONE, borderRadius: 10, overflow: 'hidden',
-        background: 'var(--color-surface-container-lowest)',
-        display: 'flex', alignItems: 'center', justifyContent: 'center',
-      }}>
-        {essai ? (
-          <Suspense fallback={null}>
-            <NativeVideoPlayer key={essai} source={essai} onClose={onFinEssai} hauteurMax={HAUTEUR_ZONE} />
-          </Suspense>
-        ) : (
-          image && <img src={image} alt="" style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain', display: 'block' }} />
-        )}
-      </div>
+  const toucheBorne = (borne: "debut" | "fin", e: React.KeyboardEvent) => {
+    if (occupe || !["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const r = regionRef.current;
+    const pas = e.altKey ? 1 : e.shiftKey ? 100 : 10;
+    const min = borne === "debut" ? Math.max(0, r.fin - maximum) : r.debut + minimum;
+    const max = borne === "debut" ? r.fin - minimum : Math.min(duree, r.debut + maximum);
+    const cible = e.key === "Home" ? min : e.key === "End" ? max : r[borne] + (e.key === "ArrowRight" ? pas : -pas);
+    commettre({ ...r, [borne]: borner(cible, min, max) }, borne);
+  };
 
-      <div
-        ref={piste}
-        onPointerDown={cliquerPiste}
-        onPointerMove={bouger}
-        onPointerUp={lacher}
-        onPointerCancel={lacher}
-        style={{
-          position: 'relative', height: 10, margin: '6px 7px', borderRadius: 5, cursor: 'pointer',
-          touchAction: 'none', background: 'var(--color-surface-container-highest)',
-        }}
-      >
-        <div style={{
-          position: 'absolute', top: 0, bottom: 0, left: `${gauche}%`, width: `${droite - gauche}%`,
-          borderRadius: 5, background: 'var(--color-primary)', opacity: 0.45,
-        }} />
-        {curseur("debut", gauche)}
-        {curseur("fin", droite)}
-      </div>
+  const suivreLecture = useCallback((etat: EtatLecteurVideo) => {
+    if (!etat.actif) return;
+    const point = retenirCurseur(etat.position_ms + (essaiRef.current ? regionRef.current.debut : 0));
+    setApercu(point >= duree ? { debut: Math.max(0, duree - 1000), fin: duree } : { debut: point });
+    setEnPause(etat.en_pause);
+  }, [duree, retenirCurseur]);
 
-      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, color: 'var(--color-on-surface-variant)' }}>
-        <span>{t("memeboard.startFrame")} · {temps(region.debut)}</span>
-        <span>{((region.fin - region.debut) / 1000).toFixed(1)} s</span>
-        <span>{t("memeboard.endFrame")} · {temps(region.fin)}</span>
-      </div>
+  const lireCurseur = async () => {
+    if (enLecture) {
+      try { suivreLecture(await pauseLecteurVideo(!enPause)); } catch { /* lecteur terminé */ }
+      return;
+    }
+    stopper();
+    definirLecteurActif(idLecture);
+    setLecture({ depart: Math.min(curseurRef.current ?? regionRef.current.debut, duree - 1), numero: ++numeroLecture.current });
+  };
+
+  const fixer = async (borne: "debut" | "fin") => {
+    let point = curseurRef.current;
+    if (point === null) return;
+    // Lire la position au clic : le rafraîchissement visuel à 250 ms ne doit
+    // pas diminuer la précision de la coupe après une pause.
+    if (enLecture) {
+      try {
+        const etat = await etatLecteurVideo();
+        if (etat.actif) point = etat.position_ms + (essaiRef.current ? regionRef.current.debut : 0);
+      } catch { /* garder le dernier curseur connu */ }
+    }
+    let { debut, fin } = regionRef.current;
+    if (borne === "debut") {
+      debut = borner(point, 0, duree - minimum);
+      if (fin < debut + minimum) fin = Math.min(duree, debut + maximum);
+      if (fin - debut > maximum) fin = debut + maximum;
+    } else {
+      fin = borner(point, minimum, duree);
+      if (debut > fin - minimum) debut = Math.max(0, fin - maximum);
+      if (fin - debut > maximum) debut = fin - maximum;
+    }
+    commettre({ debut, fin }, borne);
+    centrerSelection({ debut, fin });
+  };
+
+  const modifierZoom = (facteur: number) => {
+    const centre = curseur !== null && curseur >= zoom.debut && curseur <= zoom.fin ? curseur : (zoom.debut + zoom.fin) / 2;
+    setZoom(fenetreAutour(centre, (zoom.fin - zoom.debut) * facteur, duree));
+  };
+  const bouton = (principal = false): React.CSSProperties => ({
+    flex: 1, padding: "6px 12px", borderRadius: 16, border: "none", cursor: "pointer", fontSize: 12, fontFamily: "inherit",
+    background: principal ? "var(--color-primary)" : "var(--color-surface-container-highest)",
+    color: principal ? "var(--color-on-primary)" : "var(--color-on-surface)",
+  });
+  const peutFixer = curseur !== null && !occupe;
+  return <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+    <div style={{ position: "relative", height: HAUTEUR_ZONE, flexShrink: 0, borderRadius: 10, overflow: "hidden", background: "var(--color-surface-container-lowest)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+      {enLecture ? <Suspense fallback={null}>
+        <NativeVideoPlayer key={essai ? `selection:${essai}` : `curseur:${lecture!.numero}`}
+          source={essai ?? source} departMs={essai ? 0 : lecture!.depart}
+          onClose={stopper} onEtatChange={suivreLecture} hauteurMax={HAUTEUR_ZONE} />
+      </Suspense> : image && <img src={image} alt="" style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", display: "block" }} />}
     </div>
-  );
+    <span style={{ fontSize: 10, color: "var(--color-outline)" }}>{libelle("editorOverview")}</span>
+    <PisteMeme nom={libelle("editorOverview")} fenetre={{ debut: 0, fin: duree }} region={region} curseur={curseur} deplacerSelection desactive={occupe}
+      onSaisir={(e, mode, ms) => saisir(e, mode, ms, true)} onFond={positionnerSelection} onTouche={toucheBorne} />
+    <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+      <span style={{ flex: 1, fontSize: 10, color: "var(--color-outline)" }}>{libelle("editorZoom")}</span>
+      <button type="button" style={{ ...bouton(), flex: "none", padding: "3px 10px" }} aria-label={libelle("editorZoomOut")} disabled={zoom.fin - zoom.debut >= duree} onClick={() => modifierZoom(2)}>−</button>
+      <button type="button" style={{ ...bouton(), flex: "none", padding: "3px 10px" }} aria-label={libelle("editorZoomIn")} disabled={zoom.fin - zoom.debut <= Math.min(250, duree)} onClick={() => modifierZoom(0.5)}>+</button>
+      <button type="button" style={{ ...bouton(), flex: "none", padding: "3px 10px" }} onClick={() => centrerSelection()}>{libelle("editorCenter")}</button>
+    </div>
+    <PisteMeme nom={libelle("editorZoom")} fenetre={zoom} region={region} curseur={curseur} deplacerSelection={false} desactive={occupe}
+      onSaisir={(e, mode, ms) => saisir(e, mode, ms, false)} onFond={viser} onTouche={toucheBorne} />
+    <span style={{ fontSize: 10, color: "var(--color-outline)" }}>{libelle("editorHint")}</span>
+    <div style={{ display: "flex", gap: 8 }}>
+      <button type="button" disabled={occupe} onClick={() => void lireCurseur()} style={bouton(true)}>{enLecture && !enPause ? `⏸ ${t("chat.pause")}` : `▶ ${libelle("editorPlayCursor")}`}</button>
+      {onTesterSelection && <button type="button" disabled={occupe} onClick={() => { stopper(); onTesterSelection(); }} style={bouton()}>▶ {libelle("editorPlaySelection")}</button>}
+    </div>
+    <div style={{ display: "flex", gap: 8 }}>
+      <button type="button" disabled={!peutFixer} onClick={() => void fixer("debut")} title={libelle("editorFixHint")} style={{ ...bouton(), opacity: peutFixer ? 1 : 0.4 }}>⇤ {libelle("editorFixStart")}</button>
+      <button type="button" disabled={!peutFixer} onClick={() => void fixer("fin")} title={libelle("editorFixHint")} style={{ ...bouton(), opacity: peutFixer ? 1 : 0.4 }}>{libelle("editorFixEnd")} ⇥</button>
+    </div>
+    <div style={{ fontSize: 12, textAlign: "center", color: "var(--color-on-surface-variant)", fontVariantNumeric: "tabular-nums" }}>
+      {temps(region.debut)}–{temps(region.fin)} · {((region.fin - region.debut) / 1000).toFixed(3)} s / 10 s max
+      {curseur !== null && <span style={{ color: "var(--color-amber)" }}> · ● {temps(curseur)}</span>}
+    </div>
+  </div>;
 }

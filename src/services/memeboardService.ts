@@ -269,11 +269,12 @@ export async function analyserMeme(source: string): Promise<MemeAnalyse> {
 }
 
 /** L'image de la source à un instant, en chemin du dossier média. */
-export async function imageMeme(source: string, tMs: number): Promise<string> {
+export async function imageMeme(source: string, tMs: number, finMs?: number): Promise<string> {
   const { invoke } = await import("@tauri-apps/api/core");
   return invoke<string>("memeboard_image", {
     source,
     tMs: Math.max(0, Math.round(tMs)),
+    finMs: finMs === undefined ? null : Math.max(0, Math.round(finMs)),
     ffmpegPath: ffmpegPath(),
   });
 }

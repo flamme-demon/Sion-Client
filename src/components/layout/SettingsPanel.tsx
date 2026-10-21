@@ -25,6 +25,7 @@ import { ACCENTS_PROPOSES, tokensAccent } from "../../themes/accent";
 import { ProfilModal } from "./ProfilModal";
 import type { Theme } from "../../themes/types";
 import { UpdateSettings } from "./UpdateSettings";
+import { DiagnosticSettings } from "./DiagnosticSettings";
 import { SUR_ANDROID } from "../../utils/plateforme";
 import { purgerCachesApplication } from "../../services/purgeCache";
 
@@ -818,6 +819,7 @@ export function SettingsPanel() {
         {activeTab === "advanced" && (
           <div style={{ padding: '8px 0' }}>
             <UpdateSettings toggleStyle={toggleStyle} toggleDotStyle={toggleDotStyle} />
+            {!SUR_ANDROID && <DiagnosticSettings toggleStyle={toggleStyle} toggleDotStyle={toggleDotStyle} />}
 
             <div style={{ marginBottom: 16 }}>
               <div style={{ fontSize: 13, color: 'var(--color-on-surface)', marginBottom: 4 }}>Chemin ffmpeg (optionnel)</div>

@@ -44,6 +44,8 @@ pub struct Audio {
     canaux: u32,
     pause: Arc<AtomicBool>,
     volume: Arc<Mutex<f32>>,
+    /// Vrai après la restitution du dernier tampon, ou sur échec de sortie.
+    terminee: Arc<AtomicBool>,
     // Le flux cpal s'arrête quand il est détruit ; il doit donc vivre aussi
     // longtemps que la lecture. `cpal::Stream` n'est pas `Send`, il reste sur
     // le fil qui l'a créé — d'où le drapeau d'arrêt plutôt qu'un `drop` ici.
@@ -60,6 +62,10 @@ impl Audio {
 
     pub fn pause(&self, en_pause: bool) {
         self.pause.store(en_pause, Ordering::Relaxed);
+    }
+
+    pub fn terminee(&self) -> bool {
+        self.terminee.load(Ordering::Acquire)
     }
 
     pub fn regler_volume(&self, valeur: f32) {
@@ -141,8 +147,11 @@ pub fn demarrer(ffmpeg: &str, source: &str, depart_ms: u64, volume: f32) -> Opti
     });
     let arret = Arc::new(AtomicBool::new(false));
     let joues = Arc::new(AtomicU64::new(0));
-    let pause = Arc::new(AtomicBool::new(false));
+    // La première image libère le son : le décodage vidéo peut démarrer
+    // après celui du PCM, surtout sur un fichier AV1.
+    let pause = Arc::new(AtomicBool::new(true));
     let volume = Arc::new(Mutex::new(volume.clamp(0.0, 1.5)));
+    let terminee = Arc::new(AtomicBool::new(false));
     let enfant = Arc::new(Mutex::new(Some(enfant)));
 
     // Producteur : lit le PCM et remplit la file. Il s'endort quand elle est
@@ -190,13 +199,17 @@ pub fn demarrer(ffmpeg: &str, source: &str, depart_ms: u64, volume: f32) -> Opti
         let joues_flux = Arc::clone(&joues);
         let pause_flux = Arc::clone(&pause);
         let volume_flux = Arc::clone(&volume);
+        let terminee_flux = Arc::clone(&terminee);
         std::thread::Builder::new()
             .name("sion-lecteur-audio-sortie".into())
             .spawn(move || {
                 let gain = Arc::clone(&volume_flux);
+                let fin_son = Arc::new(Mutex::new(None::<std::time::Instant>));
+                let fin_rappel = Arc::clone(&fin_son);
+                let erreur_flux = Arc::clone(&terminee_flux);
                 let flux = peripherique.build_output_stream(
                     config.into(),
-                    move |tampon: &mut [f32], _: &cpal::OutputCallbackInfo| {
+                    move |tampon: &mut [f32], info: &cpal::OutputCallbackInfo| {
                         if pause_flux.load(Ordering::Relaxed) {
                             tampon.fill(0.0);
                             return;
@@ -219,21 +232,40 @@ pub fn demarrer(ffmpeg: &str, source: &str, depart_ms: u64, volume: f32) -> Opti
                                 None => *place = 0.0,
                             }
                         }
+                        if file.fini.load(Ordering::Acquire) && garde.is_empty() {
+                            let stamp = info.timestamp();
+                            let latence = stamp.playback.duration_since(stamp.callback);
+                            let duree = std::time::Duration::from_secs_f64(
+                                servis as f64 / (f64::from(taux) * f64::from(canaux)),
+                            );
+                            fin_rappel.lock().unwrap_or_else(|e| e.into_inner())
+                                .get_or_insert(std::time::Instant::now() + latence + duree);
+                        }
                         drop(garde);
                         file.place.notify_one();
                         joues_flux.fetch_add(servis, Ordering::Relaxed);
                     },
-                    move |err| log::warn!("[Sion][lecteur] flux audio : {err}"),
+                    move |err| {
+                        erreur_flux.store(true, Ordering::Release);
+                        log::warn!("[Sion][lecteur] flux audio : {err}");
+                    },
                     None,
                 );
                 let Ok(flux) = flux else {
+                    terminee_flux.store(true, Ordering::Release);
                     log::warn!("[Sion][lecteur] sortie audio refusée — vidéo muette");
                     return;
                 };
                 if flux.play().is_err() {
+                    terminee_flux.store(true, Ordering::Release);
                     return;
                 }
                 while !arret_flux.load(Ordering::Relaxed) {
+                    if fin_son.lock().unwrap_or_else(|e| e.into_inner())
+                        .is_some_and(|fin| std::time::Instant::now() >= fin)
+                    {
+                        terminee_flux.store(true, Ordering::Release);
+                    }
                     std::thread::sleep(std::time::Duration::from_millis(50));
                 }
                 // `flux` est détruit ici, ce qui ferme le périphérique.
@@ -249,6 +281,7 @@ pub fn demarrer(ffmpeg: &str, source: &str, depart_ms: u64, volume: f32) -> Opti
         canaux,
         pause,
         volume,
+        terminee,
         _garde: (),
     })
 }
@@ -269,6 +302,7 @@ mod tests {
             canaux: 2,
             pause: Arc::new(AtomicBool::new(false)),
             volume: Arc::new(Mutex::new(1.0)),
+            terminee: Arc::new(AtomicBool::new(false)),
             _garde: (),
         };
         // 96 000 échantillons sur deux canaux = 48 000 trames = une seconde.
@@ -285,6 +319,7 @@ mod tests {
             canaux: 0,
             pause: Arc::new(AtomicBool::new(false)),
             volume: Arc::new(Mutex::new(1.0)),
+            terminee: Arc::new(AtomicBool::new(false)),
             _garde: (),
         };
         let _ = audio.position_ms();

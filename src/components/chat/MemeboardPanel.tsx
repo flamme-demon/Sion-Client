@@ -44,6 +44,12 @@ import { ApercuMeme } from "./ApercuMeme";
 import { SUR_ANDROID } from "../../utils/plateforme";
 import { buildTree, findNode, sortedChildren, parentPath, normaliserCategorie } from "../../utils/categories";
 import { FiltreBoardCompact } from "./FiltreBoardCompact";
+import {
+  FOND_IMPORT_BOARD as FOND,
+  CARTE_IMPORT_BOARD as CARTE,
+  CHAMP_IMPORT_BOARD as CHAMP,
+  styleBoutonImportBoard as styleBouton,
+} from "./boardImportStyles";
 import "./BoardPanel.css";
 
 /** Identifiant de l'essai dans le registre du lecteur unique : une vidéo du
@@ -62,32 +68,6 @@ const EMOJI_ECART = 8;
 
 /** Supprimer un meme d'un autre : réservé aux modérateurs, comme ailleurs. */
 const NIVEAU_MODERATION = 50;
-
-/** Fond et carte des fenêtres d'import et d'édition. Le fond ne ferme PAS
- *  la fenêtre : un clic à côté faisait perdre la source choisie et le
- *  découpage (23/09). On ferme par « Annuler ». */
-const FOND: React.CSSProperties = {
-  position: 'fixed', inset: 0, background: 'var(--color-scrim, rgba(0,0,0,0.5))',
-  display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000,
-};
-const CARTE: React.CSSProperties = {
-  boxSizing: 'border-box',
-  maxWidth: 'calc(100vw - 32px)', maxHeight: 'calc(100vh - 32px)', overflowY: 'auto',
-  display: 'flex', flexDirection: 'column', gap: 12, padding: 20, borderRadius: 16,
-  background: 'var(--color-surface-container-high)', color: 'var(--color-on-surface)',
-  boxShadow: '0 12px 40px rgba(0,0,0,0.45)',
-};
-const CHAMP: React.CSSProperties = {
-  width: '100%', boxSizing: 'border-box', padding: '8px 10px', borderRadius: 10,
-  border: '1px solid var(--color-outline-variant)', background: 'var(--color-surface-container)',
-  color: 'var(--color-on-surface)', fontSize: 13, fontFamily: 'inherit', outline: 'none',
-};
-const styleBouton = (principal: boolean, actif = true): React.CSSProperties => ({
-  padding: '8px 14px', borderRadius: 10, border: 'none', fontSize: 13, fontWeight: 600,
-  fontFamily: 'inherit', cursor: actif ? 'pointer' : 'not-allowed', opacity: actif ? 1 : 0.5,
-  background: principal ? 'var(--color-primary)' : 'var(--color-surface-container-highest)',
-  color: principal ? 'var(--color-on-primary)' : 'var(--color-on-surface)',
-});
 
 /** Nom et emoji d'un meme, à l'import comme à l'édition. */
 function ChampsNomEmoji({ nom, onNom, emoji, onEmoji }: {
@@ -209,7 +189,7 @@ function MemeEditModal({ meme, categories, onClose, onModifie }: { meme: MemeEnt
   };
 
   return createPortal(
-    <div style={FOND} onClick={(e) => e.stopPropagation()}>
+    <div style={FOND} onClick={(e) => e.stopPropagation()} onWheel={(e) => e.stopPropagation()} onKeyDown={(e) => e.stopPropagation()}>
       <div style={{ ...CARTE, width: 420 }} role="dialog" aria-modal="true" aria-labelledby={titreId}>
         <div id={titreId} className="sion-titre" style={{ fontSize: 16, fontWeight: 700 }}>{t("memeboard.editTitle")}</div>
         <ChampsNomEmoji nom={nom} onNom={setNom} emoji={emoji} onEmoji={setEmoji} />
@@ -667,9 +647,11 @@ function MemeImportModal({ categories, categorieInitiale, onClose, onEnvoye }: {
   const pret = !!analyse && occupe === null;
 
   return createPortal(
-    <div style={FOND} onClick={(e) => e.stopPropagation()}>
-      <div style={{ ...CARTE, width: 560 }} role="dialog" aria-modal={!lien} aria-labelledby={titreId}>
-        <div id={titreId} className="sion-titre" style={{ fontSize: 16, fontWeight: 700 }}>{t("memeboard.importTitle")}</div>
+    <div style={FOND} onClick={(e) => e.stopPropagation()} onWheel={(e) => e.stopPropagation()} onKeyDown={(e) => e.stopPropagation()}>
+      <div style={{ ...CARTE, width: 560, maxHeight: 'calc(100dvh - 32px)', overflow: 'hidden' }} role="dialog" aria-modal={!lien} aria-labelledby={titreId}>
+        <div id={titreId} className="sion-titre" style={{ flexShrink: 0, fontSize: 16, fontWeight: 700 }}>{t("memeboard.importTitle")}</div>
+        <div className="sion-board-import-corps" style={{ minHeight: 0, minWidth: 0, overflowY: 'auto', overscrollBehavior: 'contain' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
         <div style={{ fontSize: 12, color: 'var(--color-on-surface-variant)' }}>{t("memeboard.limits")}</div>
 
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', minWidth: 0 }}>
@@ -702,6 +684,8 @@ function MemeImportModal({ categories, categorieInitiale, onClose, onEnvoye }: {
             onChange={(debut, fin) => setRegion({ debut, fin })}
             essai={essai}
             onFinEssai={finirEssai}
+            onTesterSelection={() => void tester()}
+            occupe={occupe !== null}
           />
         )}
 
@@ -714,8 +698,10 @@ function MemeImportModal({ categories, categorieInitiale, onClose, onEnvoye }: {
           </div>
         )}
         {erreur && <div style={{ fontSize: 12, color: 'var(--color-error)' }}>{erreur}</div>}
+        </div>
+        </div>
 
-        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+        <div className="sion-board-import-actions" style={{ display: 'flex', flexShrink: 0, flexWrap: 'wrap', justifyContent: 'flex-end', gap: 8 }}>
           <button type="button" style={styleBouton(false)} onClick={onClose}>{t("memeboard.cancel")}</button>
           <button type="button" style={styleBouton(false, pret)} disabled={!pret} onClick={() => void tester()}>
             {occupe === "tester" ? t("memeboard.preparing") : t("memeboard.test")}

@@ -14,7 +14,7 @@
 //!
 //! ## Image et son
 //!
-//! L'image est décodée par ffmpeg au fil de la lecture (`-re`), comme pour le
+//! L'image est décodée par ffmpeg et présentée à son PTS, comme pour le
 //! lecteur vidéo : rien n'est gardé en mémoire au-delà de l'image courante.
 //! Le son emprunte le chemin de la soundboard : mixé dans le rendu WebRTC,
 //! donc vu par l'annulation d'écho, et jeté en sourdine.
@@ -169,32 +169,36 @@ fn lire(
     generation: u64,
     jouer_son: impl FnOnce(Vec<i16>),
 ) -> Result<(), String> {
-    let (vl, vh, _) = crate::probe_video(ffmpeg, std::path::Path::new(chemin))
+    let (vl, vh, duree) = crate::probe_video(ffmpeg, std::path::Path::new(chemin))
         .ok_or_else(|| format!("meme illisible : {chemin}"))?;
     let (l, h) = taille_affichee(vl, vh);
     let son = decoder_son(ffmpeg, chemin);
+    let duree_son = Duration::from_secs_f64(son.len() as f64 / 48_000.0);
 
     // Dimensions IMPOSÉES à ffmpeg, jamais supposées — voir `lecteur_video`.
     let mut enfant = crate::hidden_command(ffmpeg)
-        .args(["-hide_banner", "-loglevel", "error", "-re", "-i"])
+        .args(["-hide_banner", "-nostats", "-loglevel", "level+info", "-i"])
         .arg(chemin)
         .args([
             "-t",
             &DUREE_MAX_S.to_string(),
             "-vf",
-            &format!("scale={l}:{h}:flags=bicubic,setsar=1,fps={IMAGES_PAR_SECONDE}"),
+            &format!("scale={l}:{h}:flags=bicubic,setsar=1,showinfo=checksum=0"),
             "-an",
             "-f",
             "rawvideo",
             "-pix_fmt",
             "rgba",
+            "-fps_mode", "passthrough",
             "-",
         ])
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
         .spawn()
         .map_err(|e| format!("lancement de ffmpeg : {e}"))?;
     let mut sortie = enfant.stdout.take().ok_or("sortie de ffmpeg indisponible")?;
+    let horodatages = crate::video_timing::horodatages(enfant.stderr.take().ok_or("horodatages indisponibles")?)
+        .map_err(|e| format!("horodatage du meme : {e}"))?;
 
     let resultat = (|| {
         let cadre = Cadre::new(l, h, emetteur);
@@ -206,6 +210,7 @@ fn lire(
         let mut image: Option<Pixmap> = None;
         let mut debut: Option<Instant> = None;
         let mut son = Some((son, jouer_son));
+        let mut fin_image = Duration::ZERO;
 
         let retire = || {
             GENERATION.load(Ordering::Acquire) != generation
@@ -215,8 +220,14 @@ fn lire(
             if sortie.read_exact(&mut tampon).is_err() {
                 break;
             }
-            image = image_depuis_rgba(&tampon, l, h);
+            let Ok(temps) = horodatages.recv_timeout(Duration::from_secs(2)) else { break; };
             let depart = *debut.get_or_insert_with(Instant::now);
+            while depart.elapsed() < temps.position && !retire() {
+                std::thread::sleep((temps.position - depart.elapsed().min(temps.position)).min(Duration::from_millis(5)));
+            }
+            if retire() { break; }
+            image = image_depuis_rgba(&tampon, l, h);
+            fin_image = temps.position + temps.duree;
             // Le son part avec la première image : ffmpeg met quelques
             // dizaines de millisecondes à livrer l'image, et un son lancé
             // avant se serait décalé d'autant.
@@ -231,11 +242,22 @@ fn lire(
             }
         }
 
+        // Le tube peut être vide avant que la dernière image et les derniers
+        // échantillons aient été joués. Le fondu commence après leur durée.
+        let fin_media = Duration::from_secs_f64(duree.clamp(0.0, DUREE_MAX_S))
+            .max(duree_son).max(fin_image);
+        if let Some(debut) = debut {
+            while debut.elapsed() < fin_media && !retire() {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+
         // Fondu de sortie sur la dernière image : un meme qui disparaît d'un
         // coup donne l'impression d'avoir planté.
         if let Some(i) = image.as_ref() {
             let fin = Instant::now();
             loop {
+                if retire() { break; }
                 let t = fin.elapsed().as_secs_f32() / FONDU_SORTIE.as_secs_f32();
                 if t >= 1.0 {
                     break;
@@ -322,8 +344,11 @@ fn preparer(ffmpeg: &str, chemin: &str, debut_ms: u64, duree_ms: u64) -> Result<
     let dossier = crate::sion_media_dir();
     let lancer = |args: &[&str], sortie: &std::path::Path| -> bool {
         crate::hidden_command(ffmpeg)
-            .args(["-hide_banner", "-loglevel", "error", "-y", "-ss", &debut, "-t", &duree, "-i"])
+            .args(["-hide_banner", "-loglevel", "error", "-y", "-ss", &debut, "-i"])
             .arg(chemin)
+            // La limite porte sur la sortie : l'entrée peut encore devoir
+            // lire des paquets pour restituer les dernières images réordonnées.
+            .args(["-t", &duree])
             .args(args)
             .arg(sortie)
             .stdout(std::process::Stdio::null())
@@ -344,7 +369,7 @@ fn preparer(ffmpeg: &str, chemin: &str, debut_ms: u64, duree_ms: u64) -> Result<
     if chemin.to_ascii_lowercase().ends_with(".gif") {
         let gif = dossier.join(format!("meme_{tampon:x}.gif"));
         let filtre = format!(
-            "fps=20,{},split[a][b];[a]palettegen=reserve_transparent=1:stats_mode=diff[p];[b][p]paletteuse=dither=bayer:alpha_threshold=128",
+            "{},split[a][b];[a]palettegen=reserve_transparent=1:stats_mode=diff[p];[b][p]paletteuse=dither=bayer:alpha_threshold=128",
             echelle(360)
         );
         if lancer(&["-vf", &filtre, "-loop", "0"], &gif) && poids(&gif) <= POIDS_MAX {
@@ -369,12 +394,13 @@ fn preparer(ffmpeg: &str, chemin: &str, debut_ms: u64, duree_ms: u64) -> Result<
             (360, &["-c:v", "mpeg4", "-q:v", "12"]),
         ];
         for (cote, video) in passes {
-            let filtre = format!("{},fps=30", echelle(cote));
+            let filtre = echelle(cote);
             let mut args: Vec<&str> = vec!["-vf", &filtre];
             args.extend_from_slice(video);
             args.extend_from_slice(&[
                 "-pix_fmt", "yuv420p", "-movflags", "+faststart", "-c:a", "aac", "-b:a", "96k",
                 "-ac", "2", "-ar", "48000",
+                "-fps_mode", "vfr",
             ]);
             if lancer(&args, &mp4) && poids(&mp4) <= POIDS_MAX {
                 sortie = Some((mp4, "video/mp4"));
@@ -491,26 +517,35 @@ pub async fn memeboard_image(
     app: tauri::AppHandle<crate::TauriRuntime>,
     source: String,
     t_ms: u64,
+    fin_ms: Option<u64>,
     ffmpeg_path: Option<String>,
 ) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let gere = crate::managed_ffmpeg_path(&app).map(|p| p.to_string_lossy().into_owned());
         let ffmpeg = crate::resolve_ffmpeg(ffmpeg_path.as_deref(), gere.as_deref());
         let chemin = crate::lecteur_video::ramener_en_local(&app, &source)?;
-        image_a(&ffmpeg, &chemin, t_ms)
+        image_a(&ffmpeg, &chemin, t_ms, fin_ms)
     })
     .await
     .map_err(|e| format!("extraction interrompue : {e}"))?
 }
 
-fn image_a(ffmpeg: &str, chemin: &str, t_ms: u64) -> Result<String, String> {
+fn image_a(ffmpeg: &str, chemin: &str, t_ms: u64, fin_ms: Option<u64>) -> Result<String, String> {
     let sortie = fichier_temporaire("image.jpg");
     let t = format!("{:.3}", t_ms as f64 / 1000.0);
-    // `-ss` avant `-i` : saut direct à l'image clé la plus proche, sans
-    // décoder ce qui précède — l'image suit le curseur sans attendre.
+    // Même recherche et même borne de sortie que l'encodage. Pour la fin,
+    // garder la dernière image de l'extrait sélectionné (au plus dix secondes),
+    // sans soustraire arbitrairement 40 ms à toutes les cadences.
+    let limite = fin_ms.map(|fin| format!("{:.3}", fin.saturating_sub(t_ms).min(10_000) as f64 / 1000.0));
+    let mut args = vec!["-ss", &t, "-i", chemin, "-vf", "scale=w='min(480,iw)':h=-2", "-q:v", "4", "-fps_mode", "passthrough"];
+    if let Some(duree) = limite.as_deref() {
+        args.extend_from_slice(&["-t", duree, "-update", "1"]);
+    } else {
+        args.extend_from_slice(&["-frames:v", "1"]);
+    }
     if ffmpeg_ok(
         ffmpeg,
-        &["-ss", &t, "-i", chemin, "-frames:v", "1", "-vf", "scale=w='min(480,iw)':h=-2", "-q:v", "4"],
+        &args,
         &sortie,
     ) {
         Ok(sortie.to_string_lossy().into_owned())
@@ -936,10 +971,40 @@ mod tests {
             eprintln!("ffmpeg absent : test ignoré");
             return;
         };
-        let image = image_a("ffmpeg", &source, 2_500).expect("image à 2,5 s");
+        let image = image_a("ffmpeg", &source, 2_500, None).expect("image à 2,5 s");
         assert!(std::fs::metadata(&image).map(|m| m.len() > 0).unwrap_or(false));
         let _ = std::fs::remove_file(image);
         let _ = std::fs::remove_file(source);
+    }
+
+    #[test]
+    fn la_coupe_a_60_images_preserve_la_derniere_image_et_son_apercu() {
+        let source = source_de_test(
+            "sion-meme-coupe-60.mkv",
+            &["-f", "lavfi", "-i", "color=c=red:s=32x32:r=60:d=2,drawbox=color=blue:t=fill:enable='gte(n,106)'",
+              "-c:v", "ffv1"],
+        ).expect("source à 60 images/s");
+        let p = preparer("ffmpeg", &source, 517, 1_257).expect("coupe entre deux images");
+        let pixels = |chemin: &str| {
+            let sortie = crate::hidden_command("ffmpeg").args([
+                "-hide_banner", "-loglevel", "error", "-i", chemin,
+                "-an", "-vf", "scale=2:2", "-fps_mode", "passthrough", "-pix_fmt", "rgb24", "-f", "rawvideo", "-",
+            ]).output().unwrap();
+            assert!(sortie.status.success());
+            sortie.stdout
+        };
+        let video = pixels(&p.video);
+        // Matroska arrondit l'image 31 à 517 ms : elle fait donc partie de
+        // la sélection, jusqu'à l'image 106 incluse.
+        assert_eq!(video.len() / 12, 76, "la cadence originale doit être conservée");
+        let derniere = &video[video.len()-12..];
+        assert!(derniere[2] > 200 && derniere[0] < 30, "la dernière image bleue manque : {derniere:?}");
+        let image = image_a("ffmpeg", &source, 517, Some(1_774)).unwrap();
+        let apercu = pixels(&image);
+        assert!(apercu[2] > 200 && apercu[0] < 30, "l'aperçu doit montrer la dernière image bleue : {apercu:?}");
+        for f in [Some(&p.video), p.apercu.as_ref(), Some(&image), Some(&source)].into_iter().flatten() {
+            let _ = std::fs::remove_file(f);
+        }
     }
 
     #[test]

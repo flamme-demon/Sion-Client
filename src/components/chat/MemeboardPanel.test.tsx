@@ -223,3 +223,31 @@ it("l'import propose la catégorie consultée et envoie le chemin choisi", async
   await act(async () => Array.from(document.querySelectorAll<HTMLButtonElement>('[role="dialog"] button')).find((b) => b.textContent === "memeboard.send")!.click());
   expect(services.envoyerMeme).toHaveBeenCalledWith(expect.objectContaining({ video: "/tmp/prepare.mp4" }), "Extrait", null, "Films/Kaamelott");
 });
+
+it("garde les actions d'import des mèmes au-dessus des modules et hors du formulaire défilant", async () => {
+  const molettePanneau = vi.fn();
+  const touchePanneau = vi.fn();
+  vue.container.style.cssText = "contain: strict; overflow: hidden; width: 300px; height: 300px";
+  await vue.render(<div onWheel={molettePanneau} onKeyDown={touchePanneau}><MemeboardPanel /></div>);
+  await vue.click('[aria-label="memeboard.add"]');
+  const carte = document.querySelector<HTMLElement>('[role="dialog"]')!;
+  expect(carte.parentElement!.parentElement).toBe(document.body);
+  expect(vue.container.contains(carte)).toBe(false);
+  const corps = carte.querySelector<HTMLElement>(".sion-board-import-corps")!;
+  const actions = carte.querySelector<HTMLElement>(".sion-board-import-actions")!;
+  expect(corps.style.overflowY).toBe("auto");
+  expect(corps.style.minHeight).toBe("0px");
+  expect(actions.parentElement).toBe(carte);
+  expect(actions.style.flexShrink).toBe("0");
+  expect(corps.contains(actions)).toBe(false);
+  expect(actions.textContent).toContain("memeboard.send");
+  const molette = new WheelEvent("wheel", { deltaY: 300, bubbles: true, cancelable: true });
+  await act(async () => {
+    corps.dispatchEvent(molette);
+    corps.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  });
+  expect(molette.defaultPrevented).toBe(false);
+  expect(molettePanneau).not.toHaveBeenCalled();
+  expect(touchePanneau).not.toHaveBeenCalled();
+  expect(document.body.contains(carte)).toBe(true);
+});
