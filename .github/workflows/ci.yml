@@ -59,10 +59,11 @@ jobs:
 
       - name: Install system dependencies
         # WRY (WebKitGTK), native audio and X11/Wayland overlay windows.
+        # Media regression tests generate and decode fixtures with ffmpeg.
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            build-essential pkg-config curl wget file zstd squashfs-tools \
+            build-essential pkg-config curl wget file zstd squashfs-tools ffmpeg \
             libwebkit2gtk-4.1-dev libssl-dev libgtk-3-dev libsoup-3.0-dev \
             librsvg2-dev libglib2.0-dev \
             libasound2-dev libudev-dev libpulse-dev libxcb1-dev \
