@@ -19,6 +19,14 @@
 - L'ajout de sons reprend la présentation de l'ajout de mèmes : choix fichier
   ou lien, nom et emoji regroupés, champs et boutons harmonisés.
 
+## Mises à jour
+
+- La recherche automatique renouvelle correctement la liste des versions,
+  sans attendre une deuxième heure à cause du cache.
+- Une vérification reprend au retour sur la fenêtre si le cache a expiré.
+  La recherche manuelle ignore aussi les anciennes réponses HTTP.
+- Le statut « À jour » apparaît uniquement après une recherche réussie.
+
 ## Diagnostic dans les paramètres avancés
 
 - Sur Linux et Windows, les journaux détaillés peuvent être activés pour une

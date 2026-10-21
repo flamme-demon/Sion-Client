@@ -632,9 +632,11 @@ jobs:
             "${NOTES_ARGS[@]}" \
             $PRERELEASE \
             "${FICHIERS[@]}" 2>/dev/null || {
-            # Tag déjà publié (re-run après correctif CI) : on remplace les
-            # artefacts au lieu d'échouer — la release garde son tag et ses
-            # notes, les binaires sont mis à jour.
+            # Rebuilds of an existing release replace its assets and refresh
+            # curated notes from the same source revision as the binaries.
             echo "Release $TAG déjà existante — remplacement des artefacts."
             gh release upload "$TAG" "${FICHIERS[@]}" --clobber
+            if [ -f "$NOTES_FILE" ]; then
+              gh release edit "$TAG" --notes-file "$NOTES_FILE"
+            fi
           }
