@@ -7,6 +7,12 @@ triées par SemVer, indépendamment de leur date de publication, et doivent
 contenir un paquet compatible avec l'appareil. Un APK absent n'empêche pas
 les mises à jour du bureau.
 
+La recherche automatique se renouvelle une heure après la fin de la recherche
+précédente. Le retour sur la fenêtre relance aussi la vérification si le cache
+d'une heure a expiré. « Vérifier les mises à jour » ignore ce cache et les
+réponses HTTP conservées par la webview. « À jour » s'affiche uniquement après
+une recherche réussie.
+
 Le bandeau propose Télécharger → progression → Installer et relancer (bureau)
 ou Installer (Android). Le téléchargement ne ferme pas Sion. L'installation
 reste une action explicite et est disponible pendant un appel : la fermeture

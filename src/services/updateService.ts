@@ -95,11 +95,14 @@ export async function checkForUpdate(experimental = false, force = false): Promi
   const key = `${experimental}:${platform}`;
   const cached = cache.get(key);
   if (!force && cached && Date.now() - cached.time < CHECK_INTERVAL) return cached.update;
+  console.info(`[Sion][mise-a-jour] recherche : version=${__APP_VERSION__}, plateforme=${platform}, expérimental=${experimental}, forcée=${force}`);
   const releases: Release[] = [];
   // Releases are ordered by publication date, not SemVer. Examine multiple pages.
   for (let page = 1; page <= 5; page++) {
     const response = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/releases?per_page=100&page=${page}`, {
-      headers: { Accept: "application/vnd.github+json" }, signal: AbortSignal.timeout(20000),
+      // The app owns the hourly cache. A manual check must reach the network
+      // even when the webview still holds an older GitHub response.
+      cache: "no-store", headers: { Accept: "application/vnd.github+json" }, signal: AbortSignal.timeout(20000),
     });
     if (!response.ok) throw new Error(`GitHub HTTP ${response.status}`);
     const batch = await response.json() as Release[];
@@ -108,6 +111,7 @@ export async function checkForUpdate(experimental = false, force = false): Promi
     if (batch.length < 100) break;
   }
   const update = selectUpdate(releases, __APP_VERSION__, experimental, platform);
+  console.info(`[Sion][mise-a-jour] ${releases.length} release(s) reçue(s), mise à jour=${update?.version ?? "aucune"}`);
   // Failed requests never poison the hourly cache.
   cache.set(key, { time: Date.now(), update });
   return update;

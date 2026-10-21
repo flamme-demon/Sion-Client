@@ -15,9 +15,28 @@ export function UpdateBanner() {
   const experimental = useSettingsStore((s) => s.experimentalUpdates);
   const [notesOpen, setNotesOpen] = useState(false);
   useEffect(() => {
-    void check();
-    const timer = setInterval(() => { void useUpdateStore.getState().check(); }, 60 * 60 * 1000);
-    return () => clearInterval(timer);
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const refresh = async () => {
+      // Automatic searches refresh the cache without revealing a banner the
+      // user dismissed. Manual and focus checks may otherwise shift its age.
+      await check(false, { refresh: true });
+      // Cache freshness starts when the request finishes. Starting the next
+      // hour at that same point avoids reusing it for a second whole hour.
+      if (!stopped) timer = setTimeout(() => { void refresh(); }, 60 * 60 * 1000);
+    };
+    const resume = () => {
+      if (document.visibilityState === "visible" && useUpdateStore.getState().status !== "checking") void check();
+    };
+    void refresh();
+    window.addEventListener("focus", resume);
+    document.addEventListener("visibilitychange", resume);
+    return () => {
+      stopped = true;
+      clearTimeout(timer);
+      window.removeEventListener("focus", resume);
+      document.removeEventListener("visibilitychange", resume);
+    };
   }, [experimental, check]);
 
   const { update, status, stagedPath } = state;

@@ -3,7 +3,7 @@ import { checkForUpdate, type UpdateInfo } from "../services/updateService";
 import { useSettingsStore } from "./useSettingsStore";
 import { openExternalUrl } from "../utils/openExternal";
 
-export type UpdateStatus = "idle" | "checking" | "available" | "downloading" | "ready" | "installing" | "permission" | "error";
+export type UpdateStatus = "unchecked" | "idle" | "checking" | "available" | "downloading" | "ready" | "installing" | "permission" | "error";
 interface AndroidUpdateBridge {
   installUpdate(path: string, version: string): string;
   updateInstallState(): string;
@@ -20,7 +20,7 @@ interface UpdateState {
   stagedPath: string | null;
   error: string | null;
   dismissed: boolean;
-  check: (force?: boolean) => Promise<void>;
+  check: (force?: boolean, options?: { refresh?: boolean }) => Promise<void>;
   download: () => Promise<void>;
   install: () => Promise<void>;
   dismiss: () => void;
@@ -31,9 +31,9 @@ let installPoll: ReturnType<typeof setInterval> | undefined;
 const busy = (status: UpdateStatus) => ["downloading", "installing", "permission"].includes(status);
 
 export const useUpdateStore = create<UpdateState>((set, get) => ({
-  update: null, status: "idle", downloaded: 0, total: null, stagedPath: null, error: null, dismissed: false,
+  update: null, status: "unchecked", downloaded: 0, total: null, stagedPath: null, error: null, dismissed: false,
   dismiss: () => set({ dismissed: true }),
-  check: async (force = false) => {
+  check: async (force = false, options = {}) => {
     if (busy(get().status)) return;
     const experimental = useSettingsStore.getState().experimentalUpdates;
     const channelChanged = selectedExperimental !== experimental;
@@ -42,7 +42,7 @@ export const useUpdateStore = create<UpdateState>((set, get) => ({
     const previous = get();
     set({ status: "checking", error: null, ...(force || channelChanged ? { dismissed: false } : {}) });
     try {
-      const update = await checkForUpdate(experimental, force);
+      const update = await checkForUpdate(experimental, force || options.refresh === true);
       if (sequence !== checkSequence || experimental !== useSettingsStore.getState().experimentalUpdates) return;
       const stagedPath = !channelChanged && previous.update?.tag === update?.tag ? previous.stagedPath : null;
       set({ update, stagedPath, status: stagedPath ? "ready" : update ? "available" : "idle",
